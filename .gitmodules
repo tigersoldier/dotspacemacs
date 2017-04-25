@@ -1,0 +1,3 @@
+[submodule "javacomp/local/javacomp"]
+	path = javacomp/local/javacomp
+	url = https://github.com/tigersoldier/javacomp-el.git
