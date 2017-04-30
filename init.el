@@ -59,6 +59,7 @@ values."
      version-control
      extra-langs
      java
+     javacomp
      myconfigs
      )
    ;; List of additional packages that will be installed without being
