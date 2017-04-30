@@ -21,8 +21,10 @@
                            "build"
                            "src/main/java/org/javacomp/server/JavaComp_deploy.jar"))
         (progn
-          (call-process "cp" nil "*javacomp-rebuild" nil
+          (call-process "cp" nil "*javacomp-rebuild*" nil
+                        "-f"
                         "bazel-bin/src/main/java/org/javacomp/server/JavaComp_deploy.jar"
-                        "~/bin/")
+                        (expand-file-name "~/bin/"))
+          (javacomp-restart-server)
           (message "JavaComp successfully built."))
       (message "Fail to build JavaComp. Switch to *javacomp-rebuild* buffer to see the build results."))))
