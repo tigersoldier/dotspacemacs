@@ -30,6 +30,8 @@
         "fb" #'google-java-format-buffer
         "fr" #'google-java-format-region
         )
-      (setq google-java-format-executable (expand-file-name "~/homebrew/bin/google-java-format")))))
+      (if (eq system-type 'darwin)
+          (setq google-java-format-executable (expand-file-name "~/homebrew/bin/google-java-format"))
+        (setq google-java-format-executable "google-java-format")))))
 
 ;;; packages.el ends here
