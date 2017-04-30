@@ -15,6 +15,8 @@
   '(
     protobuf-mode
     (google-java-format :location local)
+    google-c-style
+    pkgbuild-mode
     ))
 
 (defun myconfigs/init-protobuf-mode ()
@@ -33,5 +35,10 @@
       (if (eq system-type 'darwin)
           (setq google-java-format-executable (expand-file-name "~/homebrew/bin/google-java-format"))
         (setq google-java-format-executable "google-java-format")))))
+
+(defun myconfigs/init-google-c-style ()
+  (add-hook 'c-mode-common-hook 'google-set-c-style))
+
+(defun myconfigs/init-pkgbuild-mode())
 
 ;;; packages.el ends here
