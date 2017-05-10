@@ -29,8 +29,10 @@
       ;; (add-to-list 'spacemacs-jump-handlers-java-mode 'javacomp-jump-to-definition)
 
       (push 'company-javacomp company-backends-java-mode))
-    ;; :config
-    ;; (progn
+    :config
+    (progn
+      (setq javacomp-options-log-path "/tmp/javacomp.log"
+            javacomp-options-log-level "fine"))
     ;;   ;; (spacemacs/declare-prefix-for-mode 'java-mode "mg" "goto")
     ;;   ;; (spacemacs/declare-prefix-for-mode 'java-mode "mh" "help")
     ;;   ;; (spacemacs/declare-prefix-for-mode 'java-mode "mn" "name")
