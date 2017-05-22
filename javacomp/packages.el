@@ -36,7 +36,8 @@
     :config
     (progn
       (setq javacomp-options-log-path "/tmp/javacomp.log"
-            javacomp-options-log-level "fine"))
+            javacomp-options-log-level "fine"
+            javacomp-options-ignore-paths `("openjdk_src/test")))
       (spacemacs/declare-prefix-for-mode 'java-mode "mg" "goto")
       ;; (spacemacs/declare-prefix-for-mode 'java-mode "mh" "help")
       ;; (spacemacs/declare-prefix-for-mode 'java-mode "mn" "name")
