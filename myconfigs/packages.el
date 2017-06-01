@@ -17,6 +17,7 @@
     (google-java-format :location local)
     google-c-style
     pkgbuild-mode
+    company
     ))
 
 (defun myconfigs/init-protobuf-mode ()
@@ -40,5 +41,9 @@
   (add-hook 'c-mode-common-hook 'google-set-c-style))
 
 (defun myconfigs/init-pkgbuild-mode())
+
+(defun myconfigs/post-init-company ()
+  ;; No delay for company completion.
+  (setq company-idle-delay 0))
 
 ;;; packages.el ends here
