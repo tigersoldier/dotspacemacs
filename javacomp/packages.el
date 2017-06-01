@@ -37,7 +37,15 @@
     (progn
       (setq javacomp-options-log-path "/tmp/javacomp.log"
             javacomp-options-log-level "fine"
-            javacomp-options-ignore-paths `("openjdk_src/test")))
+            javacomp-options-ignore-paths `("openjdk_src/test"
+                                            "openjdk_src"
+                                            "testdata"
+                                            "bazel-javacomp"
+                                            "bazel-bin"
+                                            "bazel-out")
+            javacomp-java-options '("-agentlib:jdwp=transport=dt_socket,address=javacomp,server=y,suspend=n")
+            javacomp-log-debug-message t
+            javacomp-log-request-response t))
       (spacemacs/declare-prefix-for-mode 'java-mode "mg" "goto")
       ;; (spacemacs/declare-prefix-for-mode 'java-mode "mh" "help")
       ;; (spacemacs/declare-prefix-for-mode 'java-mode "mn" "name")
