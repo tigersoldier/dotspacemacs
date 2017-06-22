@@ -40,9 +40,13 @@
             javacomp-options-ignore-paths `("openjdk_src/test"
                                             "openjdk_src"
                                             "testdata"
+                                            "typeindeces"
                                             "bazel-javacomp"
                                             "bazel-bin"
                                             "bazel-out")
+            javacomp-options-type-index-files `("typeindeces/guava.json"
+                                                "typeindeces/javac.json"
+                                                "typeindeces/truth.json")
             javacomp-java-options '("-agentlib:jdwp=transport=dt_socket,address=javacomp,server=y,suspend=n")
             javacomp-log-debug-message t
             javacomp-log-request-response t))
