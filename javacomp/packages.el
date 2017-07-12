@@ -43,7 +43,8 @@
                                             "typeindeces"
                                             "bazel-javacomp"
                                             "bazel-bin"
-                                            "bazel-out")
+                                            "bazel-out"
+                                            ".*")
             javacomp-options-type-index-files `("typeindeces/guava.json"
                                                 "typeindeces/javac.json"
                                                 "typeindeces/truth.json")
