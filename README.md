@@ -1,21 +1,24 @@
-# Private directory
+# Caibin Chen's Spacemacs private packages
 
-The content of this directory is ignored by Git. This is the default place
-where to store your private configuration layers.
+This is my Spacemacs configs. Its main purposes is for my own convenience to setup multiple devices.
 
-To create a new configuration layer:
+## Prequisite
 
-    SPC SPC configuration-layer/create-layer RET
+*  Install [Emacs][emacs]
 
-Then enter the name of your configuration in the prompt.
+*  Install [Spacemacs][spacemacs]:
 
-A directory named after the created configuration layer will be created here
-along with template files within it (packages.el and extensions.el, more info
-on the meaning of those files can be found in the [documentation][conf_layers]).
+        git clone https://github.com/syl20bnr/spacemacs ~/.emacs.d
+      
+## Install the private packages
 
-Each created file has further guidance written in them.
+```shell
+# Remove the existing private directory
+rm -r ~/.emacs.d/private
 
-Once the configuration is done, restart Emacs to load, install and configure
-your layer.
+# Clone this repo
+git clone git@github.com:tigersoldier/dotspacemacs.git ~/.emacs.d/private
 
-[conf_layers]: https://github.com/syl20bnr/spacemacs/blob/master/doc/DOCUMENTATION.org#extensions-and-packages
+# Symlink .spacemacs
+ln -s ~/.emacs.d/private/init.el ~/.spacemacs
+```
