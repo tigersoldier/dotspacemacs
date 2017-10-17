@@ -36,7 +36,7 @@
         "fr" #'google-java-format-region
         )
       (if (eq system-type 'darwin)
-          (setq google-java-format-executable (expand-file-name "~/homebrew/bin/google-java-format"))
+          (setq google-java-format-executable (expand-file-name "/usr/local/bin/google-java-format"))
         (setq google-java-format-executable "google-java-format")))))
 
 (defun myconfigs/init-google-c-style ()
