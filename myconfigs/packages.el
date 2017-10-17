@@ -19,6 +19,7 @@
     pkgbuild-mode
     realgud
     company
+    (flycheck-package :requires flycheck)
     ))
 
 (defun myconfigs/init-protobuf-mode ()
@@ -76,5 +77,11 @@
 (defun myconfigs/post-init-company ()
   ;; No delay for company completion.
   (setq company-idle-delay 0))
+
+(defun myconfigs/init-flycheck-package ()
+  (use-package flycheck-package
+    :defer t
+    :init
+    (add-hook 'flycheck-mode-hook 'flycheck-package-setup)))
 
 ;;; packages.el ends here
