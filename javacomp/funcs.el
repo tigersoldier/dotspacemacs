@@ -16,15 +16,17 @@
   "Rebuild JavaComp server."
   (interactive "*")
 
-  (let ((default-directory (expand-file-name "~/code/JavaComp/")))
+  (let ((default-directory (expand-file-name "~/code/JavaComp/"))
+        (dest-jar (expand-file-name "~/.emacs.d/javacomp/javacomp.jar")))
     (if (= 0 (call-process "bazel" nil "*javacomp-rebuild*" nil
                            "build"
                            "src/main/java/org/javacomp/server/JavaComp_deploy.jar"))
         (progn
-          (call-process "cp" nil "*javacomp-rebuild*" nil
-                        "-f"
-                        "bazel-bin/src/main/java/org/javacomp/server/JavaComp_deploy.jar"
-                        (expand-file-name "~/bin/"))
-          (javacomp-restart-server)
-          (message "JavaComp successfully built."))
+          (copy-file "bazel-bin/src/main/java/org/javacomp/server/JavaComp_deploy.jar"
+                     dest-jar
+                     t)
+          (chmod dest-jar #o644)
+          (when (functionp 'javacomp-restart-server)
+            (javacomp-restart-server))
+          (message "JavaComp is successfully built"))
       (message "Fail to build JavaComp. Switch to *javacomp-rebuild* buffer to see the build results."))))

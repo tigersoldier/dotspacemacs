@@ -1,3 +1,6 @@
 [submodule "javacomp/local/javacomp"]
 	path = javacomp/local/javacomp
 	url = https://github.com/tigersoldier/javacomp-el.git
+[submodule "javacomp/local/company-lsp"]
+	path = javacomp/local/company-lsp
+	url = https://github.com/tigersoldier/company-lsp.git

@@ -15,7 +15,49 @@
 (defconst javacomp-packages
   '(
     (javacomp :location local)
-    ))
+    (company-lsp :location local)
+    (lsp-javacomp :requires lsp-mode)
+    (lsp-mode)
+    (company-mode)))
+
+(defun javacomp/post-init-company-mode ()
+  (when (configuration-layer/package-usedp 'lsp-javacomp)
+    (spacemacs|add-company-backends
+      :backends company-capf
+      :modes java-mode
+      :hooks nil)))
+
+
+(defun javacomp/init-lsp-mode ())
+
+(defun javacomp/init-lsp-javacomp ()
+  (use-package lsp-mode
+    :defer t
+    :config (require 'lsp-javacomp))
+
+  (use-package lsp-javacomp
+    :defer t
+    :init
+    (progn
+      (add-hook 'java-mode-hook
+                (lambda ()
+                  (lsp-mode)
+                  ;; (set (make-variable-buffer-local 'company-backends)
+                  ;;      `(company-capf company-dabbrev-code))
+                  (set (make-variable-buffer-local 'company-idle-delay) 0)
+                  (set (make-variable-buffer-local 'company-minimum-prefix-length) 1)
+                  )))
+    :config (lsp-javacomp-install-server)))
+
+(defun javacomp/init-company-lsp ()
+  (use-package company-lsp
+    :defer t
+    :commands (company-lsp)
+    :init
+    (add-hook 'java-mode-hook
+              (lambda ()
+                (set (make-variable-buffer-local 'company-backends)
+                     '(company-lsp))))))
 
 (defun javacomp/init-javacomp ()
   (use-package javacomp
@@ -32,7 +74,14 @@
 
       (add-to-list 'spacemacs-jump-handlers-java-mode 'javacomp-jump-to-definition)
 
-      (push 'company-javacomp company-backends-java-mode))
+      (add-hook 'java-mode-hook
+                (lambda ()
+                  (set (make-variable-buffer-local 'company-backends)
+                       `((company-javacomp company-dabbrev-code company-yasnippet)))
+                  (set (make-variable-buffer-local 'company-idle-delay) 0)
+                  (set (make-variable-buffer-local 'company-minimum-prefix-length) 1)
+                  (company-mode t)
+                  )))
     :config
     (progn
       (setq javacomp-options-log-path "/tmp/javacomp.log"
