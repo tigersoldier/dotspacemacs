@@ -1,4 +1,4 @@
-;;; packages.el --- javacomp layer packages file for Spacemacs.
+;;; packages.el --- javacomp layer packages file for Spacemacs.  -*- lexical-binding: t -*-
 ;;
 ;; Copyright (c) 2017 Caibin Chen
 ;;
@@ -15,7 +15,7 @@
 (defconst javacomp-packages
   '(
     (javacomp :location local)
-    (company-lsp :location local)
+    (company-lsp)
     (lsp-javacomp :requires lsp-mode)
     (lsp-mode)
     (company-mode)))
@@ -41,9 +41,8 @@
     (progn
       (add-hook 'java-mode-hook
                 (lambda ()
-                  (lsp-mode)
-                  ;; (set (make-variable-buffer-local 'company-backends)
-                  ;;      `(company-capf company-dabbrev-code))
+                  (require 'lsp-javacomp)
+                  (lsp-javacomp-enable)
                   (set (make-variable-buffer-local 'company-idle-delay) 0)
                   (set (make-variable-buffer-local 'company-minimum-prefix-length) 1)
                   )))
