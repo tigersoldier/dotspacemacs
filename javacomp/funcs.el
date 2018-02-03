@@ -16,6 +16,8 @@
   (message "javacomp build: %s" state)
   (when (equal state "finished\n")
     (let ((dest-jar (expand-file-name "~/.emacs.d/javacomp/javacomp.jar")))
+      (unless (file-directory-p (file-name-directory dest-jar))
+        (make-directory (file-name-directory dest-jar)))
       (copy-file (expand-file-name "~/code/JavaComp/bazel-bin/src/main/java/org/javacomp/server/JavaComp_deploy.jar")
                  dest-jar
                  t)

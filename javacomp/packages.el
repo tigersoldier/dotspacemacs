@@ -89,7 +89,7 @@
                                             "openjdk_src"
                                             "testdata"
                                             "typeindeces"
-                                            "bazel-javacomp"
+                                            "bazel-JavaComp"
                                             "bazel-bin"
                                             "bazel-out"
                                             ".*")
