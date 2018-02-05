@@ -20,6 +20,7 @@
     realgud
     company
     (flycheck-package :requires flycheck)
+    (buttercup)
     ))
 
 (defun myconfigs/init-protobuf-mode ()
@@ -83,5 +84,7 @@
     :defer t
     :init
     (add-hook 'flycheck-mode-hook 'flycheck-package-setup)))
+
+(defun myconfigs/init-buttercup ())
 
 ;;; packages.el ends here
