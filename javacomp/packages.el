@@ -22,6 +22,7 @@
     :init
     (add-hook 'java-mode-hook
               (lambda ()
+                (require 'lsp-javacomp)
                 (require 'company-lsp)
                 (lsp-javacomp-enable)
                 (set (make-variable-buffer-local 'company-backends) '(company-lsp))
