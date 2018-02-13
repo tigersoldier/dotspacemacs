@@ -25,6 +25,7 @@
                 (require 'lsp-javacomp)
                 (require 'company-lsp)
                 (lsp-javacomp-enable)
+                (set (make-variable-buffer-local 'lsp-ui-imenu-enable) nil)
                 (set (make-variable-buffer-local 'company-backends) '(company-lsp))
                 (set (make-variable-buffer-local 'company-idle-delay) 0.1)
                 (set (make-variable-buffer-local 'company-minimum-prefix-length) 1)))
