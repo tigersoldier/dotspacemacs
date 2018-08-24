@@ -17,7 +17,6 @@
     (google-java-format :location local)
     google-c-style
     pkgbuild-mode
-    realgud
     company
     (flycheck-package :requires flycheck)
     (buttercup)
@@ -44,36 +43,6 @@
   (add-hook 'c-mode-common-hook 'google-set-c-style))
 
 (defun myconfigs/init-pkgbuild-mode())
-
-(defun myconfigs/init-realgud()
-  (use-package realgud
-    :defer t
-    :commands (realgud:gdb realgud:jdb)
-    :init
-    (progn
-      (dolist (mode '(c-mode c++-mode))
-        (spacemacs/set-leader-keys-for-major-mode mode
-          "dd" 'realgud:gdb
-          "de" 'realgud:cmd-eval-dwim))
-      (spacemacs/set-leader-keys-for-major-mode 'java-mode
-        "dd" 'realgud:jdb
-        "de" 'realgud:cmd-eval-dwim)
-      (advice-add 'realgud-short-key-mode-setup
-                  :before #'spacemacs//short-key-state)
-      (evilified-state-evilify-map realgud:shortkey-mode-map
-        :eval-after-load realgud
-        :mode realgud-short-key-mode
-        :bindings
-        "s" 'realgud:cmd-next
-        "i" 'realgud:cmd-step
-        "b" 'realgud:cmd-break
-        "B" 'realgud:cmd-clear
-        "o" 'realgud:cmd-finish
-        "c" 'realgud:cmd-continue
-        "e" 'realgud:cmd-eval
-        "r" 'realgud:cmd-restart
-        "q" 'realgud:cmd-quit
-        "S" 'realgud-window-cmd-undisturb-src))))
 
 (defun myconfigs/post-init-company ()
   ;; No delay for company completion.
