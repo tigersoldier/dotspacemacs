@@ -57,8 +57,8 @@ values."
      spell-checking
      syntax-checking
      version-control
-     extra-langs
-     (java :variables java-backend 'lsp)
+     (java :variables java-backend 'javacomp)
+     lsp
      lsp-mode
      javacomp
      myconfigs
@@ -71,7 +71,7 @@ values."
    ;; A list of packages that cannot be updated.
    dotspacemacs-frozen-packages '()
    ;; A list of packages that will not be installed and loaded.
-   dotspacemacs-excluded-packages '(eclim)
+   dotspacemacs-excluded-packages '(eclim lsp-java)
    ;; Defines the behaviour of Spacemacs when installing packages.
    ;; Possible values are `used-only', `used-but-keep-unused' and `all'.
    ;; `used-only' installs only explicitly used packages and uninstall any
@@ -255,6 +255,16 @@ values."
    dotspacemacs-show-transient-state-title t
    ;; If non nil show the color guide hint for transient state keys. (default t)
    dotspacemacs-show-transient-state-color-guide t
+   ;; Set the theme for the Spaceline. Supported themes are `spacemacs',
+   ;; `all-the-icons', `custom', `vim-powerline' and `vanilla'. The first three
+   ;; are spaceline themes. `vanilla' is default Emacs mode-line. `custom' is a
+   ;; user defined themes, refer to the DOCUMENTATION.org for more info on how
+   ;; to create your own spaceline theme. Value can be a symbol or list with\
+   ;; additional properties.
+   ;; (default '(spacemacs :separator wave :separator-scale 1.5))
+   dotspacemacs-mode-line-theme '(spacemacs
+                                  :separator wave
+                                  :separator-scale 1.4)
    ;; If non nil unicode symbols are displayed in the mode line. (default t)
    dotspacemacs-mode-line-unicode-symbols t
    ;; If non nil smooth scrolling (native-scrolling) is enabled. Smooth
@@ -356,7 +366,7 @@ This function is called at the very end of Spacemacs initialization."
  ;; If there is more than one, they won't work right.
  '(package-selected-packages
    (quote
-    (prettier-js magit-svn lsp-javascript-typescript lsp-java lsp-go json-navigator hierarchy ivy-yasnippet go-impl go-gen-test go-fill-struct gitignore-templates evil-goggles dotenv-mode lsp-mode winum powerline realgud test-simple loc-changes load-relative spinner parent-mode fringe-helper git-gutter+ git-gutter fuzzy flyspell-correct pos-tip flx anzu goto-chg undo-tree pkg-info epl bind-map auto-complete popup request org helm helm-core flycheck magit magit-popup async diminish bind-key packed avy eclim yasnippet company projectile highlight iedit smartparens evil git-commit with-editor dash markdown-mode hydra f s pkgbuild-mode counsel swiper ivy helm-themes helm-swoop helm-pydoc helm-projectile helm-mode-manager helm-gitignore helm-flx helm-descbinds helm-css-scss helm-company helm-c-yasnippet helm-ag flyspell-correct-helm ace-jump-helm-line google-c-style yapfify yaml-mode wolfram-mode web-mode web-beautify tide typescript-mode thrift tagedit stan-mode slim-mode scss-mode scad-mode sass-mode qml-mode pyvenv pytest pyenv-mode py-isort pug-mode protobuf-mode pip-requirements matlab-mode livid-mode skewer-mode simple-httpd live-py-mode less-css-mode julia-mode json-mode json-snatcher json-reformat js2-refactor multiple-cursors js2-mode js-doc hy-mode haml-mode go-guru go-eldoc emmet-mode cython-mode company-web web-completion-data company-tern dash-functional tern company-go go-mode company-anaconda coffee-mode arduino-mode anaconda-mode pythonic xterm-color ws-butler window-numbering which-key wgrep volatile-highlights vi-tilde-fringe uuidgen use-package toc-org spacemacs-theme spaceline smex smeargle shell-pop restart-emacs rainbow-delimiters quelpa popwin persp-mode pcre2el paradox orgit org-plus-contrib org-bullets open-junk-file neotree multi-term move-text mmm-mode markdown-toc magit-gitflow macrostep lorem-ipsum linum-relative link-hint ivy-hydra info+ indent-guide ido-vertical-mode hungry-delete hl-todo highlight-parentheses highlight-numbers highlight-indentation hide-comnt help-fns+ helm-make google-translate golden-ratio gitignore-mode gitconfig-mode gitattributes-mode git-timemachine git-messenger git-link git-gutter-fringe git-gutter-fringe+ gh-md flyspell-correct-ivy flycheck-ycmd flycheck-pos-tip flx-ido fill-column-indicator fancy-battery eyebrowse expand-region exec-path-from-shell evil-visualstar evil-visual-mark-mode evil-unimpaired evil-tutor evil-surround evil-search-highlight-persist evil-numbers evil-nerd-commenter evil-mc evil-matchit evil-magit evil-lisp-state evil-indent-plus evil-iedit-state evil-exchange evil-escape evil-ediff evil-args evil-anzu eval-sexp-fu eshell-z eshell-prompt-extras esh-help elisp-slime-nav dumb-jump disaster diff-hl define-word counsel-projectile company-ycmd company-statistics company-emacs-eclim company-c-headers column-enforce-mode cmake-mode clean-aindent-mode clang-format auto-yasnippet auto-highlight-symbol auto-dictionary auto-compile aggressive-indent adaptive-wrap ace-window ace-link ac-ispell))))
+    (lsp-ui lsp-python lsp-javascript-typescript lsp-javacomp lsp-java lsp-go lsp-mode winum powerline realgud test-simple loc-changes load-relative spinner parent-mode fringe-helper git-gutter+ git-gutter fuzzy flyspell-correct pos-tip flx anzu goto-chg undo-tree pkg-info epl bind-map auto-complete popup request org helm helm-core flycheck magit magit-popup async diminish bind-key packed avy eclim yasnippet company projectile highlight iedit smartparens evil git-commit with-editor dash markdown-mode hydra f s pkgbuild-mode counsel swiper ivy helm-themes helm-swoop helm-pydoc helm-projectile helm-mode-manager helm-gitignore helm-flx helm-descbinds helm-css-scss helm-company helm-c-yasnippet helm-ag flyspell-correct-helm ace-jump-helm-line google-c-style yapfify yaml-mode wolfram-mode web-mode web-beautify tide typescript-mode thrift tagedit stan-mode slim-mode scss-mode scad-mode sass-mode qml-mode pyvenv pytest pyenv-mode py-isort pug-mode protobuf-mode pip-requirements matlab-mode livid-mode skewer-mode simple-httpd live-py-mode less-css-mode julia-mode json-mode json-snatcher json-reformat js2-refactor multiple-cursors js2-mode js-doc hy-mode haml-mode go-guru go-eldoc emmet-mode cython-mode company-web web-completion-data company-tern dash-functional tern company-go go-mode company-anaconda coffee-mode arduino-mode anaconda-mode pythonic xterm-color ws-butler window-numbering which-key wgrep volatile-highlights vi-tilde-fringe uuidgen use-package toc-org spacemacs-theme spaceline smex smeargle shell-pop restart-emacs rainbow-delimiters quelpa popwin persp-mode pcre2el paradox orgit org-plus-contrib org-bullets open-junk-file neotree multi-term move-text mmm-mode markdown-toc magit-gitflow macrostep lorem-ipsum linum-relative link-hint ivy-hydra info+ indent-guide ido-vertical-mode hungry-delete hl-todo highlight-parentheses highlight-numbers highlight-indentation hide-comnt help-fns+ helm-make google-translate golden-ratio gitignore-mode gitconfig-mode gitattributes-mode git-timemachine git-messenger git-link git-gutter-fringe git-gutter-fringe+ gh-md flyspell-correct-ivy flycheck-ycmd flycheck-pos-tip flx-ido fill-column-indicator fancy-battery eyebrowse expand-region exec-path-from-shell evil-visualstar evil-visual-mark-mode evil-unimpaired evil-tutor evil-surround evil-search-highlight-persist evil-numbers evil-nerd-commenter evil-mc evil-matchit evil-magit evil-lisp-state evil-indent-plus evil-iedit-state evil-exchange evil-escape evil-ediff evil-args evil-anzu eval-sexp-fu eshell-z eshell-prompt-extras esh-help elisp-slime-nav dumb-jump disaster diff-hl define-word counsel-projectile company-ycmd company-statistics company-emacs-eclim company-c-headers column-enforce-mode cmake-mode clean-aindent-mode clang-format auto-yasnippet auto-highlight-symbol auto-dictionary auto-compile aggressive-indent adaptive-wrap ace-window ace-link ac-ispell))))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
  ;; If you edit it by hand, you could mess it up, so be careful.

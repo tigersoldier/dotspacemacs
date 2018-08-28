@@ -14,7 +14,7 @@
 
 (defconst javacomp-packages
   '(
-    (lsp-javacomp :requires lsp-mode)))
+    (lsp-javacomp :requires lsp-mode lsp-ui company-lsp)))
 
 (defun javacomp/init-lsp-javacomp ()
   (use-package lsp-javacomp
@@ -25,11 +25,17 @@
                 (require 'lsp-javacomp)
                 (require 'company-lsp)
                 (lsp-javacomp-enable)
+                (company-mode)
                 (set (make-variable-buffer-local 'lsp-ui-imenu-enable) nil)
                 (set (make-variable-buffer-local 'company-backends) '(company-lsp))
                 (set (make-variable-buffer-local 'company-idle-delay) 0.1)
                 (set (make-variable-buffer-local 'company-minimum-prefix-length) 1)))
     :config
-    (lsp-javacomp-install-server)))
+    (lsp-javacomp-install-server)
+    (spacemacs|add-company-backends
+      :backends company-lsp
+      :modes java-mode
+      :append-hooks nil
+      :call-hooks t)))
 
 ;;; packages.el ends here
