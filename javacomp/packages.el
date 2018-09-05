@@ -32,6 +32,8 @@
                 (set (make-variable-buffer-local 'company-minimum-prefix-length) 1)))
     :config
     (lsp-javacomp-install-server)
+    (setq lsp-javacomp-server-log-path "/tmp/javacomp.log"
+          lsp-javacomp-server-log-level "fine")
     (spacemacs|add-company-backends
       :backends company-lsp
       :modes java-mode
