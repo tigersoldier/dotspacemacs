@@ -18,19 +18,34 @@
     ))
 
 (defun lsp-mode/init-cquery ()
+  (with-eval-after-load 'projectile
+    (setq projectile-project-root-files-top-down-recurring
+          (append '("compile_commands.json"
+                    ".cquery")
+                  projectile-project-root-files-top-down-recurring)))
+  (defun cquery//enable ()
+    (condition-case nil
+        (lsp-cquery-enable)
+      (user-error nil)))
   (use-package cquery
     :defer t
+    :commands lsp-cquery-enable
+    :config
+    (setq cquery-executable
+          (some
+           #'file-executable-p
+           (list
+            "/usr/bin/cquery"
+            "/usr/local/bin/cquery"
+            (expand-file-name "~/homebrew/bin/cquery"))))
     :init
-    (progn
-      (add-hook 'c++-mode-hook
-                (lambda ()
-                  (require 'cquery)
-                  (make-variable-buffer-local 'company-backends)
-                  (setq company-backends '(company-lsp))
-                  (setq cquery-executable "/usr/bin/cquery")
-                  (lsp-cquery-enable)
-                  (set (make-variable-buffer-local 'company-idle-delay) 0.1)
-                  (set (make-variable-buffer-local 'company-minimum-prefix-length) 2)
-                  )))))
+    (require 'company-lsp)
+    (make-variable-buffer-local 'company-backends)
+    (setq company-backends '(company-lsp))
+    (set (make-variable-buffer-local 'company-idle-delay) 0.1)
+    (set (make-variable-buffer-local 'company-minimum-prefix-length) 2)
+    (add-hook 'c-mode-hook #'cquery//enable)
+    (add-hook 'c++-mode-hook #'cquery//enable)
+    ))
 
 ;;; packages.el ends here
