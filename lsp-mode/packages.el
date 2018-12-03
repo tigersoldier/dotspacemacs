@@ -24,6 +24,11 @@
                     ".cquery")
                   projectile-project-root-files-top-down-recurring)))
   (defun cquery//enable ()
+    (require 'company-lsp)
+    (make-variable-buffer-local 'company-backends)
+    (setq company-backends '(company-lsp))
+    (set (make-variable-buffer-local 'company-idle-delay) 0.1)
+    (set (make-variable-buffer-local 'company-minimum-prefix-length) 2)
     (condition-case nil
         (lsp-cquery-enable)
       (user-error nil)))
@@ -32,18 +37,13 @@
     :commands lsp-cquery-enable
     :config
     (setq cquery-executable
-          (some
+          (seq-find
            #'file-executable-p
            (list
             "/usr/bin/cquery"
             "/usr/local/bin/cquery"
             (expand-file-name "~/homebrew/bin/cquery"))))
     :init
-    (require 'company-lsp)
-    (make-variable-buffer-local 'company-backends)
-    (setq company-backends '(company-lsp))
-    (set (make-variable-buffer-local 'company-idle-delay) 0.1)
-    (set (make-variable-buffer-local 'company-minimum-prefix-length) 2)
     (add-hook 'c-mode-hook #'cquery//enable)
     (add-hook 'c++-mode-hook #'cquery//enable)
     ))
