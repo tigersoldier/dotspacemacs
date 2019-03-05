@@ -15,6 +15,7 @@
 (defconst lsp-mode-packages
   '(
     (cquery)
+    (lsp-mode)
     ))
 
 (defun lsp-mode/init-cquery ()
@@ -47,5 +48,13 @@
     (add-hook 'c-mode-hook #'cquery//enable)
     (add-hook 'c++-mode-hook #'cquery//enable)
     ))
+
+(defun lsp-mode/post-init-lsp-mode ()
+  (add-hook 'php-mode-hook
+            (lambda ()
+              (require 'lsp-mode)
+              (require 'company-lsp)
+              (company-mode t)
+              (lsp))))
 
 ;;; packages.el ends here
