@@ -32,7 +32,7 @@ values."
    dotspacemacs-configuration-layers
    '(
      (javascript :variables javascript-backend 'lsp)
-     typescript
+     (typescript :variables typescript-backend 'lsp)
      yaml
      markdown
      html
@@ -40,7 +40,7 @@ values."
      (python :variables python-backend 'lsp)
      php
      (rust :variables rust-backend 'lsp)
-     c-c++
+     (c-c++ :variables c-c++-backend 'lsp-ccls)
      ;; ----------------------------------------------------------------
      ;; Example of useful layers you may want to use right away.
      ;; Uncomment some layer names and press <SPC f e R> (Vim style) or
@@ -265,7 +265,7 @@ values."
    ;; to create your own spaceline theme. Value can be a symbol or list with\
    ;; additional properties.
    ;; (default '(spacemacs :separator wave :separator-scale 1.5))
-   dotspacemacs-mode-line-theme '(spacemacs
+   dotspacemacs-mode-line-theme '(doom
                                   :separator wave
                                   :separator-scale 1.4)
    ;; If non nil unicode symbols are displayed in the mode line. (default t)
