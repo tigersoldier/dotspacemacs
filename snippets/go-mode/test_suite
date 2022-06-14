@@ -1,0 +1,34 @@
+# -*- mode: snippet -*-
+# name: test_suite
+# key: test_suite
+# --
+package ${1:package_name}
+
+import (
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/suite"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/testing/protocmp"
+)
+
+type ${2:name}TestSuite struct {
+suite.Suite
+}
+
+func (s *${2:name}TestSuite) SetupSuite() {
+}
+
+func (s *${2:name}TestSuite) BeforeTest(suiteName, methodName string) {
+}
+
+func (s *${2:name}TestSuite) TearDownSuite() {
+}
+
+func (s *${2:name}TestSuite) TestBar() {
+}
+
+func Test${2:name}(t *testing.T) {
+	suite.Run(t, &${2:name}TestSuite{})
+}

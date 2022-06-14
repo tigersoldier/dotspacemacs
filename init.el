@@ -32,18 +32,25 @@ values."
    dotspacemacs-configuration-layers
    '(sql
      (javascript :variables javascript-backend 'lsp)
-     (typescript :variables typescript-backend 'lsp)
+     (typescript :variables
+                 typescript-backend 'lsp
+                 typescript-lsp-linter nil
+                 typescript-linter 'eslint
+                 typescript-fmt-tool 'prettier
+                 )
      yaml
      markdown
      html
      (go :variables
          go-backend 'lsp
          go-format-before-save t
-         go-use-golangci-lint t)
-     (python :variables python-backend 'lsp)
+         go-use-golangci-lint nil)
+     (python :variables
+             python-backend 'lsp
+             python-formatter 'yapf)
      php
      (rust :variables rust-backend 'lsp)
-     (c-c++ :variables c-c++-backend 'lsp-ccls)
+     (c-c++ :variables c-c++-backend 'lsp-clangd)
      ;; ----------------------------------------------------------------
      ;; Example of useful layers you may want to use right away.
      ;; Uncomment some layer names and press <SPC f e R> (Vim style) or
@@ -69,6 +76,9 @@ values."
      javacomp
      myconfigs
      bazel
+     spacemacs-purpose
+     templates
+     kubernetes
      )
    ;; List of additional packages that will be installed without being
    ;; wrapped in a layer. If you need some configuration for these
@@ -374,15 +384,65 @@ This function is called at the very end of Spacemacs initialization."
  ;; If you edit it by hand, you could mess it up, so be careful.
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
+ '(clang-format-style "Google")
  '(custom-safe-themes
    '("bffa9739ce0752a37d9b1eee78fc00ba159748f50dc328af4be661484848e476" "fa2b58bb98b62c3b8cf3b6f02f058ef7827a8e497125de0254f56e373abee088" default))
+ '(default-purpose 'edit)
  '(evil-want-Y-yank-to-eol nil)
+ '(lsp-clients-angular-language-server-command
+   '("node" "/Users/tiger/.nvm/versions/node/v14.16.1/lib/node_modules/@angular/language-server" "--ngProbeLocations" "/Users/tiger/.nvm/versions/node/v14.16.1/lib/node_modules" "--tsProbeLocations" "/Users/tiger/.nvm/versions/node/v14.16.1/lib/node_modules" "--stdio"))
+ '(lsp-enable-file-watchers nil)
  '(package-selected-packages
-   '(bazel lsp-mode winum powerline realgud test-simple loc-changes load-relative spinner parent-mode fringe-helper git-gutter+ git-gutter fuzzy flyspell-correct pos-tip flx anzu goto-chg undo-tree pkg-info epl bind-map auto-complete popup request org helm helm-core flycheck magit magit-popup async diminish bind-key packed avy eclim yasnippet company projectile highlight iedit smartparens evil git-commit with-editor dash markdown-mode hydra f s pkgbuild-mode counsel swiper ivy helm-themes helm-swoop helm-pydoc helm-projectile helm-mode-manager helm-gitignore helm-flx helm-descbinds helm-css-scss helm-company helm-c-yasnippet helm-ag flyspell-correct-helm ace-jump-helm-line google-c-style yapfify yaml-mode wolfram-mode web-mode web-beautify tide typescript-mode thrift tagedit stan-mode slim-mode scss-mode scad-mode sass-mode qml-mode pyvenv pytest pyenv-mode py-isort pug-mode protobuf-mode pip-requirements matlab-mode livid-mode skewer-mode simple-httpd live-py-mode less-css-mode julia-mode json-mode json-snatcher json-reformat js2-refactor multiple-cursors js2-mode js-doc hy-mode haml-mode go-guru go-eldoc emmet-mode cython-mode company-web web-completion-data company-tern dash-functional tern company-go go-mode company-anaconda coffee-mode arduino-mode anaconda-mode pythonic xterm-color ws-butler window-numbering which-key wgrep volatile-highlights vi-tilde-fringe uuidgen use-package toc-org spacemacs-theme spaceline smex smeargle shell-pop restart-emacs rainbow-delimiters quelpa popwin persp-mode pcre2el paradox orgit org-plus-contrib org-bullets open-junk-file neotree multi-term move-text mmm-mode markdown-toc magit-gitflow macrostep lorem-ipsum linum-relative link-hint ivy-hydra info+ indent-guide ido-vertical-mode hungry-delete hl-todo highlight-parentheses highlight-numbers highlight-indentation hide-comnt help-fns+ helm-make google-translate golden-ratio gitignore-mode gitconfig-mode gitattributes-mode git-timemachine git-messenger git-link git-gutter-fringe git-gutter-fringe+ gh-md flyspell-correct-ivy flycheck-ycmd flycheck-pos-tip flx-ido fill-column-indicator fancy-battery eyebrowse expand-region exec-path-from-shell evil-visualstar evil-visual-mark-mode evil-unimpaired evil-tutor evil-surround evil-search-highlight-persist evil-numbers evil-nerd-commenter evil-mc evil-matchit evil-magit evil-lisp-state evil-indent-plus evil-iedit-state evil-exchange evil-escape evil-ediff evil-args evil-anzu eval-sexp-fu eshell-z eshell-prompt-extras esh-help elisp-slime-nav dumb-jump disaster diff-hl define-word counsel-projectile company-ycmd company-statistics company-emacs-eclim company-c-headers column-enforce-mode cmake-mode clean-aindent-mode clang-format auto-yasnippet auto-highlight-symbol auto-dictionary auto-compile aggressive-indent adaptive-wrap ace-window ace-link ac-ispell)))
+   '(kubernetes-tramp kubernetes-evil kubernetes lsp-mode winum powerline realgud test-simple loc-changes load-relative spinner parent-mode fringe-helper git-gutter+ git-gutter fuzzy flyspell-correct pos-tip flx anzu goto-chg undo-tree pkg-info epl bind-map auto-complete popup request org helm helm-core flycheck magit magit-popup async diminish bind-key packed avy eclim yasnippet company projectile highlight iedit smartparens evil git-commit with-editor dash markdown-mode hydra f s pkgbuild-mode counsel swiper ivy helm-themes helm-swoop helm-pydoc helm-projectile helm-mode-manager helm-gitignore helm-flx helm-descbinds helm-css-scss helm-company helm-c-yasnippet helm-ag flyspell-correct-helm ace-jump-helm-line google-c-style yapfify yaml-mode wolfram-mode web-mode web-beautify tide typescript-mode thrift tagedit stan-mode slim-mode scss-mode scad-mode sass-mode qml-mode pyvenv pytest pyenv-mode py-isort pug-mode protobuf-mode pip-requirements matlab-mode livid-mode skewer-mode simple-httpd live-py-mode less-css-mode julia-mode json-mode json-snatcher json-reformat js2-refactor multiple-cursors js2-mode js-doc hy-mode haml-mode go-guru go-eldoc emmet-mode cython-mode company-web web-completion-data company-tern dash-functional tern company-go go-mode company-anaconda coffee-mode arduino-mode anaconda-mode pythonic xterm-color ws-butler window-numbering which-key wgrep volatile-highlights vi-tilde-fringe uuidgen use-package toc-org spacemacs-theme spaceline smex smeargle shell-pop restart-emacs rainbow-delimiters quelpa popwin persp-mode pcre2el paradox orgit org-plus-contrib org-bullets open-junk-file neotree multi-term move-text mmm-mode markdown-toc magit-gitflow macrostep lorem-ipsum linum-relative link-hint ivy-hydra info+ indent-guide ido-vertical-mode hungry-delete hl-todo highlight-parentheses highlight-numbers highlight-indentation hide-comnt help-fns+ helm-make google-translate golden-ratio gitignore-mode gitconfig-mode gitattributes-mode git-timemachine git-messenger git-link git-gutter-fringe git-gutter-fringe+ gh-md flyspell-correct-ivy flycheck-ycmd flycheck-pos-tip flx-ido fill-column-indicator fancy-battery eyebrowse expand-region exec-path-from-shell evil-visualstar evil-visual-mark-mode evil-unimpaired evil-tutor evil-surround evil-search-highlight-persist evil-numbers evil-nerd-commenter evil-mc evil-matchit evil-magit evil-lisp-state evil-indent-plus evil-iedit-state evil-exchange evil-escape evil-ediff evil-args evil-anzu eval-sexp-fu eshell-z eshell-prompt-extras esh-help elisp-slime-nav dumb-jump disaster diff-hl define-word counsel-projectile company-ycmd company-statistics company-emacs-eclim company-c-headers column-enforce-mode cmake-mode clean-aindent-mode clang-format auto-yasnippet auto-highlight-symbol auto-dictionary auto-compile aggressive-indent adaptive-wrap ace-window ace-link ac-ispell))
+ '(purpose-default-layout-file "~/.emacs.d/private/layouts/2edit-panel.window-layout")
+ '(purpose-layout-dirs '("~/.emacs.d/private/layouts/"))
+ '(purpose-user-mode-purposes
+   '((magit-status-mode . edit)
+     (term-mode . panel)
+     (compilation-mode . panel)
+     (dired-mode . edit)))
+ '(purpose-user-name-purposes '(("*Help*" . panel)))
+ '(safe-local-variable-values
+   '((eval puthash "GOPACKAGESPRINTDRIVERERRORS" "true" lsp-go-env)
+     (lsp-pyright-venv-path . ~/venv/walter)
+     (eval setq lsp-go-env
+           (make-hash-table))
+     (eval puthash "GOPACKAGESDRIVER"
+           (concat my-bazel-project-path "tools/gopackagesdriver.sh")
+           lsp-go-env)
+     (eval set lsp-go-env
+           (make-hash-table))
+     (lsp-go-env . lsp-go-packages-driver)
+     (eval puthash "GOPACKAGESDRIVER"
+           (concat my-bazel-project-path "tools/gopackagesdriver.sh")
+           lsp-go-packages-driver)
+     (eval set
+           (make-local-variable 'lsp-go-packages-driver)
+           (make-hash-table))
+     (lsp-go-env make-hash-table "GOPACKAGESDRIVER"
+                 (concat my-bazel-project-path "tools/gopackagesdriver.sh"))
+     (eval set
+           (make-local-variable 'my-bazel-project-path)
+           (file-name-directory
+            (let
+                ((d
+                  (dir-locals-find-file ".")))
+              (if
+                  (stringp d)
+                  d
+                (car d)))))
+     (typescript-backend . tide)
+     (typescript-backend . lsp)
+     (javascript-backend . tide)
+     (javascript-backend . tern)
+     (javascript-backend . lsp)))
+ '(standard-indent 2)
+ '(typescript-expr-indent-offset 2)
+ '(typescript-indent-level 2))
 (custom-set-faces
  ;; custom-set-faces was added by Custom.
  ;; If you edit it by hand, you could mess it up, so be careful.
  ;; Your init file should contain only one such instance.
  ;; If there is more than one, they won't work right.
- )
+ '(highlight-parentheses-highlight ((nil (:weight ultra-bold))) t))
 )
