@@ -13,7 +13,7 @@ type ${2:name}TestSuite struct {
 	suite.Suite
 }
 
-func (s *$2:TestSuite) SetupSuite() {
+func (s *$2TestSuite) SetupSuite() {
 }
 
 func (s *$2TestSuite) BeforeTest(suiteName, methodName string) {
