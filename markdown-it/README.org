@@ -1,0 +1,40 @@
+* markdown-it layer
+
+This layer configures =markdown-mode= (provided by the built-in =markdown=
+layer) to render previews with the Node [[https://github.com/markdown-it/markdown-it][markdown-it]] library — the same engine
+VS Code's markdown preview uses.
+
+** Prerequisites
+
+Install the Node packages globally:
+
+#+begin_src sh
+npm install -g markdown-it highlight.js
+#+end_src
+
+** What it does
+
+- Sets =markdown-command= to =env NODE_PATH=$(npm root -g) node <layer>/render.cjs=
+- =render.cjs= reads markdown on stdin and writes an HTML fragment to stdout,
+  replicating VS Code's =markdownEngine.ts=:
+  - markdown-it with =html=, =linkify=, =typographer=
+  - highlight.js for fenced code blocks
+  - =data-line= / =code-line= source-map attributes
+  - slugified heading =id=s
+  - =hljs= class on =<pre>=
+  - VS Code's language quirks (=shell=→=sh=, =tsx=→=jsx=, =c#=→=cs=, …)
+- =markdown-command-needs-filename= is =nil=, so previews work on unsaved buffers.
+
+** Styling
+
+No CSS is wired by default. Set your own via =markdown-css-paths=, or use the
+helper:
+
+#+begin_src elisp
+M-x markdown-it/set-css
+#+end_src
+
+** Usage
+
+- =markdown-preview= (=SPC m c p=) — render and open in browser
+- =markdown-export= (=SPC m c e=) — write =.html= next to the =.md=
