@@ -20,13 +20,15 @@
 ;; Leaf nodes are window-params plists: :purpose, :purpose-dedicated,
 ;; :width, :height, :edges — width/height/edges are frame fractions.
 ;; Purposes pi-chat / pi-input are mapped to the package's modes in the
-;; layer's config.el; the right pane uses the default `general' purpose
-;; so it can hold any buffer.
+;; layer's config.el; the right pane uses the `edit' purpose, which
+;; almost always has matching buffers (file-visiting buffers classify
+;; as edit), so the fill loop fills it instead of creating a dummy
+;; placeholder.
 (nil (0 0 1200 800)
      (t (0 0 840 800)
         (:purpose pi-chat :purpose-dedicated t
                   :width 0.7 :height 0.7 :edges (0.0 0.0 0.7 0.7))
         (:purpose pi-input :purpose-dedicated t
                   :width 0.7 :height 0.3 :edges (0.0 0.7 0.7 1.0)))
-     (:purpose general :purpose-dedicated nil
+     (:purpose edit :purpose-dedicated nil
                 :width 0.3 :height 1.0 :edges (0.7 0.0 1.0 1.0)))

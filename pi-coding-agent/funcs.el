@@ -158,14 +158,14 @@ places the existing chat/input buffers into their dedicated windows."
                (when chat (set-window-buffer w chat)))
               ((eq (purpose-window-purpose w) 'pi-input)
                (when input (set-window-buffer w input)))
-              ;; Right (general) pane: restore the buffer the user was
+              ;; Right (edit) pane: restore the buffer the user was
               ;; looking at before this command replaced it.  When that
               ;; buffer is unusable (dead or one of the pi buffers),
               ;; show the most recently used non-pi buffer instead —
-              ;; this also replaces the `*pu-dummy-general*'
-              ;; placeholder window-purpose may have created when no
-              ;; `general'-purpose buffer exists.
-              ((eq (purpose-window-purpose w) 'general)
+              ;; this also replaces the `*pu-dummy-edit*' placeholder
+              ;; window-purpose may have created when no `edit'-purpose
+              ;; buffer existed.
+              ((eq (purpose-window-purpose w) 'edit)
                (let ((cur-buf (window-buffer w)))
                  (cond ((and (buffer-live-p saved-buffer)
                              (not (eq cur-buf saved-buffer))
@@ -177,7 +177,7 @@ places the existing chat/input buffers into their dedicated windows."
                         (when-let* ((recent (pi-coding-agent//most-recent-non-pi-buffer)))
                           (set-window-buffer w recent))))))))
       ;; Drop dummy placeholder buffers that are no longer displayed.
-      (dolist (dummy '("*pu-dummy-general*" "*pu-dummy-pi-chat*"
+      (dolist (dummy '("*pu-dummy-edit*" "*pu-dummy-pi-chat*"
                        "*pu-dummy-pi-input*"))
         (let ((buf (get-buffer dummy)))
           (when (and buf (not (get-buffer-window buf t)))

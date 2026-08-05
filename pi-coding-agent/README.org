@@ -63,12 +63,13 @@ loadable with =SPC a i l=):
 - The chat and input buffers have dedicated purposes (=pi-chat= /
   =pi-input=) mapped from the package's modes in =config.el=, so they
   are always routed to the left panes.
-- The right pane uses the default =general= purpose and is not
-  dedicated, so it can hold any buffer.  =pi-coding-agent/layout=
-  restores the buffer you were in before the command to that pane;
-  when the command is run from a pi buffer, it shows the most
-  recently used non-pi buffer instead (and drops window-purpose's
-  dummy placeholders).
+- The right pane uses the =edit= purpose and is not dedicated, so it
+  can hold any buffer — and since file-visiting buffers classify as
+  =edit=, the fill loop fills it with an existing buffer instead of
+  creating a dummy.  =pi-coding-agent/layout= restores the buffer you
+  were in before the command to that pane; when the command is run
+  from a pi buffer, it shows the most recently used non-pi buffer
+  instead (and drops window-purpose's dummy placeholders).
 - The layer directory is registered in =purpose-layout-dirs=, so the
   layout is also available via =M-x purpose-load-window-layout=.
 - =pi-coding-agent/layout= refreshes the purpose tables first and
