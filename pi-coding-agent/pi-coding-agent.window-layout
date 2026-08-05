@@ -1,0 +1,32 @@
+;; -*- mode: emacs-lisp; -*-
+;; pi-coding-agent.window-layout
+;;
+;; 3-pane layout for the pi coding agent:
+;;
+;;   +--------------------------+----------+
+;;   | pi-coding-agent-chat     |          |
+;;   | (70% height)             | any      |
+;;   +--------------------------+ buffer   |
+;;   | pi-coding-agent-input    |          |
+;;   | (30% height)             |          |
+;;   +--------------------------+----------+
+;;
+;; Format: raw window-purpose layout sexp as written by
+;; `purpose-save-window-layout'.  Tree nodes are
+;;   (split-direction edges children...)  where split-direction is nil
+;;   for a side-by-side split and t for a stacked split (the value is
+;;   only used to derive the split direction, see
+;;   `purpose--split-window').
+;; Leaf nodes are window-params plists: :purpose, :purpose-dedicated,
+;; :width, :height, :edges — width/height/edges are frame fractions.
+;; Purposes pi-chat / pi-input are mapped to the package's modes in the
+;; layer's config.el; the right pane uses the default `general' purpose
+;; so it can hold any buffer.
+(nil (0 0 1200 800)
+     (t (0 0 840 800)
+        (:purpose pi-chat :purpose-dedicated t
+                  :width 0.7 :height 0.7 :edges (0.0 0.0 0.7 0.7))
+        (:purpose pi-input :purpose-dedicated t
+                  :width 0.7 :height 0.3 :edges (0.0 0.7 0.7 1.0)))
+     (:purpose general :purpose-dedicated nil
+                :width 0.3 :height 1.0 :edges (0.7 0.0 1.0 1.0)))

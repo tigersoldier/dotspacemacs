@@ -1,0 +1,126 @@
+* pi-coding-agent layer
+
+This layer installs and configures the official
+[[https://github.com/dnouri/pi-coding-agent][pi-coding-agent]] Emacs frontend
+(MELPA) for the [[https://pi.dev][pi coding agent]]. It provides a two-window
+interface for AI-assisted coding: a chat buffer with rendered markdown and a
+separate prompt composition buffer, backed by a =pi --mode rpc= subprocess.
+
+** Prerequisites
+
+- Emacs 29.1 or later with tree-sitter support
+- pi coding agent =@earendil-works/pi-coding-agent= 0.81.0 or later,
+  installed and in PATH, e.g.:
+
+#+begin_src sh
+npm install -g @earendil-works/pi-coding-agent
+#+end_src
+
+The layer adds =~/.local/bin=, =~/bin= and =/usr/local/bin= to
+=exec-path= if they contain the =pi= binary, so GUI-launched Emacs
+finds it even without the interactive shell's PATH.
+
+Tree-sitter grammars for markdown are installed automatically on first
+session start (or manually via =pi-coding-agent-install-grammars=).
+
+** What it does
+
+- Declares the =pi-coding-agent= package (its dependencies =transient=,
+  =md-ts-mode= and =markdown-table-wrap= are pulled in by package.el).
+- Keeps the package's own behavior: sessions are per-project (one
+  process per directory, optionally named for parallel sessions),
+  Evil keybindings load automatically when Evil is present, and the
+  built-in =C-c= bindings in chat/input buffers are unchanged.
+- Adds Spacemacs leader keybindings (see below).
+- Sets =pi-coding-agent-project-trust-policy= to =approve=, so
+  project-local =.pi= prompts, skills, settings, themes, and
+  extensions are available in RPC mode (which has no interactive
+  trust prompt).
+
+** Usage
+
+- =SPC a i p= — start or focus the pi session for the current project
+- =SPC a i S= — start a /named/ session (parallel sessions)
+- =SPC a i l= — apply the saved window layout (and start/focus a session)
+- =SPC a i t= — hide/show the pi windows
+- =SPC a i m= — full transient menu (model, thinking level, sessions, …)
+
+** Window layout
+
+The layer ships a purpose window layout (=pi-coding-agent.window-layout=,
+loadable with =SPC a i l=):
+
+#+begin_example
++---------------------------+----------+
+| pi-coding-agent-chat      |          |
+| (70% height)              | any      |
++---------------------------+ buffer   |
+| pi-coding-agent-input     |          |
+| (30% height)              |          |
++---------------------------+----------+
+#+end_example
+
+- The chat and input buffers have dedicated purposes (=pi-chat= /
+  =pi-input=) mapped from the package's modes in =config.el=, so they
+  are always routed to the left panes.
+- The right pane uses the default =general= purpose and is not
+  dedicated, so it can hold any buffer.  =pi-coding-agent/layout=
+  restores the buffer you were in before the command to that pane;
+  when the command is run from a pi buffer, it shows the most
+  recently used non-pi buffer instead (and drops window-purpose's
+  dummy placeholders).
+- The layer directory is registered in =purpose-layout-dirs=, so the
+  layout is also available via =M-x purpose-load-window-layout=.
+- =pi-coding-agent/layout= refreshes the purpose tables first and
+  re-asserts the session buffers in their panes, so it works even
+  after layer reloads (=SPC f e R=) that leave purpose-mode's compiled
+  tables stale.
+- =pi-coding-agent/layout= never starts a new pi process when a
+  session already exists: it reuses the current directory's session,
+  falling back to the most recently used live session.  Only when no
+  session exists at all does it start one.
+
+Inside a pi buffer:
+
+- =C-c C-c= — send prompt (queues as follow-up if busy)
+- =C-c C-s= — queue steering (interrupts after current tool)
+- =C-c C-p= — open the transient menu
+- =C-c C-r= — resume a session
+- =C-c C-k= — abort current operation
+- =TAB= / =@= — path completion / file references in the input buffer
+
+** Key bindings
+
+Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
+
+| Key        | Command                              | Description                    |
+|------------+--------------------------------------+--------------------------------|
+| =i=        | =pi-coding-agent=                    | Start or focus session         |
+| =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
+| =l=        | =pi-coding-agent/layout=             | Apply saved window layout      |
+| =n=        | =pi-coding-agent-new-session=        | Reset / new session            |
+| =r=        | =pi-coding-agent-reload=             | Restart the pi process         |
+| =s=        | =pi-coding-agent-open-session-file=  | Open a JSONL session file      |
+| =t=        | =pi-coding-agent-toggle=             | Show/hide session windows      |
+| =g=        | =pi-coding-agent-install-grammars=   | Grammar status/install         |
+| =m=        | =pi-coding-agent-menu=               | Full transient menu            |
+
+Major-mode (=SPC m p= in chat/input buffers):
+
+| Key | Command                              | Description                    |
+|-----+--------------------------------------+--------------------------------|
+| =p= | =pi-coding-agent-menu=               | Full transient menu            |
+| =P= | =pi-coding-agent/open-named-session= | Start named (parallel) session |
+| =n= | =pi-coding-agent-new-session=        | Reset / new session            |
+| =r= | =pi-coding-agent-reload=             | Restart the pi process         |
+| =t= | =pi-coding-agent-toggle=             | Show/hide session windows      |
+
+** Configuration
+
+Package options are set in the =init= function in =packages.el=:
+
+- =pi-coding-agent-evil-integration= — load Evil keybindings (default =t=)
+- =pi-coding-agent-project-trust-policy= — =approve= (default) /
+  =default= / =no-approve=
+- =pi-coding-agent-input-window-height= — height of the input window
+  (set it in =config.el= or via =M-x customize-group pi-coding-agent=)
