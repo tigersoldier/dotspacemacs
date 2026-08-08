@@ -41,7 +41,7 @@ session start (or manually via =pi-coding-agent-install-grammars=).
 
 - =SPC a i p= — start or focus the pi session for the current project
 - =SPC a i S= — start a /named/ session (parallel sessions)
-- =SPC a i l= — apply the saved window layout (and start/focus a session)
+- =SPC a i l= — apply the saved window layout (start/focus a session)
 - =SPC a i t= — hide/show the pi windows
 - =SPC a i m= — full transient menu (model, thinking level, sessions, …)
 
@@ -86,7 +86,23 @@ time, so changing it takes effect on the next =SPC a i l=.
 - =pi-coding-agent/layout= never starts a new pi process when a
   session already exists: it reuses the current directory's session,
   falling back to the most recently used live session.  Only when no
-  session exists at all does it start one.
+  session exists at all does it start one, choosing the directory as
+  follows:
+  - inside pi chat/input buffers, the session's recorded directory is
+    reused (this also revives a session whose process died);
+  - inside a terminal buffer (vterm, ansi-term/term incl. multi-term,
+    eshell, shell-mode), the terminal's current working directory is
+    used — term-mode via `term-command-hook', shell-mode via dirtrack
+    and eshell natively keep `default-directory' in sync with the
+    shell's cwd; vterm only updates it from OSC 7 (which plain zsh
+    never emits), so its real cwd is read from the process's
+    `/proc/<pid>/cwd' symlink instead.  When the real cwd cannot be
+    determined (unreadable `/proc', dead terminal process), the user
+    is prompted for the directory with `default-directory' as the
+    default instead of silently using a possibly-stale value;
+  - anywhere else, the user is prompted for the directory, defaulting
+    to the current buffer's directory (the visited file's directory,
+    or `default-directory').  Cancelling the prompt aborts the command.
 
 Inside a pi buffer:
 

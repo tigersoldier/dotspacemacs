@@ -83,8 +83,9 @@ Like `pi-coding-agent', prefers the session for the current directory
 resolution differs from when the session was created — falls back to
 the most recently used existing session instead of letting the layout
 command spawn a second pi process.  Sessions whose process is dead are
-not returned: `pi-coding-agent' should revive those.  Returns nil only
-when no usable session exists at all."
+not returned: the launch path (`pi-coding-agent//launch-directory' +
+`pi-coding-agent--setup-session') should revive those.  Returns nil
+only when no usable session exists at all."
   (let* ((dir (condition-case nil
                   (pi-coding-agent--session-directory)
                 (error nil)))
@@ -94,6 +95,79 @@ when no usable session exists at all."
       (let ((proc (buffer-local-value 'pi-coding-agent--process chat)))
         (when (and (processp proc) (process-live-p proc))
           (cons chat (buffer-local-value 'pi-coding-agent--input-buffer chat)))))))
+
+(defun pi-coding-agent//terminal-buffer-p ()
+  "Return non-nil when the current buffer is a terminal emulator.
+
+Covers vterm, term/ansi-term (incl. multi-term), eshell and shell-mode
+buffers — all of which keep `default-directory' in sync with the
+shell's current working directory."
+  (derived-mode-p 'vterm-mode 'term-mode 'eshell-mode 'shell-mode))
+
+(defun pi-coding-agent//vterm-process-directory (proc)
+  "Return vterm process PROC's real working directory, or nil.
+Reads the `/proc/<pid>/cwd' symlink (Linux), which always reflects
+the shell's actual directory regardless of whether the shell emits
+OSC 7.  Returns nil on non-Linux systems or when the link is
+unusable, letting the caller fall back to `default-directory'."
+  (when-let* ((pid (and (processp proc) (process-id proc)))
+              (dir (file-symlink-p (format "/proc/%d/cwd" pid)))
+              (dir (file-name-as-directory dir))
+              ((file-directory-p dir)))
+    dir))
+
+(defun pi-coding-agent//terminal-directory ()
+  "Return the current terminal buffer's working directory, or nil.
+
+Terminal modes keep the buffer's `default-directory' in sync with the
+shell's cwd: term-mode via `term-command-hook'/`term-handle-ansi-\
+terminal-message', shell-mode via dirtrack, eshell natively.  vterm,
+however, only updates `default-directory' from OSC 7, which many
+shells (e.g. plain zsh) never emit, leaving it stale; for vterm the
+shell's real cwd is read from the process's `/proc/<pid>/cwd' symlink
+instead.
+
+When the real cwd cannot be determined — vterm without a readable
+`/proc/<pid>/cwd', or a dead terminal process — the user is prompted
+to choose the launch directory (`pi-coding-agent//read-launch-directory'),
+defaulting to the buffer's `default-directory', rather than silently
+using a possibly-stale directory.  Cancelling the prompt returns nil
+and aborts the launch."
+  (if-let* ((proc (get-buffer-process (current-buffer)))
+            (_ (process-live-p proc)))
+      (if (derived-mode-p 'vterm-mode)
+          (or (pi-coding-agent//vterm-process-directory proc)
+              (pi-coding-agent//read-launch-directory))
+        (pi-coding-agent--route-preserving-expand-file-name default-directory))
+    (pi-coding-agent//read-launch-directory)))
+
+(defun pi-coding-agent//read-launch-directory ()
+  "Prompt for the directory to launch a pi agent in.
+
+Defaults to the current buffer's directory: the directory of the
+visited file when there is one, else the buffer's `default-directory'."
+  (let* ((default-dir (or (and buffer-file-name
+                               (file-name-directory buffer-file-name))
+                          default-directory))
+         (dir (read-directory-name "Launch pi agent in directory: "
+                                   default-dir default-dir t)))
+    (pi-coding-agent--route-preserving-expand-file-name dir)))
+
+(defun pi-coding-agent//launch-directory ()
+  "Determine the directory for a new pi agent session.
+
+Called only when no live session could be found.  Inside pi chat/input
+buffers, uses the package's own session-directory logic (reviving the
+session in its recorded directory); inside a terminal buffer, uses the
+terminal's current working directory; elsewhere, prompts the user,
+defaulting to the current buffer's directory."
+  (cond
+   ((derived-mode-p 'pi-coding-agent-chat-mode 'pi-coding-agent-input-mode)
+    (pi-coding-agent--session-directory))
+   ((pi-coding-agent//terminal-buffer-p)
+    (pi-coding-agent//terminal-directory))
+   (t
+    (pi-coding-agent//read-launch-directory))))
 
 (defun pi-coding-agent//most-recent-non-pi-buffer ()
   "Return the most recently used buffer that is not a pi agent buffer.
@@ -153,8 +227,22 @@ column takes `pi-coding-agent/layout-width-ratio' of the frame width.
 The pi frontend uses raw `switch-to-buffer'/`split-window' calls, so
 the session must be started first and the layout applied afterwards:
 the purpose-based buffer routing in `purpose-set-window-layout' then
-places the existing chat/input buffers into their dedicated windows."
+places the existing chat/input buffers into their dedicated windows.
+
+When no live session exists, a new one is launched in the directory
+chosen by `pi-coding-agent//launch-directory': inside pi chat/input
+buffers the session's recorded directory is reused (reviving a dead
+process), inside a terminal buffer the terminal's current working
+directory is used, and elsewhere the user is prompted, defaulting to
+the current buffer's directory."
   (interactive)
+  ;; The package is lazy-loaded via autoloads and the layer's init does
+  ;; not require it, so in a fresh Emacs the `pi-coding-agent--*'
+  ;; internals below may be undefined until an autoloaded command has
+  ;; run.  Load it explicitly to avoid void-function errors on the
+  ;; launch path.
+  (unless (featurep 'pi-coding-agent)
+    (require 'pi-coding-agent))
   (let ((saved-buffer (current-buffer))
         (session (pi-coding-agent//live-session-buffers)))
     ;; Recompile the purpose tables first: the layout's buffer routing
@@ -164,9 +252,29 @@ places the existing chat/input buffers into their dedicated windows."
     (pi-coding-agent//ensure-purpose-config)
     ;; Reuse the existing session when there is one — never start a new
     ;; pi process just to arrange windows.  Only when no session exists
-    ;; at all does `pi-coding-agent' create one.
+    ;; at all is a new one launched, in the directory chosen by
+    ;; `pi-coding-agent//launch-directory' (the session's own directory
+    ;; inside pi buffers, the terminal's cwd in terminal buffers, a user
+    ;; prompt elsewhere).  `pi-coding-agent--setup-session' revives dead
+    ;; sessions and reuses existing ones for the chosen directory.
+    ;; Any error in the launch path is reported verbatim (not swallowed)
+    ;; so the real failure surfaces in the minibuffer/*Messages*.
     (unless session
-      (pi-coding-agent))
+      (let ((dir (condition-case err
+                     (pi-coding-agent//launch-directory)
+                   (error
+                    (user-error "pi-coding-agent/layout: %s"
+                                (error-message-string err))))))
+        (if (null dir)
+            (user-error "pi-coding-agent/layout: no directory chosen")
+          (condition-case err
+              (let ((chat (pi-coding-agent--setup-session dir)))
+                (setq session (cons chat
+                                    (buffer-local-value
+                                     'pi-coding-agent--input-buffer chat))))
+            (error
+             (user-error "pi-coding-agent/layout: %s"
+                         (error-message-string err)))))))
     ;; Apply the generated layout (chat/input left, edit right); the
     ;; purpose-based buffer routing then places the existing chat/input
     ;; buffers into their dedicated windows.
