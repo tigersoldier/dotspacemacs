@@ -106,15 +106,22 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 | =g=        | =pi-coding-agent-install-grammars=   | Grammar status/install         |
 | =m=        | =pi-coding-agent-menu=               | Full transient menu            |
 
-Major-mode (=SPC m p= in chat/input buffers):
+Major-mode (=,= / =SPC m p= in chat/input buffers; in the chat
+buffer =t= is already =pi-coding-agent-toggle=, so templates live on
+=, T= there):
 
-| Key | Command                              | Description                    |
-|-----+--------------------------------------+--------------------------------|
-| =p= | =pi-coding-agent-menu=               | Full transient menu            |
-| =P= | =pi-coding-agent/open-named-session= | Start named (parallel) session |
-| =n= | =pi-coding-agent-new-session=        | Reset / new session            |
-| =r= | =pi-coding-agent-reload=             | Restart the pi process         |
-| =t= | =pi-coding-agent-toggle=             | Show/hide session windows      |
+| Key | Command                              | Description                                    |
+|-----+--------------------------------------+------------------------------------------------|
+| =c= | =pi-coding-agent-run-command=        | Run a pi slash command by name (+ args)        |
+| =s= | =pi-coding-agent-skills-menu=        | Skills: letter runs, Shift+letter edits source |
+| =t= | =pi-coding-agent-templates-menu=     | Prompt templates (input mode; =, T= in chat)   |
+| =T= | =pi-coding-agent-templates-menu=     | Prompt templates (chat mode only)              |
+| =e= | =pi-coding-agent-extensions-menu=    | Extension commands                             |
+| =p= | =pi-coding-agent-menu=               | Full transient menu                            |
+| =P= | =pi-coding-agent/open-named-session= | Start named (parallel) session                 |
+| =n= | =pi-coding-agent-new-session=        | Reset / new session (chat only)                |
+| =r= | =pi-coding-agent-reload=             | Restart the pi process (chat only)             |
+| =t= | =pi-coding-agent-toggle=             | Show/hide session windows (chat only)          |
 
 ** Configuration
 

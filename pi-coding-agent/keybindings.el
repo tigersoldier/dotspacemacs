@@ -3,7 +3,9 @@
 ;; Leader-key access to the pi coding agent. Global bindings live
 ;; under `SPC a i' (applications -> ai/pi); within the package's own
 ;; chat/input buffers, `SPC m p' mirrors the most useful actions on
-;; the major-mode leader.
+;; the major-mode leader, and the `, c' / `, s' / `, t' / `, e'
+;; bindings run pi commands, skills, templates, and extensions
+;; directly.
 ;;
 ;; Note: `SPC a p' cannot be used — it is already bound to
 ;; `list-processes' in Spacemacs.
@@ -33,10 +35,18 @@
   "P" 'pi-coding-agent/open-named-session
   "n" 'pi-coding-agent-new-session
   "r" 'pi-coding-agent-reload
-  "t" 'pi-coding-agent-toggle)
+  "t" 'pi-coding-agent-toggle
+  "c" 'pi-coding-agent-run-command
+  "s" 'pi-coding-agent-skills-menu
+  "T" 'pi-coding-agent-templates-menu ; t is toggle in chat; templates on T
+  "e" 'pi-coding-agent-extensions-menu)
 
 (spacemacs/set-leader-keys-for-major-mode 'pi-coding-agent-input-mode
   "p" 'pi-coding-agent-menu
-  "P" 'pi-coding-agent/open-named-session)
+  "P" 'pi-coding-agent/open-named-session
+  "c" 'pi-coding-agent-run-command
+  "s" 'pi-coding-agent-skills-menu
+  "t" 'pi-coding-agent-templates-menu
+  "e" 'pi-coding-agent-extensions-menu)
 
 ;;; keybindings.el ends here
