@@ -10,6 +10,13 @@
 
 ;;; Code:
 
+(defcustom pi-coding-agent/layout-width-ratio 0.5
+  "Fraction of the frame width taken by the pi left column (chat + input).
+Used by `pi-coding-agent/layout' when applying the window layout; the
+right edit pane takes the remaining width.  Must be between 0 and 1."
+  :type 'number
+  :group 'pi-coding-agent)
+
 ;; Make sure Emacs can find the `pi' binary (also adds it to PATH for
 ;; pi's own shell tool calls). No-op if `pi' is already on exec-path.
 (pi-coding-agent//add-pi-to-exec-path)

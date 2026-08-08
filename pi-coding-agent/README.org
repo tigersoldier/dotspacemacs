@@ -51,14 +51,19 @@ The layer ships a purpose window layout (=pi-coding-agent.window-layout=,
 loadable with =SPC a i l=):
 
 #+begin_example
-+---------------------------+----------+
-| pi-coding-agent-chat      |          |
-| (70% height)              | any      |
-+---------------------------+ buffer   |
-| pi-coding-agent-input     |          |
-| (30% height)              |          |
-+---------------------------+----------+
++-------------------------+-------------------------+
+| pi-coding-agent-chat    |                         |
+| (70% height)            | any                     |
++-------------------------+ buffer                 |
+| pi-coding-agent-input   |                         |
+| (30% height)            |                         |
++-------------------------+-------------------------+
 #+end_example
+
+The left column (chat + input) takes =pi-coding-agent/layout-width-ratio=
+of the frame width (default =0.5=); the right =edit= pane takes the rest.
+=pi-coding-agent/layout= builds the layout from that variable at apply
+time, so changing it takes effect on the next =SPC a i l=.
 
 - The chat and input buffers have dedicated purposes (=pi-chat= /
   =pi-input=) mapped from the package's modes in =config.el=, so they
@@ -71,7 +76,9 @@ loadable with =SPC a i l=):
   from a pi buffer, it shows the most recently used non-pi buffer
   instead (and drops window-purpose's dummy placeholders).
 - The layer directory is registered in =purpose-layout-dirs=, so the
-  layout is also available via =M-x purpose-load-window-layout=.
+  static default layout (=pi-coding-agent.window-layout=, kept in sync
+  with the variable's default) is also available via
+  =M-x purpose-load-window-layout=.
 - =pi-coding-agent/layout= refreshes the purpose tables first and
   re-asserts the session buffers in their panes, so it works even
   after layer reloads (=SPC f e R=) that leave purpose-mode's compiled
@@ -98,7 +105,7 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 |------------+--------------------------------------+--------------------------------|
 | =i=        | =pi-coding-agent=                    | Start or focus session         |
 | =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
-| =l=        | =pi-coding-agent/layout=             | Apply saved window layout      |
+| =l=        | =pi-coding-agent/layout=             | Apply window layout             |
 | =n=        | =pi-coding-agent-new-session=        | Reset / new session            |
 | =r=        | =pi-coding-agent-reload=             | Restart the pi process         |
 | =s=        | =pi-coding-agent-open-session-file=  | Open a JSONL session file      |
@@ -132,3 +139,14 @@ Package options are set in the =init= function in =packages.el=:
   =default= / =no-approve=
 - =pi-coding-agent-input-window-height= — height of the input window
   (set it in =config.el= or via =M-x customize-group pi-coding-agent=)
+
+Layer option (defined in =config.el=):
+
+- =pi-coding-agent/layout-width-ratio= — fraction of the frame width
+  taken by the pi left column (chat + input), default =0.5=.  Set it
+  in =dotspacemacs/user-config=, e.g.
+  #+begin_src emacs-lisp
+  (setq pi-coding-agent/layout-width-ratio 0.4)
+  #+end_src
+  or via =M-x customize-group pi-coding-agent=, then re-apply with
+  =SPC a i l=.

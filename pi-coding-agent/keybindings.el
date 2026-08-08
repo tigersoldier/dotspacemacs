@@ -18,7 +18,7 @@
 (spacemacs/set-leader-keys
   "aip" 'pi-coding-agent                    ; start or focus session
   "aiS" 'pi-coding-agent/open-named-session ; start named session
-  "ail" 'pi-coding-agent/layout             ; apply saved window layout
+  "ail" 'pi-coding-agent/layout             ; apply window layout
   "ain" 'pi-coding-agent-new-session        ; reset / new session
   "air" 'pi-coding-agent-reload             ; restart pi process
   "ais" 'pi-coding-agent-open-session-file  ; open a JSONL session file
