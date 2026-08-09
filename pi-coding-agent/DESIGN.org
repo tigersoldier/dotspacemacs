@@ -1,0 +1,204 @@
+* pi-coding-agent: session management design
+
+Design decisions for extending the =pi-coding-agent= layer with Emacs <-> pi
+session management.  Recorded during a grilling session on 2026-08-09.  This
+document captures the agreed design; the layer README describes implemented
+behavior.
+
+** Context
+
+The layer currently wraps the MELPA =pi-coding-agent= frontend (RPC-backed
+chat/input buffers) and adds a purpose window layout, launch-directory
+resolution, and leader keybindings.  The package itself already provides
+per-project sessions, named parallel sessions, a transient menu (new/resume/
+fork/name/model), and per-directory session resumption.
+
+The goal: a session management solution where each opened pi session behaves
+like a project — a workspace with its own buffer set, restorable across
+closes and restarts.
+
+** Decisions
+
+*** D1. Workspace mechanism: persp-mode (spacemacs-layouts)
+
+Enable the =spacemacs-layouts= layer (persp-mode + eyebrowse).  One
+perspective per opened pi session.  Rejected: project.el (keys by directory,
+cannot express parallel sessions in one dir) and a custom buffer registry
+(reimplements persp-mode).
+
+*** D2. Session list UI: completion-based, framework-agnostic
+
+Two layers:
+1. Generic layer: =completing-read= with affixation (directory, message
+   count, age columns), candidates pre-ordered (opened alphabetical, closed
+   chronological), opened/closed shown via status glyph (●/○).  Works under
+   helm-mode, ivy, vertico, plain minibuffer.
+2. Helm-specific support: deferred.  (Installed helm has no
+   =group-function= metadata support; a two-source helm picker can be added
+   later without touching the generic layer.)
+
+*** D3. Session identity and perspective mapping
+
+- Registry alist =persp-name -> session-file= (+ =label-locked= flag),
+  persisted to the cache directory (=spacemacs-cache-directory=), updated on
+  perspective create/rename/destroy, saved on Emacs exit (atomic writes:
+  temp file + rename).
+- =opened= <-> a live perspective exists for the session file.  A perspective
+  with a dead pi process is still opened; switching revives it.
+- After an Emacs restart everything is closed unless auto-resume is enabled
+  (see D8).
+
+*** D4. Perspective naming and label sync
+
+- Format: =«title» · «abbrev-path»= (abbreviated full cwd from JSONL header).
+- Title: session =/name= (session_info) -> first-message snippet (~40 chars)
+  -> =New session= placeholder (before the first prompt).
+- Exact collisions (same title + same dir) get a short-uuid suffix.
+- Sync policy: auto-sync the title part when the session is renamed — advice
+  on =pi-coding-agent-set-session-name= (immediate) plus lazy compare-and-
+  rename on the next session-list scan (=/name= slash command path).  A
+  perspective renamed by the user (=persp-rename=, SPC l r) sets
+  =label-locked= and stops auto-sync.
+
+*** D5. Buffer attribution and common buffers
+
+- persp-mode ='free= attribution (Spacemacs default) attaches every new
+  buffer (files, terminals, pi chat/input) to the current perspective.
+- Common buffers (=*scratch*=, =*Messages*= by default; defcustom regexp
+  list) are injected into every perspective via =persp-created-functions=.
+  Injection, not filtering: persp's =persp-common-buffer-filter-functions=
+  is an exclusion mechanism (filtered buffers belong to no perspective and
+  vanish from the restricted buffer list).  Injected buffers are in all
+  perspectives, so they appear in =SPC b b= and are killable without
+  foreign-buffer prompts.
+- =SPC b B= (non-restricted list) remains the escape hatch.
+
+*** D6. Open/switch state machine
+
+Closed -> open (selecting a closed session):
+1. Create the perspective (named per D4) and switch to it.
+2. =pi-coding-agent-open-session-file= machinery: setup chat/input buffers,
+   start the process, resume the exact session file.
+3. Replay the registry's captured buffer specs through persp's load
+   dispatch (see D7).
+4. Apply the pi window layout; focus the pi input buffer.
+
+Opened -> switch (selecting an opened session):
+1. =persp-switch= to the perspective (Spacemacs restores its window
+   configuration).
+2. If the pi process is dead: revive silently (=setup-session= + resume of
+   the registry's session file).
+
+Same-dir collision behavior: opening a session whose directory already has a
+live unnamed chat buffer (the package allows one unnamed session per
+directory) switches the existing session to the chosen file without asking —
+=pi-coding-agent-open-session-file= reuses the dir's canonical chat buffer.
+
+=pi-coding-agent/switch-session= excludes the session of the current
+perspective (you are already in it).
+
+*** D7. Buffer save/restore: persp's public dispatch, no duplication
+
+- pi layer registers chat/input handlers only, at the front of persp's
+  public defcustoms:
+  - =persp-save-buffer-functions=: chat/input buffers ->
+    =(def-buffer-pi-chat name dir launch-name session-file)= (dir/launch-name
+    from the buffer's session identity, session-file from
+    =pi-coding-agent--state=); nil for everything else.
+  - =persp-load-buffer-functions=: restore = =pi-coding-agent--setup-session=
+    + resume (open-session-file minus window display).
+- Registry buffer specs are captured by running persp's save dispatch over
+  the perspective's buffers (each owner classifies its own: files/dired by
+  persp defaults, terminals by my-persp if present, chat/input by pi) — on
+  close-session (before killing), perspective switch-away, and Emacs exit.
+- Reopen replays the specs through persp's load dispatch.  No per-type
+  classify/restore logic lives in the pi layer.
+- No /proc/<pid>/cwd in the pi layer: that is vterm-only logic, owned by
+  my-persp.
+
+*** D8. Restart behavior: user's choice, documented
+
+- Auto-resume off (current default): after a restart all sessions are
+  closed; the manager list reopens them (registry restores buffers).
+- Auto-resume on (=dotspacemacs-auto-resume-layouts t=): persp restores
+  perspectives with files (persp defaults), terminals (my-persp), and pi
+  sessions (pi layer's chat/input load handler — process restarted, session
+  file resumed).  Caveat: N sessions = N pi processes at startup.
+- Both modes documented in the README.
+
+*** D9. Close-session
+
+One command only (the delete-all-buffers idea was dropped):
+=pi-coding-agent/close-session=:
+1. Capture buffer specs (D7).
+2. Kill the pi process, then the perspective's buffers (files, terminals,
+   chat/input) — standard per-buffer unsaved-change prompts; common buffers
+   and other perspectives' buffers never touched.
+3. Kill the perspective; land in the default perspective.
+4. Registry entry (mapping + captured specs) persists; reopening restores
+   the workspace.
+
+*** D10. New-session flow
+
+=pi-coding-agent/start-new-session=:
+- Always prompts for the directory; the default follows =pi-coding-agent/
+  layout= logic (terminal cwd in terminals, recorded dir in pi buffers,
+  buffer dir elsewhere).
+- Refuses when the directory already has a live unnamed session (package
+  allows one unnamed chat buffer per dir) and suggests
+  =pi-coding-agent/open-named-session= for parallelism.
+- Creates the perspective (placeholder label), =pi-coding-agent--setup-
+  session= (fresh, no resume), applies the layout, focuses input, registers
+  the registry entry (session-file resolved lazily from chat state).
+
+*** D11. Bindings
+
+| Key       | Command                                | Note                              |
+|-----------+----------------------------------------+-----------------------------------|
+| SPC a i i | pi-coding-agent/switch-session         | manager list (hub)                |
+| SPC a i n | pi-coding-agent/start-new-session      | new with directory prompt         |
+| SPC a i d | pi-coding-agent/close-session          | close current session             |
+| SPC a i N | pi-coding-agent-new-session            | reset current (was on =n=)        |
+| SPC m p i | pi-coding-agent/switch-session         | mirror in chat/input mode leaders |
+
+=pi-coding-agent-new-session= (package, reset current) moves from =n= to =N=.
+
+** Architecture
+
+- =pi-coding-agent= layer (self-contained): registry + orchestration
+  (capture/replay through persp's dispatch) + chat/input persp handlers +
+  manager UI + close/new commands.  No dependency on my-persp.
+- =my-persp= private layer (optional, generic, zero coupling): common-buffer
+  injection + terminal save/load for the auto-resume domain.  Listed before
+  =pi-coding-agent= in =dotspacemacs-configuration-layers=.
+- Registry file: cache directory (runtime state, not versioned dotfiles).
+
+** Fail-open contract
+
+- Registry read failure (missing/corrupt/unknown version): treat as empty;
+  sessions still list and open from JSONL; one message logged.
+- Per-spec restore failure: condition-case, skip, log to *Messages*;
+  never aborts the open.
+- Open ordering: perspective -> pi launch + resume (critical) -> layout ->
+  buffer restore (best effort, last).  Pi never depends on restore.
+- Registry writes are atomic (temp + rename).
+
+** Out of scope (decided)
+
+- Point saving (cursor positions): deferred to a future generic
+  Emacs/persp extension; not a pi-layer concern.
+- Window-configuration restore for closed sessions.
+- Helm-specific session picker (two-source grouping): deferred.
+- Terminal process state restore (fresh shells in saved cwd only).
+- Generic delete-all-buffers command: dropped.
+
+** Implementation notes
+
+- Session-list scan caches per-file metadata keyed by mtime; only changed
+  files are re-parsed (hundreds of sessions stay fast).
+- New sessions may not have a session file until pi writes one; the registry
+  entry stores dir and resolves session-file lazily from chat buffer state.
+- Missing-file behavior on registry replay: tune at implementation
+  (skip vs. persp's default empty-buffer fallback).
+- Label placeholder ("New session") updates to the first-message snippet via
+  the lazy scan sync after the first prompt.

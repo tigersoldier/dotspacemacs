@@ -81,6 +81,8 @@ values."
      templates
      kubernetes
      (terraform :variables terraform-auto-format-on-save t)
+     spacemacs-layouts
+     my-persp
      pi-coding-agent
      )
    ;; List of additional packages that will be installed without being

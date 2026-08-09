@@ -36,14 +36,101 @@ session start (or manually via =pi-coding-agent-install-grammars=).
   project-local =.pi= prompts, skills, settings, themes, and
   extensions are available in RPC mode (which has no interactive
   trust prompt).
+- Requires the =spacemacs-layouts= layer (persp-mode): each opened pi
+  session is a perspective (a workspace with its own buffer set).
+- Adds session management: a global session list, new-session with
+  directory prompt, and close-session (see below).
+
+** Session management
+
+Every opened pi session is a persp-mode perspective — "like a project":
+the buffers you open while in the session (files, terminals, pi
+chat/input) belong to that perspective, and =SPC b b= only shows the
+current perspective's buffers plus common buffers (=*scratch*=,
+=*Messages*=; see the optional =my-persp= layer below).  =SPC b B=
+shows all buffers.
+
+- =SPC a i i= (=pi-coding-agent/switch-session=) — list all pi
+  sessions (the current one is excluded): opened ones (marked ●) first,
+  then closed.  Each candidate
+  shows the session title (name or first message), directory, message
+  count, and age.  Selecting a closed session opens it: a new
+  perspective is created, the pi process is started, the session file
+  is resumed, and the previously remembered workspace buffers are
+  restored.  Selecting an opened session switches to its perspective
+  (reviving a dead pi process).  Sort orders are configurable:
+  =pi-coding-agent/session-sort-opened= (default =alpha=) and
+  =pi-coding-agent/session-sort-closed= (default =chrono=).
+- =SPC a i n= (=pi-coding-agent/start-new-session=) — start a brand
+  new session: always prompts for the directory (the default follows
+  the layout's directory logic — terminal cwd, session dir inside pi
+  buffers, buffer dir elsewhere).  Refuses when the directory already
+  has a live unnamed session (use =SPC a i S= for parallel named
+  sessions).
+- =SPC a i d= (=pi-coding-agent/close-session=) — close the current
+  session: stops the pi process, kills the perspective's buffers
+  (standard unsaved-change prompts; common buffers and buffers shared
+  with other perspectives are spared), and removes the perspective.
+  The workspace is remembered, so reopening the session from the list
+  restores its buffers.
+- =SPC a i N= — reset the current session (=pi-coding-agent-new-session=,
+  moved from =n=).
+
+Perspectives are named =«title» · «abbrev-path»= (e.g. =Refactor auth ·
+~/.emacs.d=); the title follows the session =/name=, else the first
+message, else =New session= until the first prompt.  Renaming the
+session (package command or =/name=) updates the perspective label;
+renaming the perspective yourself (=SPC l r=) locks the label.
+
+** Session restore after restart
+
+Pi processes die with Emacs; what comes back after a restart depends
+on =dotspacemacs-auto-resume-layouts=:
+
+- =nil= (default): all sessions are closed after a restart.  Use
+  =SPC a i i= to reopen them — the registry restores each session's
+  workspace buffers.
+- =t=: persp-mode restores every perspective with its buffers at
+  startup — files (persp defaults), terminals (if the =my-persp= layer
+  is enabled), and the pi session itself (chat/input buffers are
+  re-opened and the session file resumed).  Caveat: N sessions mean N
+  pi processes spawning at startup.
+
+Session metadata (perspective ↔ session file mapping, captured buffer
+specs) is stored in the registry file under
+=spacemacs-cache-directory= =/pi-coding-agent/registry.el= (runtime
+state, not dotfiles).  The registry fails open: if it is missing or
+corrupt, sessions still list and open from the JSONL files — only the
+workspace-buffer memory is lost.
+
+** Optional: the =my-persp= layer
+
+A small private layer (=private/my-persp=, listed before
+=pi-coding-agent=) that enhances persp-mode generically, with zero
+coupling to this layer:
+
+- Common buffers (=*scratch*=, =*Messages*=; configurable via
+  =my-persp-common-buffer-regexps=) are injected into every
+  perspective, so they stay reachable from =SPC b b= in any layout.
+- Terminal buffers (vterm, term, eshell, shell) are saved to persp
+  state with their real working directory (vterm via
+  =/proc/<pid>/cwd=) and relaunched there on restore.
+
+Without =my-persp= the pi layer still works end to end; only terminals
+are not restored across restarts, and common buffers are not visible
+inside session perspectives.
 
 ** Usage
 
+- =SPC a i i= — list all sessions: open the chosen one or switch to it
 - =SPC a i p= — start or focus the pi session for the current project
-- =SPC a i S= — start a /named/ session (parallel sessions)
+- =SPC a i n= — start a new session (asks for the directory)
+- =SPC a i d= — close the current session (and its workspace)
 - =SPC a i l= — apply the saved window layout (start/focus a session)
 - =SPC a i t= — hide/show the pi windows
 - =SPC a i m= — full transient menu (model, thinking level, sessions, …)
+- =SPC a i S= — start a named (parallel) session
+- =SPC a i N= — reset / new session in the current directory
 
 ** Window layout
 
@@ -119,10 +206,13 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 
 | Key        | Command                              | Description                    |
 |------------+--------------------------------------+--------------------------------|
-| =i=        | =pi-coding-agent=                    | Start or focus session         |
+| =i=        | =pi-coding-agent/switch-session=     | List sessions; open or switch  |
+| =p=        | =pi-coding-agent=                    | Start or focus session         |
 | =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
 | =l=        | =pi-coding-agent/layout=             | Apply window layout             |
-| =n=        | =pi-coding-agent-new-session=        | Reset / new session            |
+| =n=        | =pi-coding-agent/start-new-session=  | New session (asks dir)          |
+| =N=        | =pi-coding-agent-new-session=        | Reset / new session            |
+| =d=        | =pi-coding-agent/close-session=      | Close session + workspace      |
 | =r=        | =pi-coding-agent-reload=             | Restart the pi process         |
 | =s=        | =pi-coding-agent-open-session-file=  | Open a JSONL session file      |
 | =t=        | =pi-coding-agent-toggle=             | Show/hide session windows      |
@@ -135,6 +225,7 @@ buffer =t= is already =pi-coding-agent-toggle=, so templates live on
 
 | Key | Command                              | Description                                    |
 |-----+--------------------------------------+------------------------------------------------|
+| =i= | =pi-coding-agent/switch-session=     | List sessions; open or switch                  |
 | =c= | =pi-coding-agent-run-command=        | Run a pi slash command by name (+ args)        |
 | =s= | =pi-coding-agent-skills-menu=        | Skills: letter runs, Shift+letter edits source |
 | =t= | =pi-coding-agent-templates-menu=     | Prompt templates (input mode; =, T= in chat)   |

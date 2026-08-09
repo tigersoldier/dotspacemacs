@@ -1,0 +1,49 @@
+* my-persp layer
+
+Optional generic enhancements for the =spacemacs-layouts= (persp-mode)
+layer.  Fully optional: nothing depends on this layer, and the
+=pi-coding-agent= layer works without it.
+
+** Features
+
+- **Common-buffer injection**: buffers matching
+  =my-persp-common-buffer-regexps= (default =*scratch*=, =*Messages*=)
+  are added to every perspective as it is created, so they stay
+  reachable from the restricted buffer list (=SPC b b=) in any layout
+  and are never killed by layout-scoped commands.
+
+- **Terminal save/restore**: vterm, term/ansi-term, eshell, and
+  shell-mode buffers are saved to perspective state with their real
+  working directory (vterm via =/proc/<pid>/cwd=, which works even for
+  shells that never emit OSC 7) and relaunched in that directory when
+  the perspective is restored — e.g. after an Emacs restart with
+  =dotspacemacs-auto-resume-layouts t=.  A restored terminal is a
+  fresh shell process in the saved cwd; shell state is not preserved.
+
+** How it works
+
+persp-mode's save/load is a public dispatch
+(=persp-save-buffer-functions= / =persp-load-buffer-functions=): each
+buffer type is classified by its own handler.  This layer replaces the
+default `*'-prefixed skip filter (which would swallow terminal
+buffers) with a terminal-aware one and appends its own terminal
+handlers.  The =pi-coding-agent= layer registers its chat/input
+handlers at the front of the same dispatch, so the two layers compose
+without knowing about each other.
+
+** Installation
+
+Add both layers to =dotspacemacs-configuration-layers= in
+=~/.emacs.d/private/init.el=, with =my-persp= before
+=pi-coding-agent=:
+
+#+begin_src emacs-lisp
+   spacemacs-layouts
+   my-persp
+   pi-coding-agent
+#+end_src
+
+** Configuration
+
+- =my-persp-common-buffer-regexps= — buffer names treated as common
+  (injected into every perspective).
