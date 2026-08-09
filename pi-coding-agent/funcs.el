@@ -739,16 +739,49 @@ LAUNCH is nil.  Returns the chat buffer."
        nil))))
 
 (defun pi-coding-agent//switch-to-session (persp-name file)
-  "Switch to opened session PERSP-NAME, reviving a dead pi process."
+  "Switch to opened session PERSP-NAME, reviving a dead pi process.
+
+A live process is not proof that FILE is loaded: the chat buffer and its
+pi process are shared by every unnamed session of a directory, so another
+perspective of the same directory may have resumed a different session
+into the shared process, a transition may have been skipped while the
+process was busy, or (via the layout's buffer fallback) the perspective
+may even display another directory's chat buffer.  Besides reviving dead
+processes, re-resume FILE whenever the loaded session file differs from
+it, and re-assert the layout when the perspective shows a chat buffer of
+a different directory, so switching always surfaces the selected session."
   (persp-switch persp-name)
   (when-let* ((persp (persp-get-by-name persp-name))
               ((persp-p persp)))
-    (let ((chat (pi-coding-agent//chat-buffer-in-persp persp)))
-      (when (or (null chat)
-                (let ((proc (buffer-local-value
-                             'pi-coding-agent--process chat)))
-                  (or (not (processp proc)) (not (process-live-p proc)))))
-        (pi-coding-agent//revive-session chat file)))))
+    (let* ((chat (pi-coding-agent//chat-buffer-in-persp persp))
+           (file-dir (pi-coding-agent//session-file-cwd file))
+           (chat-dir (and chat
+                          (with-current-buffer chat
+                            (pi-coding-agent--chat-session-directory))))
+           (wrong-buffer (and chat file-dir
+                              (not (equal
+                                    (file-name-as-directory file-dir)
+                                    (file-name-as-directory chat-dir)))))
+           (stale-process
+            (and chat (not wrong-buffer)
+                 (let* ((proc (buffer-local-value
+                               'pi-coding-agent--process chat))
+                        (state (buffer-local-value
+                                'pi-coding-agent--state chat)))
+                   (or (not (processp proc))
+                       (not (process-live-p proc))
+                       (not (equal (plist-get state :session-file)
+                                   file)))))))
+      (when (or (null chat) wrong-buffer stale-process)
+        (let ((new-chat (pi-coding-agent//revive-session chat file)))
+          (when (and new-chat (not (eq new-chat chat)))
+            ;; The perspective was displaying another directory's session
+            ;; buffer (drifted in through the layout fallback): pin the
+            ;; correct buffers into the pi panes.
+            (pi-coding-agent//apply-pi-layout
+             new-chat
+             (buffer-local-value 'pi-coding-agent--input-buffer new-chat)
+             nil nil)))))))
 
 (defun pi-coding-agent//restore-registry-buffers (entry)
   "Replay ENTRY's captured buffer specs through persp's load dispatch.
@@ -800,11 +833,17 @@ Only real perspectives count; the default perspective has no session."
                                    :buffers nil)
     (pi-coding-agent//registry-save)
     (condition-case err
-        (progn
-          (pi-coding-agent-open-session-file file)
+        (let* ((chat (pi-coding-agent-open-session-file file))
+               (input (and chat (buffer-local-value
+                                 'pi-coding-agent--input-buffer chat))))
           (pi-coding-agent//restore-registry-buffers
            (assoc persp-name pi-coding-agent//registry))
-          (pi-coding-agent//apply-pi-layout nil nil nil t))
+          ;; Pass the session's own chat/input buffers explicitly: the
+          ;; layout fallback otherwise fills the pi panes with whatever
+          ;; pi-chat buffer the purpose system considers most recent,
+          ;; which can be another perspective's buffer (e.g. a different
+          ;; directory's session).
+          (pi-coding-agent//apply-pi-layout chat input nil t))
       (error
        ;; Roll back the perspective on failure: kill the pi process and
        ;; any session buffers created before the failure, then the

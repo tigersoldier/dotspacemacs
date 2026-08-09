@@ -81,13 +81,24 @@ Closed -> open (selecting a closed session):
    start the process, resume the exact session file.
 3. Replay the registry's captured buffer specs through persp's load
    dispatch (see D7).
-4. Apply the pi window layout; focus the pi input buffer.
+4. Apply the pi window layout, passing the session's own chat/input
+   buffers explicitly; focus the pi input buffer.  (The layout fallback
+   must not pick the most-recent pi-chat buffer from another
+   perspective.)
 
 Opened -> switch (selecting an opened session):
 1. =persp-switch= to the perspective (Spacemacs restores its window
    configuration).
 2. If the pi process is dead: revive silently (=setup-session= + resume of
    the registry's session file).
+3. If the process is alive but its loaded session file (from =get_state=)
+   differs from the registry's file — the chat buffer is shared by every
+   unnamed session of its directory, so another perspective may have
+   resumed a different session into the same process, or a transition was
+   skipped while the process was busy — re-resume the registry's file.
+4. If the perspective displays a chat buffer of a *different* directory
+   (drifted in through the layout's most-recent-buffer fallback), re-assert
+   the pi layout with the correct chat/input buffers.
 
 Same-dir collision behavior: opening a session whose directory already has a
 live unnamed chat buffer (the package allows one unnamed session per
