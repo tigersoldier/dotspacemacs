@@ -8,6 +8,8 @@
 //   - heading_open id slugs
 //   - hljs class on fenced code blocks
 //   - VS Code's normalizeHighlightLang quirks (shell->sh, tsx->jsx, c#->cs, ...)
+//   - mermaid fences emitted as `<pre class="mermaid">` for client-side
+//     rendering by mermaid.js (loaded into the page header by config.el)
 //
 // Requires the Node packages `markdown-it` and `highlight.js` to be resolvable
 // (e.g. installed globally and NODE_PATH pointed at the global node_modules).
@@ -98,10 +100,31 @@ function addNamedHeaders(md) {
 }
 
 // Emit `<pre class="hljs language-X"><code>...</code></pre>` (VS Code's shape).
+// Mermaid fences are special-cased: the diagram source is emitted verbatim in
+// a `<pre class="mermaid">` block, which the mermaid.js library (injected into
+// the preview page header by config.el) renders client-side — the same
+// strategy VS Code's markdown preview uses.
 function addFencedRenderer(md) {
   md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
     const info = token.info ? md.utils.unescapeAll(token.info).trim() : '';
+
+    // Mermaid diagrams: defer to mermaid.js in the browser instead of hljs.
+    // NOTE: no <code> wrapper here. mermaid v11's `run()` reads
+    // `element.innerHTML` as the diagram source, so a <code> child would feed
+    // the literal `<code>`/`</code>` tags to the parser and fail with
+    // "Syntax error in text". The diagram text sits directly inside the
+    // <pre class="mermaid">; mermaid's entityDecode() un-escapes `--&gt;`,
+    // `&lt;br&gt;`, ... back into real source before parsing.
+    if (info === 'mermaid') {
+      const codeContent = md.utils.escapeHtml(token.content);
+      const extraClasses = (token.attrGet('class') || '');
+      const classes = `mermaid${extraClasses ? ' ' + extraClasses : ''}`;
+      token.attrSet('class', classes);
+      const attrs = self.renderAttrs(token);
+      return `<pre${attrs}>${codeContent}</pre>\n`;
+    }
+
     const langName = info ? info.split(/\s+/g)[0] : '';
     const normalized = normalizeHighlightLang(langName);
     let highlighted = '';

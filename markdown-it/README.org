@@ -24,6 +24,25 @@ npm install -g markdown-it highlight.js
   - =hljs= class on =<pre>=
   - VS Code's language quirks (=shell=→=sh=, =tsx=→=jsx=, =c#=→=cs=, …)
 - =markdown-command-needs-filename= is =nil=, so previews work on unsaved buffers.
+- Mermaid diagrams: =```mermaid= fences are emitted as =<pre class="mermaid">=
+  and rendered to SVG in the browser by mermaid.js (loaded from CDN in the
+  preview header, like the stylesheets)
+
+** Mermaid diagrams
+
+Fenced blocks tagged =mermaid= are not highlighted by highlight.js; instead
+the diagram source is emitted directly inside a =<pre class="mermaid">= block
+(no =<code>= wrapper) and rendered client-side by
+[[https://mermaid.js.org/][mermaid.js]], which the layer loads from =jsDelivr=
+(v11) in the preview header — the same strategy VS Code's markdown preview
+uses. The =<code>= wrapper is deliberately omitted because mermaid ≥ 11 reads
+the diagram source from =element.innerHTML=, so a wrapper tag would be fed to
+the parser and fail with =Syntax error in text=. The diagram theme follows the
+system color scheme (=default= light, =dark= in dark mode), matching the
+Water.css setup.
+
+Rendering happens in the browser, so previews need internet access at preview
+time to load mermaid.js from the CDN.
 
 ** Styling
 

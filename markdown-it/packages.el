@@ -18,7 +18,9 @@
 ;;
 ;;   npm install -g markdown-it highlight.js
 ;;
-;; The renderer script lives in this layer as `render.cjs'.
+;; The renderer script lives in this layer as `render.cjs'. Fenced `mermaid'
+;; blocks are emitted as `<pre class="mermaid">' and rendered client-side by
+;; mermaid.js, which config.el loads from a CDN into the preview header.
 ;;
 ;;; Code:
 
