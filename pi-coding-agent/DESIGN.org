@@ -162,6 +162,73 @@ One command only (the delete-all-buffers idea was dropped):
   session= (fresh, no resume), applies the layout, focuses input, registers
   the registry entry (session-file resolved lazily from chat state).
 
+*** D12. Pi-extension → Emacs bridge (tools that drive the hosting Emacs)
+
+Goal: give sessions started by this Emacs frontend (pi --mode rpc
+subprocesses) new LLM-callable tools that act on the hosting Emacs —
+first one: open a new session at a tool-specified directory, creating
+its perspective and switching to it.
+
+Channel decision: the pi extension shells out to =emacsclient -e=
+with a base64-encoded JSON request; Emacs evaluates the layer's
+bridge entry (=pi-coding-agent/open-session-at-directory-bridge=) and
+returns a JSON string.  emacsclient -e is packet-based, synchronous,
+request/response, and needs zero new infrastructure (an Emacs server
+is the standard IPC).  Rejected alternatives:
+
+- File mailbox + file-notify polling: works without a server, but
+  adds latency, cleanup and a second channel to reason about.
+- TCP/HTTP listener in Emacs (make-network-process): port/auth
+  management, firewall prompts, an always-on service for a rare need.
+- Extension-UI sub-protocol abuse (ctx.ui.*): one-way, no structured
+  payloads, blocks the client UI protocols meant for dialogs.
+- Upstream pi RPC change (generic extension→host messages): the
+  correct long-term fix, but requires pi development; unnecessary for
+  a local Emacs host that already owns the process.
+
+Activation decision: the extension lives in the layer directory
+(=pi-bridge-extension.ts=) and is wired via =pi-coding-agent-extra-args=
+=(-e <path>)= in =packages.el=, so exactly the sessions started by
+this Emacs frontend get the tools — no global =~/.pi/agent/
+extensions= pollution, no =INSIDE_EMACS= sniffing (Emacs does not set
+that variable for subprocesses on this setup, verified).
+
+Instance pinning: an around-advice on =pi-coding-agent--start-process=
+exports the Emacs server file to the pi process as =PI_EMACS_SERVER=;
+the extension passes it to =emacsclient -s=, so the tool drives
+exactly the Emacs instance that owns the session (correct with
+daemons or several Emacs running).
+
+Server guarantee: the channel needs a running server.  The layer
+defcustom =pi-coding-agent/enable-bridge= (default t) starts one at
+layer load when none is running (skips batch and daemon — daemons
+always serve).  Independent of =dotspacemacs-enable-server=.
+
+Non-interactive contract: a server eval runs while the pi tool waits
+on emacsclient, so bridge entry points must never prompt (no
+completing-read, no y-or-n-p).  All failure paths return a JSON error
+object instead of signalling.  One known prompt risk: the package's
+optional-grammar install prompt (y-or-n-p) can fire inside a
+bridge-triggered session setup; the extension's =--timeout=20= caps
+the wait and the user's answer resolves it.  Essential grammars
+auto-install silently.
+
+Tool: =emacs_new_session= {=directory=, =name=?}.  Mirrors the
+=start-new-session= flow non-interactively: create+switch perspective
+(«New session · path» or the name, label-locked when named), fresh
+=pi-coding-agent--setup-session= (no resume), registry entry, pi
+window layout.  Refuses a second unnamed session for a directory that
+already runs one (name opens a parallel named session).  Returns
+={"ok": true, "persp": ..., "directory": ...}= or
+={"ok": false, "error": ...}=; emacsclient prints the Lisp string,
+so the extension double-parses (outer Lisp string literal, inner
+JSON).
+
+Trust note: any local process able to reach the Emacs server socket
+can drive Emacs — the same trust boundary emacsclient already has.
+Remote (Tramp) pi sessions are out of scope: the -e path is a local
+file.
+
 *** D11. Bindings
 
 | Key       | Command                                | Note                              |
@@ -173,6 +240,32 @@ One command only (the delete-all-buffers idea was dropped):
 | SPC m p i | pi-coding-agent/switch-session         | mirror in chat/input mode leaders |
 
 =pi-coding-agent-new-session= (package, reset current) moves from =n= to =N=.
+
+Reset is an in-place package operation: the perspective is kept, the chat
+buffer is cleared, and the pi process switches to a new JSONL session
+file.  Other package commands switch the session file too: =resume=
+(switch_session), =fork= / =fork-at-point= (fork), the direct
+=open-session-file= (SPC a i s, switch_session), and =compact= (insurance;
+pi rewrites the same file today).  The package never tells the layer
+about any of these, so every such command carries =:after= advice
+(=pi-coding-agent//sync-registry-after-session-change=, installed by
+=pi-coding-agent//install-package-advices=) that issues its own
+=get_state= and re-syncs the registry's =:session-file= (preserving
+=:label-locked= / =:buffers=) plus the perspective label once the
+process has settled on the new file.  RPC ordering guarantees the
+=advice= get_state observes the switch (the session-changing RPC is
+written first, pi processes RPCs in order); the fork path is advised at
+=pi-coding-agent--execute-fork= because the public =fork= command only
+sends =get_fork_messages= and the =fork= RPC arrives later, after the
+user picks a message.  Without this the stale registry would keep
+listing the old file as opened, re-resume it on switch (undoing the
+switch), and freeze the label on the old title.  Cancelled/failed/no-op
+paths (completing-read cancelled, transition not ready, the layer's own
+open flow) and no-registry-entry paths are no-ops.  Commands that do not
+change the file need no sync: =reload= re-resumes the same cached file,
+=set-session-name= is name-only (label advice), =quit= kills the process
+only, and =pi-coding-agent= / =open-named-session= stay registry-less by
+design (the session list falls back to scanning perspective buffers).
 
 ** Architecture
 

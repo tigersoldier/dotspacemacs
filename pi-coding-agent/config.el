@@ -47,4 +47,33 @@ right edit pane takes the remaining width.  Must be between 0 and 1."
 ;; by the spacemacs-purpose layer, which runs after this file loads).
 (add-hook 'purpose-mode-hook #'pi-coding-agent//ensure-purpose-config)
 
+;; ---------------------------------------------------------------------
+;; Emacs bridge (pi sessions driving Emacs)
+;;
+;; The layer's pi-bridge-extension.ts adds tools to every pi session
+;; started by this Emacs (wired in packages.el through
+;; `pi-coding-agent-extra-args').  The tools talk to Emacs via
+;; `emacsclient -e', which requires an Emacs server; when the bridge
+;; is enabled the layer ensures one is running at startup.  The server
+;; socket path is exported to pi processes as PI_EMACS_SERVER (see the
+;; advice in `pi-coding-agent//install-package-advices'), so
+;; emacsclient targets exactly this Emacs instance — safe with
+;; daemons or several Emacs running.
+
+(defcustom pi-coding-agent/enable-bridge t
+  "When non-nil, let pi sessions started by this Emacs drive Emacs.
+Ensures an Emacs server (emacsclient channel) and adds the pi bridge
+extension to every pi command, providing tools such as
+`emacs_new_session' (open a new session in another directory, creating
+its perspective and switching to it)."
+  :type 'boolean
+  :group 'pi-coding-agent)
+
+(when (and pi-coding-agent/enable-bridge
+           (not noninteractive)
+           (not (daemonp)))
+  (require 'server)
+  (unless (server-running-p)
+    (server-start)))
+
 ;;; config.el ends here

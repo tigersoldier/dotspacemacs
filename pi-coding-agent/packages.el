@@ -55,6 +55,21 @@ and removed under `used-only' install policy)."
   ;; skills, settings, themes, and extensions available. Alternatives:
   ;;   'default     let pi use trust.json / defaultProjectTrust
   ;;   'no-approve  pass `--no-approve' (ignore project-local files)
-  (setq pi-coding-agent-project-trust-policy 'approve))
+  (setq pi-coding-agent-project-trust-policy 'approve)
+  ;; Emacs bridge: load the pi bridge extension into every session so
+  ;; pi tools can drive the hosting Emacs (e.g. `emacs_new_session'
+  ;; opens a new session in another directory with its own
+  ;; perspective).  The extension file lives in this layer directory.
+  ;; Guarded so layer reloads do not append it twice.
+  (unless (boundp 'pi-coding-agent-extra-args)
+    (defvar pi-coding-agent-extra-args nil
+      "Extra arguments to pass to the pi command."))
+  (when (bound-and-true-p pi-coding-agent/enable-bridge)
+    (let ((bridge (expand-file-name "pi-bridge-extension.ts"
+                                    pi-coding-agent--dir)))
+      (when (and (file-exists-p bridge)
+                 (not (member bridge pi-coding-agent-extra-args)))
+        (setq pi-coding-agent-extra-args
+              (append pi-coding-agent-extra-args (list "-e" bridge)))))))
 
 ;;; packages.el ends here

@@ -550,6 +550,112 @@ renames done via the /name slash command)."
               (pi-coding-agent//rename-persp persp-name new-name))))))))
 
 ;; ---------------------------------------------------------------------
+;; Session-change sync (package commands that switch the session file)
+;;
+;; Several package commands switch the live pi session to a DIFFERENT
+;; session file without telling the layer:
+;;
+;; - `pi-coding-agent-new-session' (SPC a i N, , n, menu "new", /new):
+;;   resets in place -> new_session RPC -> brand-new file;
+;; - `pi-coding-agent-resume-session' (menu "r", C-c C-r, /resume):
+;;   switch_session RPC -> selected file;
+;; - `pi-coding-agent--execute-fork' (menu "f", fork-at-point, /fork):
+;;   fork RPC -> forked file (the frontend branches to a new session);
+;; - `pi-coding-agent-open-session-file' (SPC a i s): switch_session RPC
+;;   to the chosen file;
+;; - `pi-coding-agent-compact' (menu "c", /compact): compact RPC —
+;;   pi rewrites the same file today, but if a future pi changes the
+;;   file this keeps the registry honest; otherwise it is a no-op.
+;;
+;; Without the advice below the registry keeps pointing at the OLD
+;; session file after any of these.  That staleness would:
+;;
+;; - list the old file as opened (●) and the new one as closed (○) in
+;;   `pi-coding-agent/switch-session';
+;; - make `pi-coding-agent//switch-to-session' re-resume the old file
+;;   into the shared per-directory process when the stale "current"
+;;   entry is picked, undoing the switch;
+;; - freeze the perspective label on the old session's title (the lazy
+;;   label scan only re-reads the registry's file).
+;;
+;; The switch completes asynchronously (the session-changing RPC, then a
+;; get_state refresh in the response callback), so the advice asks for
+;; the state itself and syncs the registry once the process has settled
+;; on the new file.  RPC ordering guarantees the state our get_state
+;; returns reflects the switch: the session-changing RPC is written to
+;; the process before the advice's get_state, and pi processes RPCs in
+;; order.  Cancelled/failed/no-op paths (completing-read cancelled,
+;; transition not ready, layer's own open flow which already registry-
+;; put the file) and no-registry-entry paths are no-ops.
+
+(defun pi-coding-agent//persp-containing-buffer (buf)
+  "Return the first live perspective containing BUFFER, or nil."
+  (when (bound-and-true-p persp-mode)
+    (when-let* ((name (cl-find-if
+                       (lambda (name)
+                         (let ((persp (persp-get-by-name name)))
+                           (and (persp-p persp)
+                                (memq buf (safe-persp-buffers persp)))))
+                       (persp-names))))
+      (persp-get-by-name name))))
+
+(defun pi-coding-agent//sync-registry-after-session-change (&rest _)
+  "Re-sync the registry + label after a package session switch.
+
+Runs as :after advice on the package commands that switch the live pi
+session to another session file (`pi-coding-agent-new-session',
+`pi-coding-agent-resume-session', `pi-coding-agent--execute-fork',
+`pi-coding-agent-open-session-file', `pi-coding-agent-compact').
+
+Resolves the owning perspective from the session's chat buffer (not
+the current one — an async switch can move the user elsewhere before
+the get_state response returns), updates its `:session-file' to the
+file the process has actually settled on, and re-derives the
+perspective label.  The chat buffer may be shared by several
+perspectives of one directory (D6); the owning perspective's entry is
+updated because that is the perspective whose session identity the
+buffer carries, while the other perspectives' entries are the existing
+drift case handled by `pi-coding-agent//switch-to-session'."
+  (when (bound-and-true-p persp-mode)
+    (let* ((chat (pi-coding-agent--get-chat-buffer))
+           (proc (and chat (buffer-local-value 'pi-coding-agent--process chat))))
+      (when (and (bufferp chat) (buffer-live-p chat)
+                 (processp proc) (process-live-p proc))
+        (let ((source (pi-coding-agent//persp-containing-buffer chat)))
+          (pi-coding-agent--rpc-async proc '(:type "get_state")
+            (lambda (response)
+              (when (and (eq (plist-get response :success) t)
+                         (buffer-live-p chat)
+                         (process-live-p proc)
+                         (bound-and-true-p persp-mode))
+                (let* ((dir (pi-coding-agent--chat-session-directory chat))
+                       (file (plist-get
+                              (pi-coding-agent--extract-state-from-response
+                               response dir)
+                              :session-file)))
+                  (when (and (stringp file) (not (string-empty-p file)))
+                    (let* ((persp (or source (get-current-persp)))
+                           (name (and (perspective-p persp)
+                                      (safe-persp-name persp)))
+                           (entry (assoc name pi-coding-agent//registry)))
+                      (when (and entry
+                                 (not (equal
+                                       (plist-get (cdr entry) :session-file)
+                                       file)))
+                        (pi-coding-agent//registry-put
+                         name
+                         :session-file file
+                         :label-locked (plist-get (cdr entry) :label-locked)
+                         :buffers (plist-get (cdr entry) :buffers))
+                        (pi-coding-agent//registry-save)
+                        ;; Re-derive the label from the settled file's
+                        ;; metadata: a brand-new session returns to the
+                        ;; "New session · path" placeholder (first
+                        ;; message re-syncs it via the lazy scan), a
+                        ;; resumed/forked session takes its title.
+                        (pi-coding-agent//sync-labels)))))))))))))
+
+;; ---------------------------------------------------------------------
 ;; Session scanning and the switch-session list
 
 (defun pi-coding-agent//session-metadata-cached (file)
@@ -1088,6 +1194,89 @@ the list restores it."
       (persp-kill (list name) t))))
 
 ;; ---------------------------------------------------------------------
+;; Emacs bridge entry (called by the pi bridge extension via emacsclient)
+;;
+;; pi sessions started by this Emacs frontend load an extension
+;; (pi-bridge-extension.ts, wired through `pi-coding-agent-extra-args')
+;; that registers tools driving the hosting Emacs.  The extension
+;; shells out to `emacsclient -e' with a base64-encoded JSON request;
+;; the layer ensures an Emacs server is running (`pi-coding-agent/
+;; enable-bridge') and exports the socket path to pi processes as
+;; PI_EMACS_SERVER so emacsclient targets exactly this Emacs instance.
+;;
+;; These entry points must never prompt: a server eval runs while the
+;; tool call waits on `emacsclient', so a minibuffer question would
+;; block the pi agent turn until answered (the extension's
+;; --timeout=20 caps the wait).  All failure paths return a JSON error
+;; instead of signalling interactively.
+
+(defun pi-coding-agent//open-session-request (dir &optional name)
+  "Open a fresh pi session at DIR as its own perspective and switch to it.
+
+Non-interactive twin of `pi-coding-agent/start-new-session': DIR is
+mandatory, NAME opens a named (parallel) session that bypasses the
+live-unnamed-session refusal and is labelled with NAME only
+(label-locked).  Runs the standard flow: create+switch perspective,
+`pi-coding-agent--setup-session' (fresh, no resume), registry entry,
+pi window layout.  Returns the plist (:ok t :persp NAME :directory
+DIR); signals an error when the request is invalid or the launch
+fails (rolling back the fresh perspective)."
+  (require 'pi-coding-agent)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (unless (and (stringp dir) (not (string-empty-p dir)))
+    (user-error "No directory given"))
+  (let* ((dir (file-name-as-directory
+               (pi-coding-agent--route-preserving-expand-file-name dir))))
+    (unless (file-directory-p dir)
+      (user-error "Not a directory: %s" dir))
+    (when (and (null name) (pi-coding-agent//live-session-in-dir-p dir))
+      (user-error "A pi session is already running in %s — pass a session \
+name for a parallel session" dir))
+    (let* ((name (and (stringp name) (not (string-empty-p name)) name))
+           (label (if name
+                      name
+                    (format "New session · %s"
+                            (abbreviate-file-name (directory-file-name dir)))))
+           (persp-name (pi-coding-agent//unique-persp-name label nil)))
+      (persp-switch persp-name)
+      (let ((chat (condition-case err
+                      (pi-coding-agent--setup-session dir name)
+                    (error
+                     (when (persp-p (persp-get-by-name persp-name))
+                       (persp-kill (list persp-name) t))
+                     (user-error "pi: failed to start session: %s"
+                                 (error-message-string err))))))
+        (pi-coding-agent//registry-put persp-name
+                                       :session-file nil
+                                       :label-locked (and name t)
+                                       :buffers nil)
+        (pi-coding-agent//registry-save)
+        (let ((input (buffer-local-value 'pi-coding-agent--input-buffer chat)))
+          (pi-coding-agent//apply-pi-layout chat input nil t))
+        (message "pi: opened session in %s (perspective %s)" dir persp-name)
+        (list :ok t :persp persp-name :directory dir)))))
+
+(defun pi-coding-agent/open-session-at-directory-bridge (b64)
+  "Bridge entry invoked via `emacsclient -e' by the pi bridge extension.
+
+B64 is a base64-encoded JSON request object `{directory, name}'.
+Executes the new-session flow non-interactively and returns a JSON
+string: `{\"ok\": true, \"persp\": \"...\", \"directory\": \"/abs\"}'
+or `{\"ok\": false, \"error\": \"...\"}'."
+  (require 'json)
+  (condition-case err
+      (let* ((request (json-parse-string (base64-decode-string b64)))
+             (dir (gethash "directory" request))
+             (name (gethash "name" request)))
+        (when (eq name :null)
+          (setq name nil))
+        (json-encode (pi-coding-agent//open-session-request dir name)))
+    (error
+     (json-encode (list :ok :json-false
+                        :error (error-message-string err))))))
+
+;; ---------------------------------------------------------------------
 ;; persp save/load handlers for pi chat/input buffers
 ;;
 ;; Registered at the front of persp's public dispatch so pi buffers are
@@ -1156,8 +1345,54 @@ the list restores it."
 
 (add-hook 'kill-emacs-hook #'pi-coding-agent//on-kill-emacs)
 
-(with-eval-after-load 'pi-coding-agent
+(defun pi-coding-agent//bridge-start-process (orig-fn directory)
+  "Around-advice exporting the Emacs server socket to pi processes.
+
+Sets PI_EMACS_SERVER (the emacsclient server file) in the pi process
+environment so the bridge extension can target exactly this Emacs
+instance with `emacsclient -s' — correct with daemons or several
+Emacs running.  No-op when the bridge is disabled or no server is
+configured (emacsclient then falls back to default socket discovery)."
+  (if (not (bound-and-true-p pi-coding-agent/enable-bridge))
+      (funcall orig-fn directory)
+    (let* ((server-file (and (boundp 'server-socket-dir)
+                             (boundp 'server-name)
+                             server-socket-dir
+                             server-name
+                             (expand-file-name server-name server-socket-dir)))
+           (process-environment
+            (if server-file
+                (cons (format "PI_EMACS_SERVER=%s" server-file)
+                      process-environment)
+              process-environment)))
+      (funcall orig-fn directory))))
+
+(defun pi-coding-agent//install-package-advices ()
+  "Install the layer's advices on package commands.
+
+Idempotent (removes before adding), so layer reloads (`SPC f e R')
+do not double-fire the advices."
+  ;; Keep the perspective label in sync when the session is renamed.
+  (advice-remove 'pi-coding-agent-set-session-name
+                 #'pi-coding-agent//after-set-session-name)
   (advice-add 'pi-coding-agent-set-session-name
-              :after #'pi-coding-agent//after-set-session-name))
+              :after #'pi-coding-agent//after-set-session-name)
+  ;; Keep the registry mapping + perspective label in sync when a
+  ;; package command switches the live session to another session file.
+  (dolist (cmd '(pi-coding-agent-new-session
+                 pi-coding-agent-resume-session
+                 pi-coding-agent--execute-fork
+                 pi-coding-agent-open-session-file
+                 pi-coding-agent-compact))
+    (advice-remove cmd #'pi-coding-agent//sync-registry-after-session-change)
+    (advice-add cmd :after #'pi-coding-agent//sync-registry-after-session-change))
+  ;; Export the Emacs server socket to pi processes (bridge channel).
+  (advice-remove 'pi-coding-agent--start-process
+                 #'pi-coding-agent//bridge-start-process)
+  (advice-add 'pi-coding-agent--start-process
+              :around #'pi-coding-agent//bridge-start-process))
+
+(with-eval-after-load 'pi-coding-agent
+  (pi-coding-agent//install-package-advices))
 
 ;;; funcs.el ends here

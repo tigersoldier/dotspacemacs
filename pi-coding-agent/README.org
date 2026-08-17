@@ -74,7 +74,19 @@ shows all buffers.
   The workspace is remembered, so reopening the session from the list
   restores its buffers.
 - =SPC a i N= — reset the current session (=pi-coding-agent-new-session=,
-  moved from =n=).
+  moved from =n=).  The perspective is kept, the chat buffer is cleared,
+  and the pi process switches to a new JSONL session file; the registry
+  mapping and the perspective label (back to the =New session= placeholder
+  until the first message) are re-synced automatically afterwards.
+
+  The same automatic re-sync covers every other package command that
+  switches the session file in place: resume (menu =r=, =C-c C-r=,
+  =/resume=), fork (=f=, =/fork=), the direct =SPC a i s= session-file
+  open, and =compact= (file unchanged today; kept honest if pi ever
+  changes that).  The perspective label follows the newly loaded session
+  (=/name=, else first-message snippet), so resuming an older session
+  renames the perspective accordingly (unless you locked it with
+  =SPC l r=).
 
 Perspectives are named =«title» · «abbrev-path»= (e.g. =Refactor auth ·
 ~/.emacs.d=); the title follows the session =/name=, else the first
@@ -131,6 +143,46 @@ inside session perspectives.
 - =SPC a i m= — full transient menu (model, thinking level, sessions, …)
 - =SPC a i S= — start a named (parallel) session
 - =SPC a i N= — reset / new session in the current directory
+
+** Driving Emacs from pi sessions (bridge)
+
+Sessions started by this Emacs frontend load a small pi extension
+(=pi-bridge-extension.ts= in this layer) that registers tools the
+agent can call to act on the hosting Emacs:
+
+- =emacs_new_session= — open a brand-new pi session in another
+directory.  Emacs creates a new perspective (workspace), starts the
+session there, applies the pi window layout, and switches to it —
+the same flow as =SPC a i n=, driven by the agent.  Parameters:
+
+  - =directory= (required) — absolute or ~-style path; must exist.
+  - =name= (optional) — session name; required to open a parallel
+    session when the directory already runs an unnamed session.
+
+The extension talks to Emacs over =emacsclient -e= (request/response
+JSON over the Emacs server socket).  The layer ensures a server is
+running when the bridge is enabled, and exports the socket path to
+pi processes as =PI_EMACS_SERVER= so the tool always drives the Emacs
+instance that owns the session (safe with daemons / multiple Emacs).
+
+Configuration:
+
+- =pi-coding-agent/enable-bridge= (default =t=) — master switch:
+  adds the extension to every pi command and starts the Emacs server
+  if none is running (independent of =dotspacemacs-enable-server=;
+  daemons always serve).  Set to =nil= to disable.
+- The extension is added via =pi-coding-agent-extra-args= =(-e ...)=;
+  only sessions started after loading the layer get the tools.
+
+Notes:
+
+- The bridge entry points never prompt (they run while the pi tool
+  waits on emacsclient); failures are returned as JSON errors the
+  agent reports.
+- Any local process with access to the Emacs server socket can drive
+  Emacs — the standard emacsclient trust boundary.
+- Remote (Tramp) pi sessions are not covered by the -e extension
+  flag.
 
 ** Window layout
 
