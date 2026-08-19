@@ -60,13 +60,30 @@ shows all buffers.
   restored.  Selecting an opened session switches to its perspective
   (reviving a dead pi process).  Sort orders are configurable:
   =pi-coding-agent/session-sort-opened= (default =alpha=) and
-  =pi-coding-agent/session-sort-closed= (default =chrono=).
+  =pi-coding-agent/session-sort-closed= (default =alpha= — both groups
+  sort lexically by title).
+- =SPC a i I= (=pi-coding-agent/switch-session-in-dir=) — switch
+  between the current directory's pi sessions, applying the pi window
+  layout afterwards.  The directory is the session's own directory
+  inside pi chat/input buffers, the terminal's working directory in
+  terminal buffers, and the visited file's directory (else
+  =default-directory=) elsewhere.  Same list as =SPC a i i= but scoped:
+  opened (●) first, then closed (○), each sorted lexically; the
+  current session is excluded.
 - =SPC a i n= (=pi-coding-agent/start-new-session=) — start a brand
   new session: always prompts for the directory (the default follows
   the layout's directory logic — terminal cwd, session dir inside pi
-  buffers, buffer dir elsewhere).  Refuses when the directory already
-  has a live unnamed session (use =SPC a i S= for parallel named
-  sessions).
+  buffers, buffer dir elsewhere).  When the directory has existing
+  sessions, they are offered for selection (opened ● first, then
+  closed ○, each sorted lexically) via =completing-read=, so the
+  picker works with helm, ivy, vertico or the plain minibuffer:
+  picking an existing session opens or switches to it (with its
+  layout), typing a new session name (or picking the =✚ New session=
+  candidate and entering one) starts a fresh named session, and an
+  empty name starts an unnamed session — refused when the directory
+  already runs a live unnamed session (then a name is required for the
+  parallel session).  With no existing sessions a fresh unnamed
+  session starts directly.
 - =SPC a i d= (=pi-coding-agent/close-session=) — close the current
   session: stops the pi process, kills the perspective's buffers
   (standard unsaved-change prompts; common buffers and buffers shared
@@ -135,6 +152,7 @@ inside session perspectives.
 ** Usage
 
 - =SPC a i i= — list all sessions: open the chosen one or switch to it
+- =SPC a i I= — switch between the current directory's sessions (with layout)
 - =SPC a i p= — start or focus the pi session for the current project
 - =SPC a i n= — start a new session (asks for the directory)
 - =SPC a i d= — close the current session (and its workspace)
@@ -259,10 +277,11 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 | Key        | Command                              | Description                    |
 |------------+--------------------------------------+--------------------------------|
 | =i=        | =pi-coding-agent/switch-session=     | List sessions; open or switch  |
+| =I=        | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =p=        | =pi-coding-agent=                    | Start or focus session         |
 | =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
 | =l=        | =pi-coding-agent/layout=             | Apply window layout             |
-| =n=        | =pi-coding-agent/start-new-session=  | New session (asks dir)          |
+| =n=        | =pi-coding-agent/start-new-session=  | New session or open existing (asks dir) |
 | =N=        | =pi-coding-agent-new-session=        | Reset / new session            |
 | =d=        | =pi-coding-agent/close-session=      | Close session + workspace      |
 | =r=        | =pi-coding-agent-reload=             | Restart the pi process         |
@@ -278,6 +297,7 @@ buffer =t= is already =pi-coding-agent-toggle=, so templates live on
 | Key | Command                              | Description                                    |
 |-----+--------------------------------------+------------------------------------------------|
 | =i= | =pi-coding-agent/switch-session=     | List sessions; open or switch                  |
+| =I= | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =c= | =pi-coding-agent-run-command=        | Run a pi slash command by name (+ args)        |
 | =s= | =pi-coding-agent-skills-menu=        | Skills: letter runs, Shift+letter edits source |
 | =t= | =pi-coding-agent-templates-menu=     | Prompt templates (input mode; =, T= in chat)   |

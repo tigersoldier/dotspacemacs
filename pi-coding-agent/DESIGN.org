@@ -30,9 +30,11 @@ cannot express parallel sessions in one dir) and a custom buffer registry
 
 Two layers:
 1. Generic layer: =completing-read= with affixation (directory, message
-   count, age columns), candidates pre-ordered (opened alphabetical, closed
-   chronological), opened/closed shown via status glyph (●/○).  Works under
-   helm-mode, ivy, vertico, plain minibuffer.
+   count, age columns), candidates pre-ordered (opened first, then
+   closed, each sorted lexically by title — configurable via
+   =session-sort-opened= / =session-sort-closed=), opened/closed shown
+   via status glyph (●/○).  Works under helm-mode, ivy, vertico, plain
+   minibuffer.
 2. Helm-specific support: deferred.  (Installed helm has no
    =group-function= metadata support; a two-source helm picker can be added
    later without touching the generic layer.)
@@ -155,12 +157,26 @@ One command only (the delete-all-buffers idea was dropped):
 - Always prompts for the directory; the default follows =pi-coding-agent/
   layout= logic (terminal cwd in terminals, recorded dir in pi buffers,
   buffer dir elsewhere).
-- Refuses when the directory already has a live unnamed session (package
-  allows one unnamed chat buffer per dir) and suggests
-  =pi-coding-agent/open-named-session= for parallelism.
-- Creates the perspective (placeholder label), =pi-coding-agent--setup-
-  session= (fresh, no resume), applies the layout, focuses input, registers
-  the registry entry (session-file resolved lazily from chat state).
+- With existing sessions in the chosen directory, offers them through
+  =completing-read= (opened ● first, then closed ○, each sorted
+  lexically): picking one opens/switches to it (with its layout), typing a
+  fresh name (or picking the =✚ New session= candidate and entering one)
+  starts a named session, an empty name starts an unnamed session.
+- Refuses an unnamed session when the directory already has a live unnamed
+  session (package allows one unnamed chat buffer per dir); a name is then
+  required for parallelism.  With no session files at all a fresh unnamed
+  session starts directly.
+- Fresh-session creation is one helper (=pi-coding-agent//start-fresh-
+  session=), shared with the bridge tool and the interactive command:
+  create the perspective (placeholder label or the name, label-locked),
+  =pi-coding-agent--setup-session= (fresh, no resume), applies the layout,
+  focuses input, registers the registry entry (session-file resolved
+  lazily from chat state).
+- =pi-coding-agent/switch-session-in-dir= (SPC a i I) is the scoped
+  switch: only the current directory's sessions (recorded dir in pi
+  buffers, terminal cwd in terminals, visited file's dir elsewhere), same
+  ordering, current session excluded; switching re-applies the pi window
+  layout.
 
 *** D12. Pi-extension → Emacs bridge (tools that drive the hosting Emacs)
 
@@ -234,10 +250,12 @@ file.
 | Key       | Command                                | Note                              |
 |-----------+----------------------------------------+-----------------------------------|
 | SPC a i i | pi-coding-agent/switch-session         | manager list (hub)                |
+| SPC a i I | pi-coding-agent/switch-session-in-dir  | switch current dir's sessions     |
 | SPC a i n | pi-coding-agent/start-new-session      | new with directory prompt         |
 | SPC a i d | pi-coding-agent/close-session          | close current session             |
 | SPC a i N | pi-coding-agent-new-session            | reset current (was on =n=)        |
 | SPC m p i | pi-coding-agent/switch-session         | mirror in chat/input mode leaders |
+| SPC m p I | pi-coding-agent/switch-session-in-dir  | mirror in chat/input mode leaders |
 
 =pi-coding-agent-new-session= (package, reset current) moves from =n= to =N=.
 

@@ -365,9 +365,10 @@ buffers from other workspaces never leak into the session)."
                  (const :tag "Chronological" chrono))
   :group 'pi-coding-agent)
 
-(defcustom pi-coding-agent/session-sort-closed 'chrono
+(defcustom pi-coding-agent/session-sort-closed 'alpha
   "Sort order for closed sessions in the switch-session list.
-`alpha' sorts by title, `chrono' by last modification (newest first)."
+`alpha' sorts by title (lexical), `chrono' by last modification
+(newest first).  The default is `alpha' — both groups sort lexically."
   :type '(choice (const :tag "Alphabetical" alpha)
                  (const :tag "Chronological" chrono))
   :group 'pi-coding-agent)
@@ -389,7 +390,7 @@ Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
   "Non-nil while this layer renames a perspective itself.")
 
 (defvar pi-coding-agent-session-history nil
-  "History of sessions selected in `pi-coding-agent/switch-session'.")
+  "History of sessions selected by the pi session pickers.")
 
 (defun pi-coding-agent//registry-load ()
   "Load the session registry from `pi-coding-agent//registry-file'.
@@ -695,6 +696,23 @@ the registry)."
                   (push f files))))))))
     files)))
 
+(defun pi-coding-agent//session-entries-in-dir (dir)
+  "Return session entries whose recorded cwd is DIR (exact match).
+DIR is compared expanded and with a trailing slash, matching the
+normalization `pi-coding-agent--session-file-cwd-or-error' applies to
+recorded cwds."
+  (let ((dir (file-name-as-directory
+              (pi-coding-agent--route-preserving-expand-file-name dir))))
+    (cl-remove-if-not
+     (lambda (entry)
+       (let ((cwd (plist-get entry :cwd)))
+         (and (stringp cwd)
+              (equal (file-name-as-directory
+                      (pi-coding-agent--route-preserving-expand-file-name
+                       cwd))
+                     dir))))
+     (pi-coding-agent//session-entries))))
+
 (defun pi-coding-agent//session-entries ()
   "Return plist entries for all sessions under `pi-coding-agent/session-root'."
   (let* ((root (expand-file-name pi-coding-agent/session-root))
@@ -744,7 +762,8 @@ the registry)."
 
 (defun pi-coding-agent//sort-entries (entries)
   "Opened sessions first (per `pi-coding-agent/session-sort-opened'),
-then closed (per `pi-coding-agent/session-sort-closed')."
+then closed (per `pi-coding-agent/session-sort-closed'); both default
+to lexical order by title."
   (append
    (pi-coding-agent//sort-group
     (cl-remove-if-not (lambda (e) (plist-get e :opened)) entries)
@@ -761,17 +780,18 @@ then closed (per `pi-coding-agent/session-sort-closed')."
           ((< secs 86400) (format "%dh" (/ secs 3600)))
           (t (format "%dd" (/ secs 86400))))))
 
-(defun pi-coding-agent//session-candidates (entries)
+(defun pi-coding-agent//session-candidates (entries &optional dir)
   "Build (CANDIDATE . ENTRY) conses for the switch-session list.
-Candidates are \"title · abbrev-path\" with a uuid disambiguator when
-two sessions would render identically."
+Candidates are \"title · abbrev-path\" — or just \"title\" when DIR is
+given (all sessions share that directory) — with a uuid disambiguator
+when two sessions would render identically."
   (let ((seen (make-hash-table :test 'equal))
         candidates)
     (dolist (entry entries)
       (let* ((title (pi-coding-agent//entry-title entry))
-             (dir (plist-get entry :cwd))
-             (abbrev (and (stringp dir)
-                          (abbreviate-file-name (directory-file-name dir))))
+             (cwd (plist-get entry :cwd))
+             (abbrev (and (null dir) (stringp cwd)
+                          (abbreviate-file-name (directory-file-name cwd))))
              (base (if abbrev (format "%s · %s" title abbrev) title))
              (n (gethash base seen 0)))
         (puthash base (1+ n) seen)
@@ -785,12 +805,16 @@ two sessions would render identically."
     (nreverse candidates)))
 
 (defun pi-coding-agent//make-session-affixation (alist)
-  "Return an affixation function showing status, count, and age."
+  "Return an affixation function showing status, count, and age.
+Candidates without an ENTRY (e.g. the \"✚ New session\" action item)
+get a \"✚ \" glyph and no suffix."
   (lambda (cands)
     (mapcar
      (lambda (cand)
        (let* ((entry (cdr (assoc cand alist)))
-              (glyph (if (and entry (plist-get entry :opened)) "● " "○ "))
+              (glyph (cond ((null entry) "✚ ")
+                           ((plist-get entry :opened) "● ")
+                           (t "○ ")))
               (suffix (if entry
                           (format "  %d msgs  %s"
                                   (or (plist-get entry :count) 0)
@@ -977,8 +1001,9 @@ Only real perspectives count; the default perspective has no session."
 (defun pi-coding-agent/switch-session ()
   "List all pi sessions; open the chosen one or switch to it if opened.
 The current session is excluded.  Opened sessions are marked with ●
-and listed first (alphabetical, configurable), closed sessions after
-(chronological, configurable)."
+and listed first, closed sessions after; both groups sort lexically by
+title (configurable via `pi-coding-agent/session-sort-opened' and
+`pi-coding-agent/session-sort-closed')."
   (interactive)
   (require 'pi-coding-agent)
   (unless (bound-and-true-p persp-mode)
@@ -1001,11 +1026,65 @@ and listed first (alphabetical, configurable), closed sessions after
         (when-let* ((entry (cdr (assoc choice alist))))
           (pi-coding-agent//open-or-switch entry))))))
 
+(defun pi-coding-agent/switch-session-in-dir ()
+  "Switch to another pi session of the current directory, with its layout.
+
+The directory is the session's own directory inside pi chat/input
+buffers, the terminal's working directory in terminal buffers, and
+the visited file's directory (else `default-directory') elsewhere.
+Lists only that directory's sessions — opened (●) first, then closed
+(○), each sorted lexically by title — excluding the current one.
+Picking an opened session switches to its perspective (reviving a
+dead pi process); picking a closed session opens it in a fresh
+perspective with its workspace restored.  Either way the pi window
+layout (chat/input left, edit right) is applied afterwards."
+  (interactive)
+  (require 'pi-coding-agent)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (pi-coding-agent//sync-labels)
+  (let* ((dir (pi-coding-agent//context-directory))
+         (current (pi-coding-agent//current-session-file))
+         (entries (pi-coding-agent//sort-entries
+                   (cl-remove-if
+                    (lambda (entry)
+                      (and current
+                           (equal (plist-get entry :file) current)))
+                    (pi-coding-agent//session-entries-in-dir dir))))
+         (alist (pi-coding-agent//session-candidates entries dir)))
+    (if (null alist)
+        (user-error "No other pi sessions found in %s"
+                    (abbreviate-file-name (directory-file-name dir)))
+      (let ((choice (completing-read
+                     (format "Pi session in %s: "
+                             (abbreviate-file-name (directory-file-name dir)))
+                     (pi-coding-agent//session-collection alist)
+                     nil t nil 'pi-coding-agent-session-history)))
+        (when-let* ((entry (cdr (assoc choice alist))))
+          (pi-coding-agent//open-or-switch entry)
+          ;; Re-assert the pi window layout for the switched-to session
+          ;; (chat/input left, edit right), putting whatever buffer the
+          ;; switch restored as current into the edit pane.  The
+          ;; most-recent-buffer fallback is restricted to the switched-to
+          ;; perspective so buffers from other workspaces never leak in.
+          (when-let* ((persp (get-current-persp))
+                      ((perspective-p persp))
+                      (chat (pi-coding-agent//chat-buffer-in-persp persp)))
+            (pi-coding-agent//apply-pi-layout
+             chat
+             (buffer-local-value 'pi-coding-agent--input-buffer chat)
+             (current-buffer) t)))))))
+
 ;; ---------------------------------------------------------------------
 ;; New session
 
-(defun pi-coding-agent//new-session-default-directory ()
-  "Default directory for the new-session prompt (never prompts itself)."
+(defun pi-coding-agent//context-directory ()
+  "The \"current directory\" for session commands (never prompts itself).
+Inside pi chat/input buffers the session's recorded directory; inside
+terminal buffers the terminal's working directory (vterm via its
+`/proc/<pid>/cwd', other terminal modes keep `default-directory' in
+sync); elsewhere the visited file's directory, else
+`default-directory'."
   (cond
    ((derived-mode-p 'pi-coding-agent-chat-mode 'pi-coding-agent-input-mode)
     (condition-case nil
@@ -1027,42 +1106,130 @@ and listed first (alphabetical, configurable), closed sessions after
     (let ((proc (buffer-local-value 'pi-coding-agent--process chat)))
       (and (processp proc) (process-live-p proc)))))
 
+(defconst pi-coding-agent//new-session-candidate "✚ New session"
+  "Completing-read candidate for starting a fresh pi session.")
+
+(defun pi-coding-agent//read-new-session-name (dir)
+  "Prompt for the name of a fresh pi session in DIR.
+Returns the trimmed name, or nil when the user wants an unnamed
+session (empty input).  An unnamed session is refused later by
+`pi-coding-agent//start-fresh-session' when DIR already runs a live
+unnamed session."
+  (let ((name (string-trim
+               (read-string
+                (format "New session name in %s (empty for unnamed): "
+                        (abbreviate-file-name (directory-file-name dir)))))))
+    (and (not (string-empty-p name)) name)))
+
+(defun pi-coding-agent//new-session-choice (dir entries)
+  "Choose between DIR's existing sessions and a fresh session.
+ENTRIES are the directory's session entries (see
+`pi-coding-agent//session-entries-in-dir').  Returns (existing .
+ENTRY) when an existing session was chosen, (new . NAME) when a fresh
+session named NAME (nil = unnamed) should be started.
+
+With no existing sessions a fresh session is chosen directly; when
+DIR already runs a live unnamed session whose file pi has not written
+yet, a name is prompted first (parallel sessions need a name).  With
+existing sessions, they are offered through completing-read — opened
+first, then closed, each sorted lexically — with the \"✚ New
+session\" candidate and free-form input (any non-matching name) both
+starting a fresh named session; an empty input starts an unnamed
+session."
+  (if (null entries)
+      (cons 'new (and (pi-coding-agent//live-session-in-dir-p dir)
+                      (pi-coding-agent//read-new-session-name dir)))
+    (let* ((alist (append (pi-coding-agent//session-candidates entries dir)
+                          (list (cons pi-coding-agent//new-session-candidate
+                                      nil))))
+           (choice (completing-read
+                    (format "Pi session in %s (type a new name for a new session): "
+                            (abbreviate-file-name (directory-file-name dir)))
+                    (pi-coding-agent//session-collection alist)
+                    nil nil nil 'pi-coding-agent-session-history))
+           (entry (cdr (assoc choice alist))))
+      (cond
+       (entry
+        (cons 'existing entry))
+       ((string= choice pi-coding-agent//new-session-candidate)
+        (cons 'new (pi-coding-agent//read-new-session-name dir)))
+       ((or (null choice) (string-empty-p choice))
+        (cons 'new nil))
+       (t
+        (cons 'new (let ((name (string-trim choice)))
+                     (and (not (string-empty-p name)) name))))))))
+
+(defun pi-coding-agent//start-fresh-session (dir &optional name)
+  "Start a brand-new pi session in DIR as its own perspective.
+NAME (optional, trimmed) opens a named parallel session, labelled
+NAME and label-locked; without NAME an unnamed session is started
+(labelled \"New session · DIR\") and refused when DIR already runs a
+live unnamed session — the package allows one unnamed session per
+directory.  Creates and switches to the perspective, starts the pi
+process via `pi-coding-agent--setup-session' (fresh, no resume),
+registers the registry entry, and applies the pi window layout.
+Returns the chat buffer; on failure the fresh perspective is rolled
+back and an error signalled."
+  (let* ((name (and (stringp name)
+                    (not (string-empty-p (string-trim name)))
+                    (string-trim name)))
+         (dir (file-name-as-directory
+               (pi-coding-agent--route-preserving-expand-file-name dir)))
+         (label (if name
+                    name
+                  (format "New session · %s"
+                          (abbreviate-file-name (directory-file-name dir)))))
+         (persp-name (pi-coding-agent//unique-persp-name label nil)))
+    (when (and (null name) (pi-coding-agent//live-session-in-dir-p dir))
+      (user-error "A pi session is already running in %s — give a session \
+name for a parallel session" dir))
+    (persp-switch persp-name)
+    (let ((chat (condition-case err
+                    (pi-coding-agent--setup-session dir name)
+                  (error
+                   (when (persp-p (persp-get-by-name persp-name))
+                     (persp-kill (list persp-name) t))
+                   (user-error "pi: failed to start session: %s"
+                               (error-message-string err))))))
+      (pi-coding-agent//registry-put persp-name
+                                     :session-file nil
+                                     :label-locked (and name t)
+                                     :buffers nil)
+      (pi-coding-agent//registry-save)
+      (let ((input (buffer-local-value 'pi-coding-agent--input-buffer chat)))
+        (pi-coding-agent//apply-pi-layout chat input nil t))
+      chat)))
+
 (defun pi-coding-agent/start-new-session ()
-  "Start a new pi session in a user-chosen directory.
+  "Start a new pi session in a user-chosen directory, or open an existing one.
+
 Always prompts for the directory (unlike `pi-coding-agent/layout',
 which reuses the recorded directory inside pi buffers); the prompt
-default follows the layout's directory logic.  Refuses when the
-directory already has a live unnamed session — use
-`pi-coding-agent/open-named-session' for parallel sessions."
+default follows the layout's directory logic.  When the directory has
+existing sessions, they are offered for selection — opened (●) first,
+then closed (○), each sorted lexically — via completing-read, so the
+picker works under helm, ivy, vertico, or the plain minibuffer.
+Picking an existing session opens it (or switches to it when already
+opened), with its layout; typing a new session name — or picking the
+\"✚ New session\" candidate and entering one — starts a fresh named
+session; an empty name starts an unnamed session, refused when the
+directory already runs a live unnamed session.  With no existing
+sessions a fresh unnamed session is started directly."
   (interactive)
   (require 'pi-coding-agent)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((default-dir (pi-coding-agent//new-session-default-directory))
+  (let* ((default-dir (pi-coding-agent//context-directory))
          (dir (read-directory-name "Start new pi session in directory: "
                                    default-dir default-dir t))
-         (dir (pi-coding-agent--route-preserving-expand-file-name dir)))
-    (when (pi-coding-agent//live-session-in-dir-p dir)
-      (user-error "A pi session is already running in %s — use \
-`pi-coding-agent/open-named-session' for a parallel session" dir))
-    (let* ((label (format "New session · %s"
-                          (abbreviate-file-name (directory-file-name dir))))
-           (persp-name (pi-coding-agent//unique-persp-name label nil)))
-      (persp-switch persp-name)
-      (let ((chat (condition-case err
-                      (pi-coding-agent--setup-session dir)
-                    (error
-                     (when (persp-p (persp-get-by-name persp-name))
-                       (persp-kill (list persp-name) t))
-                     (user-error "pi: failed to start session: %s"
-                                 (error-message-string err))))))
-        (pi-coding-agent//registry-put persp-name
-                                       :session-file nil
-                                       :label-locked nil
-                                       :buffers nil)
-        (pi-coding-agent//registry-save)
-        (let ((input (buffer-local-value 'pi-coding-agent--input-buffer chat)))
-          (pi-coding-agent//apply-pi-layout chat input nil t))))))
+         (dir (pi-coding-agent--route-preserving-expand-file-name dir))
+         (choice (pi-coding-agent//new-session-choice
+                  dir (pi-coding-agent//session-entries-in-dir dir))))
+    (pcase choice
+      (`(existing . ,entry)
+       (pi-coding-agent//open-or-switch entry))
+      (`(new . ,name)
+       (pi-coding-agent//start-fresh-session dir name)))))
 
 ;; ---------------------------------------------------------------------
 ;; Close session
@@ -1216,11 +1383,11 @@ the list restores it."
 Non-interactive twin of `pi-coding-agent/start-new-session': DIR is
 mandatory, NAME opens a named (parallel) session that bypasses the
 live-unnamed-session refusal and is labelled with NAME only
-(label-locked).  Runs the standard flow: create+switch perspective,
-`pi-coding-agent--setup-session' (fresh, no resume), registry entry,
-pi window layout.  Returns the plist (:ok t :persp NAME :directory
-DIR); signals an error when the request is invalid or the launch
-fails (rolling back the fresh perspective)."
+(label-locked).  Runs the standard flow via `pi-coding-agent//
+start-fresh-session' (create+switch perspective, fresh pi process,
+registry entry, pi window layout).  Returns the plist (:ok t :persp
+NAME :directory DIR); signals an error when the request is invalid or
+the launch fails (rolling back the fresh perspective)."
   (require 'pi-coding-agent)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
@@ -1230,32 +1397,10 @@ fails (rolling back the fresh perspective)."
                (pi-coding-agent--route-preserving-expand-file-name dir))))
     (unless (file-directory-p dir)
       (user-error "Not a directory: %s" dir))
-    (when (and (null name) (pi-coding-agent//live-session-in-dir-p dir))
-      (user-error "A pi session is already running in %s — pass a session \
-name for a parallel session" dir))
-    (let* ((name (and (stringp name) (not (string-empty-p name)) name))
-           (label (if name
-                      name
-                    (format "New session · %s"
-                            (abbreviate-file-name (directory-file-name dir)))))
-           (persp-name (pi-coding-agent//unique-persp-name label nil)))
-      (persp-switch persp-name)
-      (let ((chat (condition-case err
-                      (pi-coding-agent--setup-session dir name)
-                    (error
-                     (when (persp-p (persp-get-by-name persp-name))
-                       (persp-kill (list persp-name) t))
-                     (user-error "pi: failed to start session: %s"
-                                 (error-message-string err))))))
-        (pi-coding-agent//registry-put persp-name
-                                       :session-file nil
-                                       :label-locked (and name t)
-                                       :buffers nil)
-        (pi-coding-agent//registry-save)
-        (let ((input (buffer-local-value 'pi-coding-agent--input-buffer chat)))
-          (pi-coding-agent//apply-pi-layout chat input nil t))
-        (message "pi: opened session in %s (perspective %s)" dir persp-name)
-        (list :ok t :persp persp-name :directory dir)))))
+    (pi-coding-agent//start-fresh-session dir name)
+    (let ((persp-name (safe-persp-name (get-current-persp))))
+      (message "pi: opened session in %s (perspective %s)" dir persp-name)
+      (list :ok t :persp persp-name :directory dir))))
 
 (defun pi-coding-agent/open-session-at-directory-bridge (b64)
   "Bridge entry invoked via `emacsclient -e' by the pi bridge extension.

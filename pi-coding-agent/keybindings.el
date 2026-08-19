@@ -18,6 +18,7 @@
 (spacemacs/set-leader-keys
   "aip" 'pi-coding-agent                    ; start or focus session
   "aii" 'pi-coding-agent/switch-session     ; list sessions: open or switch
+  "aiI" 'pi-coding-agent/switch-session-in-dir ; switch current dir's sessions
   "aiS" 'pi-coding-agent/open-named-session ; start named session
   "ail" 'pi-coding-agent/layout             ; apply window layout
   "ain" 'pi-coding-agent/start-new-session  ; new session (always asks dir)
@@ -37,6 +38,7 @@
   "p" 'pi-coding-agent-menu
   "P" 'pi-coding-agent/open-named-session
   "i" 'pi-coding-agent/switch-session
+  "I" 'pi-coding-agent/switch-session-in-dir
   "n" 'pi-coding-agent-new-session
   "r" 'pi-coding-agent-reload
   "t" 'pi-coding-agent-toggle
@@ -49,6 +51,7 @@
   "p" 'pi-coding-agent-menu
   "P" 'pi-coding-agent/open-named-session
   "i" 'pi-coding-agent/switch-session
+  "I" 'pi-coding-agent/switch-session-in-dir
   "c" 'pi-coding-agent-run-command
   "s" 'pi-coding-agent-skills-menu
   "t" 'pi-coding-agent-templates-menu
