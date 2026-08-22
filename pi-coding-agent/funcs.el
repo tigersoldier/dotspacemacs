@@ -1377,6 +1377,14 @@ the list restores it."
 ;; --timeout=20 caps the wait).  All failure paths return a JSON error
 ;; instead of signalling interactively.
 
+;; Declared special (no value: does not clobber the package
+;; defcustoms) so the let-bindings in the bridge entry bind
+;; dynamically.  The package may evaluate its own defvar/defcustom
+;; for these names lazily inside the bridge extent (first load), which
+;; is only legal while the binding is dynamic.
+(defvar pi-coding-agent-essential-grammar-action)
+(defvar pi-coding-agent--grammar-prompt-done)
+
 (defun pi-coding-agent//open-session-request (dir &optional name)
   "Open a fresh pi session at DIR as its own perspective and switch to it.
 
@@ -1408,12 +1416,24 @@ the launch fails (rolling back the fresh perspective)."
 B64 is a base64-encoded JSON request object `{directory, name}'.
 Executes the new-session flow non-interactively and returns a JSON
 string: `{\"ok\": true, \"persp\": \"...\", \"directory\": \"/abs\"}'
-or `{\"ok\": false, \"error\": \"...\"}'."
+or `{\"ok\": false, \"error\": \"...\"}'.
+Runs strictly prompt-free: dependency/grammar questions are
+suppressed for this eval (essential grammars degrade to a warning,
+the optional-grammar prompt is skipped) so the emacsclient call can
+never block on a minibuffer question.  Interactive sessions keep
+their normal prompting."
   (require 'json)
   (condition-case err
       (let* ((request (json-parse-string (base64-decode-string b64)))
              (dir (gethash "directory" request))
-             (name (gethash "name" request)))
+             (name (gethash "name" request))
+             ;; A server eval runs while the pi tool waits on
+             ;; emacsclient: never ask.  'warn keeps the session
+             ;; usable (chat buffer degrades to plain text) and defers
+             ;; installation to an interactive open / M-x
+             ;; pi-coding-agent-install-grammars.
+             (pi-coding-agent-essential-grammar-action 'warn)
+             (pi-coding-agent--grammar-prompt-done t))
         (when (eq name :null)
           (setq name nil))
         (json-encode (pi-coding-agent//open-session-request dir name)))

@@ -77,10 +77,20 @@ export default function (pi: ExtensionAPI) {
       }
       args.push("-e", lisp);
 
-      const result = await pi.exec("emacsclient", args, {
+      // The first call into a fresh Emacs can be slow (session setup,
+      // grammar checks, ...); a stale/unresponsive server can also
+      // fail once and then work.  Retry once before giving up.
+      let result = await pi.exec("emacsclient", args, {
         signal,
         timeout: 30000,
       });
+      if (result.code !== 0 && !signal?.aborted) {
+        await new Promise((r) => setTimeout(r, 3000));
+        result = await pi.exec("emacsclient", args, {
+          signal,
+          timeout: 30000,
+        });
+      }
 
       if (result.code !== 0) {
         const why = (result.stderr || result.stdout || "").trim();

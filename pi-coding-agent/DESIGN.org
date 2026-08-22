@@ -223,11 +223,14 @@ always serve).  Independent of =dotspacemacs-enable-server=.
 Non-interactive contract: a server eval runs while the pi tool waits
 on emacsclient, so bridge entry points must never prompt (no
 completing-read, no y-or-n-p).  All failure paths return a JSON error
-object instead of signalling.  One known prompt risk: the package's
-optional-grammar install prompt (y-or-n-p) can fire inside a
-bridge-triggered session setup; the extension's =--timeout=20= caps
-the wait and the user's answer resolves it.  Essential grammars
-auto-install silently.
+object instead of signalling.  The bridge entry binds the grammar
+prompt state for the duration of the eval: essential grammars degrade
+to ='warn= (deferred to an interactive open or M-x
+pi-coding-agent-install-grammars) and the optional-grammar question is
+skipped — so a bridge call can never block on a minibuffer question.
+Interactive session opens keep their normal prompting.  The extension
+retries the emacsclient call once (3s backoff) to ride over slow first
+setups or a transiently unresponsive server.
 
 Tool: =emacs_new_session= {=directory=, =name=?}.  Mirrors the
 =start-new-session= flow non-interactively: create+switch perspective
