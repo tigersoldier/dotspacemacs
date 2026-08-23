@@ -17,6 +17,17 @@ right edit pane takes the remaining width.  Must be between 0 and 1."
   :type 'number
   :group 'pi-coding-agent)
 
+(defcustom pi-coding-agent/workspace-root "~/work"
+  "Root directory for worktree and workspace sessions.
+
+`pi-coding-agent/new-worktree-session' (SPC a i w) creates worktrees
+directly under this directory; `pi-coding-agent/new-workspace-session'
+(SPC a i W) creates one subdirectory per workspace, holding the
+worktrees under its `repos' subdirectory.  Created on demand when it
+does not exist yet."
+  :type 'directory
+  :group 'pi-coding-agent)
+
 ;; Make sure Emacs can find the `pi' binary (also adds it to PATH for
 ;; pi's own shell tool calls). No-op if `pi' is already on exec-path.
 (pi-coding-agent//add-pi-to-exec-path)

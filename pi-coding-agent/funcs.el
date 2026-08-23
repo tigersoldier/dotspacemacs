@@ -1232,6 +1232,287 @@ sessions a fresh unnamed session is started directly."
        (pi-coding-agent//start-fresh-session dir name)))))
 
 ;; ---------------------------------------------------------------------
+;; Worktree and workspace sessions
+;;
+;; Two commands turn a git repository (or several) into a fresh
+;; worktree under `pi-coding-agent/workspace-root' (default ~/work)
+;; and start a new pi session — own perspective, pi window layout —
+;; in it:
+;;
+;; - `pi-coding-agent/new-worktree-session' (SPC a i w): one repo ->
+;;   one worktree at ROOT/SUFFIX, session named SUFFIX;
+;; - `pi-coding-agent/new-workspace-session' (SPC a i W): one or more
+;;   repos -> ROOT/NAME/repos/<repo> worktrees, session named NAME at
+;;   ROOT/NAME.
+;;
+;; Worktrees are created from the repo's mainline branch —
+;; origin/main, else origin/master, else the local main/master —
+;; fetched best-effort from origin first (timeout-capped, failures
+;; ignored).  A remote-tracking branch lands as a detached HEAD at
+;; its tip; a free local branch is checked out attached; otherwise
+;; the worktree is created detached at the branch tip.
+
+(defun pi-coding-agent//git-run (dir &rest args)
+  "Run `git -C DIR ARGS', sending combined output to the current buffer.
+
+Returns git's exit status (0 = success).  The `timeout' utility caps
+network-bound invocations (fetch) when available, so a hung remote
+cannot block the command; without `timeout' (non-GNU userland) git
+runs unprotected.  Terminal credential prompts are disabled — the
+child's stdin is /dev/null anyway, and GIT_TERMINAL_PROMPT=0 makes
+git fail instead of waiting."
+  (let* ((timeout (executable-find "timeout"))
+         (program (or timeout "git"))
+         (args (if timeout
+                   (append (list "30" "git" "-C" dir) args)
+                 (append (list "-C" dir) args)))
+         (process-environment (cons "GIT_TERMINAL_PROMPT=0"
+                                    process-environment)))
+    (apply #'process-file program nil t nil args)))
+
+(defun pi-coding-agent//git-output (dir &rest args)
+  "Run git in DIR with ARGS; return trimmed output, or nil on failure."
+  (with-temp-buffer
+    (when (zerop (apply #'pi-coding-agent//git-run dir args))
+      (string-trim (buffer-string)))))
+
+(defun pi-coding-agent//git-repo-root (dir)
+  "Return the top-level worktree directory of the git repo containing DIR.
+DIR may be any subdirectory.  Returns nil when DIR is not inside a
+git repository."
+  (when-let* ((root (pi-coding-agent//git-output
+                     (expand-file-name dir) "rev-parse" "--show-toplevel"))
+              ((file-directory-p root)))
+    root))
+
+(defun pi-coding-agent//git-branch-exists-p (repo branch)
+  "Return non-nil when REPO has BRANCH (local or remote-tracking)."
+  (or (pi-coding-agent//git-output repo "rev-parse" "--verify" "--quiet"
+                                   (format "refs/heads/%s" branch))
+      (pi-coding-agent//git-output repo "rev-parse" "--verify" "--quiet"
+                                   (format "refs/remotes/%s" branch))))
+
+(defun pi-coding-agent//git-default-branch (repo)
+  "Return REPO's mainline branch: origin/main, origin/master, local
+main, master, or the branch currently checked out — whichever exists
+first.  Remote-tracking branches win so worktrees start at the
+latest fetched state of the repo's mainline.  Nil when REPO has no
+branches at all."
+  (cl-find-if
+   (lambda (branch) (and (stringp branch) (not (string-empty-p branch))))
+   (list (and (pi-coding-agent//git-branch-exists-p repo "origin/main")
+              "origin/main")
+         (and (pi-coding-agent//git-branch-exists-p repo "origin/master")
+              "origin/master")
+         (and (pi-coding-agent//git-branch-exists-p repo "main") "main")
+         (and (pi-coding-agent//git-branch-exists-p repo "master") "master")
+         (pi-coding-agent//git-output repo "symbolic-ref" "--short" "HEAD"))))
+
+(defun pi-coding-agent//git-has-remote (repo remote)
+  "Return non-nil when REPO has a git remote named REMOTE."
+  (when-let* ((out (pi-coding-agent//git-output repo "remote"))
+              (remotes (split-string out "\n" t)))
+    (member remote remotes)))
+
+(defun pi-coding-agent//git-fetch-branch (repo branch)
+  "Best-effort fetch of BRANCH into REPO, capped by `timeout'.
+No-op when REPO has no origin remote.  Fetch failures are logged and
+ignored: the worktree falls back to the previously fetched state of
+origin/BRANCH."
+  (when (pi-coding-agent//git-has-remote repo "origin")
+    (let ((remote-branch (if (string-prefix-p "origin/" branch)
+                             (substring branch (length "origin/"))
+                           branch)))
+      (with-temp-buffer
+        (unless (zerop (pi-coding-agent//git-run repo "fetch" "origin" remote-branch))
+          (message "pi: fetch of %s from origin failed — worktree will use the previously fetched origin/%s"
+                   remote-branch remote-branch))))))
+
+(defun pi-coding-agent//workspace-root ()
+  "Return the absolute `pi-coding-agent/workspace-root', creating it."
+  (let ((root (expand-file-name pi-coding-agent/workspace-root)))
+    (make-directory root t)
+    root))
+
+(defun pi-coding-agent//read-git-repo (prompt &optional default-dir)
+  "Prompt with PROMPT for a directory inside a git repository.
+Re-prompts (with a message) while the chosen directory is not inside
+a git repository; an empty input falls back to DEFAULT-DIR when it is
+a repository.  Returns the repository's top-level directory."
+  (let (repo)
+    (cl-loop
+     for dir = (let ((d (read-directory-name prompt default-dir nil nil)))
+                 (if (string-empty-p (or d "")) (or default-dir d) d))
+     until (and (not (string-empty-p (or dir "")))
+                (setq repo (pi-coding-agent//git-repo-root dir)))
+     do (message "%s is not inside a git repository — choose again"
+                 (abbreviate-file-name (directory-file-name dir))))
+    repo))
+
+(defun pi-coding-agent//read-git-repos (prompt)
+  "Prompt with PROMPT for one or more git repositories; empty input finishes.
+Re-prompts (with a message) while a chosen directory is not inside a
+git repository.  Returns the repository top-level directories,
+deduplicated, in selection order."
+  (let (repos)
+    (cl-loop
+     for dir = (read-directory-name prompt nil nil nil)
+     while (not (string-empty-p (or dir "")))
+     for repo = (pi-coding-agent//git-repo-root dir)
+     do (if repo
+            (unless (member repo repos)
+              (push repo repos))
+          (message "%s is not inside a git repository — choose again"
+                   (abbreviate-file-name (directory-file-name dir)))))
+    (nreverse repos)))
+
+(defvar pi-coding-agent-worktree-suffix-history nil
+  "History of worktree suffixes entered by the user.")
+
+(defvar pi-coding-agent-workspace-name-history nil
+  "History of workspace names entered by the user.")
+
+(defun pi-coding-agent//read-worktree-suffix (root)
+  "Prompt for the worktree directory name under ROOT.
+Re-prompts while the input is empty or a file/directory of that name
+already exists under ROOT.  Returns the suffix, trimmed of
+surrounding whitespace and slashes."
+  (cl-loop
+   for input = (read-string "Worktree suffix: " nil
+                            'pi-coding-agent-worktree-suffix-history)
+   for suffix = (string-trim input "/ \t\n")
+   until (and (not (string-empty-p suffix))
+              (not (file-exists-p (expand-file-name suffix root))))
+   do (cond ((string-empty-p suffix)
+             (message "Worktree suffix must not be empty"))
+            (t
+             (message "A file or directory named %s already exists in %s — pick another suffix"
+                      suffix (abbreviate-file-name (directory-file-name root)))))
+   finally return suffix))
+
+(defun pi-coding-agent//create-worktree (repo target branch)
+  "Create a git worktree at TARGET from BRANCH of REPO.
+TARGET must not exist yet; its parent directories are created.
+Stale worktree registrations are pruned first, so a manually deleted
+worktree does not block re-creating it.  BRANCH is checked out when
+it can be — attached for a free local branch, detached at the branch
+tip for a remote-tracking branch — otherwise the worktree is created
+detached at BRANCH's tip.  Signals a `user-error' carrying git's
+message when the worktree cannot be created."
+  (make-directory (file-name-directory target) t)
+  (with-temp-buffer
+    (pi-coding-agent//git-run repo "worktree" "prune")
+    (unless (or (zerop (pi-coding-agent//git-run repo "worktree" "add" target branch))
+                (zerop (pi-coding-agent//git-run repo "worktree" "add" "--detach"
+                                                 target branch)))
+      (user-error "git worktree add failed for %s: %s"
+                  (abbreviate-file-name target)
+                  (string-trim (buffer-string))))))
+
+(defun pi-coding-agent//unique-name (base taken)
+  "Return BASE, or BASE-2/-3/… when BASE is already in TAKEN."
+  (let ((name base) (n 1))
+    (while (member name taken)
+      (setq n (1+ n)
+            name (format "%s-%d" base n)))
+    name))
+
+(defun pi-coding-agent//worktree-session (repo suffix)
+  "Create a worktree of REPO at ROOT/SUFFIX and start a pi session in it.
+The repo's mainline branch (see `pi-coding-agent//git-default-branch')
+is fetched best-effort and checked out — detached at the
+remote-tracking tip when the branch comes from origin, attached when
+it is a free local branch.  Then a fresh pi session named SUFFIX
+starts in the worktree: own perspective, pi window layout."
+  (let* ((root (pi-coding-agent//workspace-root))
+         (branch (or (pi-coding-agent//git-default-branch repo)
+                     (user-error "No mainline branch (origin/main, origin/master, main, master) found in %s"
+                                 (abbreviate-file-name repo))))
+         (target (expand-file-name suffix root)))
+    (pi-coding-agent//git-fetch-branch repo branch)
+    (pi-coding-agent//create-worktree repo target branch)
+    (pi-coding-agent//start-fresh-session target suffix)))
+
+(defun pi-coding-agent/new-worktree-session ()
+  "Create a fresh git worktree and start a new pi session in it.
+
+Prompts for a git repository — re-prompting until the chosen
+directory is inside one — then for a suffix naming the worktree
+directory under `pi-coding-agent/workspace-root' (default ~/work).
+The repo's mainline branch (origin/main, else origin/master, else
+the local main/master) is fetched best-effort and checked out in the
+worktree — detached at the remote-tracking tip when the branch comes
+from origin, attached when it is a free local branch.  The new pi
+session (own perspective, pi window layout) is named after the
+suffix."
+  (interactive)
+  (require 'pi-coding-agent)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (let* ((repo (pi-coding-agent//read-git-repo
+                "Git repository for the worktree: "
+                (pi-coding-agent//context-directory)))
+         (suffix (pi-coding-agent//read-worktree-suffix
+                  (pi-coding-agent//workspace-root))))
+    (pi-coding-agent//worktree-session repo suffix)))
+
+(defun pi-coding-agent//workspace-session (repos name)
+  "Create workspace ROOT/NAME with worktrees of REPOS, then a pi session.
+Creates ROOT/NAME/repos and one worktree per repository — its
+mainline branch (see `pi-coding-agent//git-default-branch'), fetched
+best-effort — named after the repository's directory (uniquified
+with -2/-3/… on collisions), detached at the remote-tracking tip when
+the branch comes from origin, attached when it is a free local
+branch.  Then starts a fresh pi session named NAME in the workspace
+directory: own perspective, pi window layout.  REPOS must be
+non-empty and NAME must not exist under ROOT yet."
+  (let* ((root (pi-coding-agent//workspace-root))
+         (ws-dir (expand-file-name name root))
+         (repos-dir (expand-file-name "repos" ws-dir))
+         taken)
+    (unless repos
+      (user-error "No repositories chosen"))
+    (when (file-exists-p ws-dir)
+      (user-error "Workspace %s already exists" ws-dir))
+    (make-directory repos-dir t)
+    (dolist (repo repos)
+      (let* ((subdir (pi-coding-agent//unique-name
+                      (file-name-nondirectory (directory-file-name repo))
+                      taken))
+             (branch (or (pi-coding-agent//git-default-branch repo)
+                         (user-error "No mainline branch (origin/main, origin/master, main, master) found in %s — workspace left incomplete"
+                                     (abbreviate-file-name repo)))))
+        (push subdir taken)
+        (pi-coding-agent//git-fetch-branch repo branch)
+        (pi-coding-agent//create-worktree repo
+                                          (expand-file-name subdir repos-dir)
+                                          branch)))
+    (pi-coding-agent//start-fresh-session ws-dir name)))
+
+(defun pi-coding-agent/new-workspace-session ()
+  "Create a fresh workspace with git worktrees and start a new pi session.
+
+Prompts for one or more git repositories — re-prompting until each
+chosen directory is inside one; empty input finishes the list — then
+for the workspace name.  Creates ROOT/NAME/repos (ROOT =
+`pi-coding-agent/workspace-root', default ~/work) with one worktree
+per repository (its mainline branch, fetched best-effort) named
+after the repository's directory.  The new pi session (own
+perspective, pi window layout) is named after the workspace."
+  (interactive)
+  (require 'pi-coding-agent)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (let* ((repos (pi-coding-agent//read-git-repos
+                 "Git repository for the workspace (empty when done): "))
+         (name (string-trim
+                (read-string "Workspace name: " nil
+                             'pi-coding-agent-workspace-name-history))))
+    (when (string-empty-p name)
+      (user-error "No workspace name given"))
+    (pi-coding-agent//workspace-session repos name)))
+
+;; ---------------------------------------------------------------------
 ;; Close session
 
 (defun pi-coding-agent//exclusive-buffers (persp)

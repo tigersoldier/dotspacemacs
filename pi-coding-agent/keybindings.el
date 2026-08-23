@@ -20,6 +20,8 @@
   "aii" 'pi-coding-agent/switch-session     ; list sessions: open or switch
   "aiI" 'pi-coding-agent/switch-session-in-dir ; switch current dir's sessions
   "aiS" 'pi-coding-agent/open-named-session ; start named session
+  "aiw" 'pi-coding-agent/new-worktree-session ; worktree from a repo + session
+  "aiW" 'pi-coding-agent/new-workspace-session ; workspace of worktrees + session
   "ail" 'pi-coding-agent/layout             ; apply window layout
   "ain" 'pi-coding-agent/start-new-session  ; new session (always asks dir)
   "aiN" 'pi-coding-agent-new-session        ; reset / new session (current dir)
