@@ -91,9 +91,12 @@ shows all buffers.
   The workspace is remembered, so reopening the session from the list
   restores its buffers.
 - =SPC a i w= (=pi-coding-agent/new-worktree-session=) — create a
-  fresh git worktree and start a pi session in it.  Prompts for a git
-  repository — re-prompting until the chosen directory is inside one
-  — then for a suffix naming the worktree directory under
+  fresh git worktree and start a pi session in it.  Picks a git
+  repository via helm (known repos from the context directory,
+  =projectile-known-projects=, and one level under each
+  =pi-coding-agent/repo-roots= entry are offered; any path can be
+  typed — re-prompting until it is inside a repository), then
+  prompts for a suffix naming the worktree directory under
   =pi-coding-agent/workspace-root= (default =~/work=).  The repo's
   mainline branch (=origin/main=, else =origin/master=, else the
   local =main=/=master=) is fetched best-effort (timeout-capped,
@@ -102,14 +105,16 @@ shows all buffers.
   attached when it is a free local branch.  The new pi session (own
   perspective, pi window layout) is named after the suffix.
 - =SPC a i W= (=pi-coding-agent/new-workspace-session=) — create a
-  workspace with git worktrees and start a pi session in it.  Prompts
-  for one or more git repositories — re-prompting until each chosen
-  directory is inside one; empty input finishes the list — then for
-  the workspace name.  Creates =«root»/«name»/repos= with one
-  worktree per repository (mainline branch as above, fetched
-  best-effort), named after the repository's directory (uniquified
-  with =-2=/-3=/… on collisions).  The new pi session (own
-  perspective, pi window layout) is named after the workspace.
+  workspace with git worktrees and start a pi session in it.  Picks
+  one or more git repositories via helm multi-select
+  (=pi-coding-agent/repo-mark-key=, default =C-;=, marks several;
+  =RET= confirms; same candidates as above, any path can be typed),
+  then prompts for the workspace name.  Creates
+  =«root»/«name»/repos= with one worktree per repository (mainline
+  branch as above, fetched best-effort), named after the
+  repository's directory (uniquified with =-2=/-3=/… on
+  collisions).  The new pi session (own perspective, pi window
+  layout) is named after the workspace.
 - =SPC a i N= — reset the current session (=pi-coding-agent-new-session=,
   moved from =n=).  The perspective is kept, the chat buffer is cleared,
   and the pi process switches to a new JSONL session file; the registry

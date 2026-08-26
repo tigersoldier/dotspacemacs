@@ -28,6 +28,27 @@ does not exist yet."
   :type 'directory
   :group 'pi-coding-agent)
 
+(defcustom pi-coding-agent/repo-roots '("~/code")
+  "Directories scanned one level deep for git repos.
+
+The repos found here — plus `projectile-known-projects' when
+projectile is loaded, plus the current context directory — are
+offered as candidates by the git repo pickers of
+`pi-coding-agent/new-worktree-session' (SPC a i w) and
+`pi-coding-agent/new-workspace-session' (SPC a i W).  Any directory
+can still be typed in directly; only the quick-pick candidates come
+from these roots."
+  :type '(repeat directory)
+  :group 'pi-coding-agent)
+
+(defcustom pi-coding-agent/repo-mark-key "C-;"
+  "Key that marks/unmarks a candidate in the pi repo pickers.
+`helm-map' binds C-SPC/C-@ to marking, which commonly conflicts with
+input method activation keys; the pickers unbind those and mark with
+this key instead (C-; is deliberately undefined in `helm-map')."
+  :type 'key-sequence
+  :group 'pi-coding-agent)
+
 ;; Make sure Emacs can find the `pi' binary (also adds it to PATH for
 ;; pi's own shell tool calls). No-op if `pi' is already on exec-path.
 (pi-coding-agent//add-pi-to-exec-path)
