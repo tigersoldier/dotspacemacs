@@ -358,6 +358,17 @@ buffers from other workspaces never leak into the session)."
   :type 'directory
   :group 'pi-coding-agent)
 
+(defun pi-coding-agent//session-root ()
+  "Return the pi session root, following PI_AGENT_DIR when set.
+pi resolves its agent directory from the PI_AGENT_DIR environment
+variable; sessions then live under <PI_AGENT_DIR>/sessions instead of
+the `pi-coding-agent/session-root' default, so the session scan follows
+the same environment."
+  (if-let* ((agent-dir (getenv "PI_AGENT_DIR"))
+            ((not (string-empty-p agent-dir))))
+      (expand-file-name "sessions" agent-dir)
+    (expand-file-name pi-coding-agent/session-root)))
+
 (defcustom pi-coding-agent/session-sort-opened 'alpha
   "Sort order for opened sessions in the switch-session list.
 `alpha' sorts by title, `chrono' by last modification (newest first)."
@@ -515,15 +526,38 @@ Session /name wins, then the first-message snippet, then \"New session\"."
           (and (stringp fm) (pi-coding-agent//truncate fm 40)))
         "New session")))
 
+(defun pi-coding-agent//registry-fill-session-file (persp-name plist)
+  "Return PLIST's :session-file, resolving and persisting it when nil.
+Fresh sessions register with :session-file nil because pi creates the
+JSONL file only on the first assistant response; once the perspective's
+pi chat buffer settles on a file, it is recorded in the registry entry
+and persisted, so the session can be listed as opened and switched to
+instead of re-opened.  Returns nil while still unresolvable."
+  (or (plist-get plist :session-file)
+      (when-let* ((persp (persp-get-by-name persp-name))
+                  ((perspective-p persp))
+                  (chat (pi-coding-agent//chat-buffer-in-persp persp))
+                  (f (plist-get (buffer-local-value 'pi-coding-agent--state chat)
+                                :session-file))
+                  ((stringp f))
+                  ((not (string-empty-p f))))
+        (setcdr (assoc persp-name pi-coding-agent//registry)
+                (plist-put plist :session-file f))
+        (pi-coding-agent//registry-save)
+        f)))
+
 (defun pi-coding-agent//sync-labels ()
   "Lazily sync perspective labels with their session titles.
 Sessions without a /name keep the first-message snippet; perspectives
-renamed by the user are skipped.  Called from the session list and
-before switching."
+renamed by the user are skipped.  Fresh sessions whose registry
+:session-file is still nil are resolved from their chat buffer state
+first, so the placeholder label updates to the first-message snippet.
+Called from the session list and before switching."
   (dolist (entry pi-coding-agent//registry)
     (let ((name (car entry)) (plist (cdr entry)))
+      (pi-coding-agent//registry-fill-session-file name plist)
       (when (and (not (plist-get plist :label-locked))
-                 (persp-p (persp-get-by-name name))
+                 (perspective-p (persp-get-by-name name))
                  (plist-get plist :session-file))
         (when-let* ((title (pi-coding-agent//desired-label-title
                             (plist-get plist :session-file)))
@@ -543,7 +577,8 @@ renames done via the /name slash command)."
       (let* ((persp-name (safe-persp-name (get-current-persp)))
              (entry (assoc persp-name pi-coding-agent//registry)))
         (when (and entry (not (plist-get (cdr entry) :label-locked))
-                   (plist-get (cdr entry) :session-file))
+                   (pi-coding-agent//registry-fill-session-file
+                    (car entry) (cdr entry)))
           (let ((new-name (pi-coding-agent//make-persp-label
                            (string-trim name)
                            (plist-get (cdr entry) :session-file))))
@@ -590,12 +625,18 @@ renames done via the /name slash command)."
 ;; put the file) and no-registry-entry paths are no-ops.
 
 (defun pi-coding-agent//persp-containing-buffer (buf)
-  "Return the first live perspective containing BUFFER, or nil."
+  "Return the first live perspective containing BUFFER, or nil.
+The nil (Default) pseudo-perspective must be excluded explicitly:
+`persp-get-by-name' returns nil for it, `persp-p' treats nil as a valid
+perspective, and `safe-persp-buffers' of nil is the full buffer list —
+with the nil-tolerant `persp-p' predicate, `Default' (first in
+`persp-names') would match every buffer and the function would always
+return nil.  The strict `perspective-p' predicate excludes it."
   (when (bound-and-true-p persp-mode)
     (when-let* ((name (cl-find-if
                        (lambda (name)
                          (let ((persp (persp-get-by-name name)))
-                           (and (persp-p persp)
+                           (and (perspective-p persp)
                                 (memq buf (safe-persp-buffers persp)))))
                        (persp-names))))
       (persp-get-by-name name))))
@@ -670,31 +711,40 @@ drift case handled by `pi-coding-agent//switch-to-session'."
         (puthash file (cons mtime meta) pi-coding-agent//session-cache)
         meta))))
 
+(defun pi-coding-agent//live-session-mappings ()
+  "Return ((PERSP-NAME . SESSION-FILE) ...) for live pi sessions.
+Each real perspective contributes its registry session file (fresh
+entries with :session-file nil are resolved from the chat buffer state
+and persisted) plus the settled session file of every pi chat buffer it
+displays.  This covers sessions started outside the registry flow
+(named sessions via `pi-coding-agent/open-named-session', plain
+`pi-coding-agent' in an unregistered perspective) and fresh sessions
+whose JSONL file pi creates only on the first assistant response.  A
+chat buffer shared by several perspectives of one directory (D6) maps
+to each perspective that displays it."
+  (when (bound-and-true-p persp-mode)
+    (let (pairs)
+      (dolist (name (persp-names))
+        (when-let* ((persp (persp-get-by-name name))
+                    ((persp-p persp)))
+          (when-let* ((entry (assoc name pi-coding-agent//registry))
+                      (f (pi-coding-agent//registry-fill-session-file
+                          name (cdr entry))))
+            (push (cons name f) pairs))
+          (dolist (buf (safe-persp-buffers persp))
+            (when (with-current-buffer buf
+                    (derived-mode-p 'pi-coding-agent-chat-mode))
+              (when-let* ((state (buffer-local-value
+                                  'pi-coding-agent--state buf))
+                          (f (plist-get state :session-file))
+                          ((stringp f))
+                          ((not (string-empty-p f))))
+                (push (cons name f) pairs))))))
+      (nreverse pairs))))
+
 (defun pi-coding-agent//opened-session-files ()
-  "Return session files currently opened in a live perspective.
-Uses the registry first; falls back to scanning perspective buffers for
-pi chat buffers (e.g. named sessions placed in a perspective outside
-the registry)."
-  (if (not (bound-and-true-p persp-mode))
-      nil
-    (let (files)
-    (dolist (name (persp-names))
-      (when-let* ((persp (persp-get-by-name name))
-                  ((persp-p persp)))
-        (let ((entry (assoc name pi-coding-agent//registry)))
-          (if entry
-              (when-let* ((f (plist-get (cdr entry) :session-file)))
-                (push f files))
-            (dolist (buf (safe-persp-buffers persp))
-              (when (with-current-buffer buf
-                      (derived-mode-p 'pi-coding-agent-chat-mode))
-                (when-let* ((state (buffer-local-value
-                                    'pi-coding-agent--state buf))
-                            (f (plist-get state :session-file))
-                            ((stringp f))
-                            ((not (string-empty-p f))))
-                  (push f files))))))))
-    files)))
+  "Return session files currently opened in a live perspective."
+  (delete-dups (mapcar #'cdr (pi-coding-agent//live-session-mappings))))
 
 (defun pi-coding-agent//session-entries-in-dir (dir)
   "Return session entries whose recorded cwd is DIR (exact match).
@@ -714,8 +764,11 @@ recorded cwds."
      (pi-coding-agent//session-entries))))
 
 (defun pi-coding-agent//session-entries ()
-  "Return plist entries for all sessions under `pi-coding-agent/session-root'."
-  (let* ((root (expand-file-name pi-coding-agent/session-root))
+  "Return plist entries for all sessions under the pi session root.
+The root is `pi-coding-agent/session-root', overridden by the
+PI_AGENT_DIR environment variable when set (pi then stores sessions
+under <PI_AGENT_DIR>/sessions)."
+  (let* ((root (pi-coding-agent//session-root))
          (files (and (file-directory-p root)
                      (directory-files-recursively root "\\.jsonl$")))
          (opened (pi-coding-agent//opened-session-files))
@@ -843,12 +896,16 @@ pre-sorted candidate order."
 ;; ---------------------------------------------------------------------
 ;; Opening, switching, reviving
 
+(defun pi-coding-agent//chat-buffers-in-persp (persp)
+  "Return the pi chat buffers of PERSP, in perspective buffer order."
+  (cl-remove-if-not (lambda (buf)
+                      (with-current-buffer buf
+                        (derived-mode-p 'pi-coding-agent-chat-mode)))
+                    (safe-persp-buffers persp)))
+
 (defun pi-coding-agent//chat-buffer-in-persp (persp)
-  "Return the pi chat buffer of PERSP, or nil."
-  (cl-find-if (lambda (buf)
-                (with-current-buffer buf
-                  (derived-mode-p 'pi-coding-agent-chat-mode)))
-              (safe-persp-buffers persp)))
+  "Return the first pi chat buffer of PERSP, or nil."
+  (car (pi-coding-agent//chat-buffers-in-persp persp)))
 
 (defun pi-coding-agent//revive-session (chat file &optional launch)
   "Ensure a live pi process for the session of FILE and resume FILE.
@@ -879,11 +936,22 @@ process was busy, or (via the layout's buffer fallback) the perspective
 may even display another directory's chat buffer.  Besides reviving dead
 processes, re-resume FILE whenever the loaded session file differs from
 it, and re-assert the layout when the perspective shows a chat buffer of
-a different directory, so switching always surfaces the selected session."
+a different directory, so switching always surfaces the selected session.
+When the perspective displays several pi chat buffers (e.g. a named
+session started inside a registered perspective), the one whose loaded
+session file already matches FILE is preferred, so the switch does not
+re-resume a different session into the wrong process."
   (persp-switch persp-name)
   (when-let* ((persp (persp-get-by-name persp-name))
               ((persp-p persp)))
-    (let* ((chat (pi-coding-agent//chat-buffer-in-persp persp))
+    (let* ((chat (or (cl-find-if
+                      (lambda (buf)
+                        (equal (plist-get (buffer-local-value
+                                           'pi-coding-agent--state buf)
+                                          :session-file)
+                               file))
+                      (pi-coding-agent//chat-buffers-in-persp persp))
+                     (pi-coding-agent//chat-buffer-in-persp persp)))
            (file-dir (pi-coding-agent//session-file-cwd file))
            (chat-dir (and chat
                           (with-current-buffer chat
@@ -944,7 +1012,8 @@ Only real perspectives count; the default perspective has no session."
     (let* ((persp (get-current-persp))
            (name (safe-persp-name persp))
            (entry (assoc name pi-coding-agent//registry)))
-      (or (and entry (plist-get (cdr entry) :session-file))
+      (or (and entry (pi-coding-agent//registry-fill-session-file
+                      name (cdr entry)))
           (when (and persp (perspective-p persp))
             (when-let* ((chat (pi-coding-agent//chat-buffer-in-persp persp)))
               (plist-get (buffer-local-value 'pi-coding-agent--state chat)
@@ -978,7 +1047,7 @@ Only real perspectives count; the default perspective has no session."
        ;; Roll back the perspective on failure: kill the pi process and
        ;; any session buffers created before the failure, then the
        ;; perspective itself.
-       (when (persp-p (persp-get-by-name persp-name))
+       (when (perspective-p (persp-get-by-name persp-name))
          (let ((persp (persp-get-by-name persp-name)))
            (dolist (buf (pi-coding-agent//exclusive-buffers persp))
              (when (buffer-live-p buf)
@@ -991,9 +1060,14 @@ Only real perspectives count; the default perspective has no session."
                    (error-message-string err))))))
 
 (defun pi-coding-agent//open-or-switch (entry)
-  "Open closed session ENTRY, or switch to it when already opened."
+  "Open closed session ENTRY, or switch to it when already opened.
+A live perspective whose chat buffer has settled on the session's file
+counts as opened even when its registry entry is stale or absent (e.g.
+named sessions started via `pi-coding-agent/open-named-session' inside
+a registered perspective)."
   (let* ((file (plist-get entry :file))
-         (persp-name (pi-coding-agent//registry-persp-name-for-file file)))
+         (persp-name (or (pi-coding-agent//registry-persp-name-for-file file)
+                         (car (rassoc file (pi-coding-agent//live-session-mappings))))))
     (if persp-name
         (pi-coding-agent//switch-to-session persp-name file)
       (pi-coding-agent//open-session entry))))
@@ -1187,7 +1261,7 @@ name for a parallel session" dir))
     (let ((chat (condition-case err
                     (pi-coding-agent--setup-session dir name)
                   (error
-                   (when (persp-p (persp-get-by-name persp-name))
+                   (when (perspective-p (persp-get-by-name persp-name))
                      (persp-kill (list persp-name) t))
                    (user-error "pi: failed to start session: %s"
                                (error-message-string err))))))
@@ -1245,12 +1319,20 @@ sessions a fresh unnamed session is started directly."
 ;;   repos -> ROOT/NAME/repos/<repo> worktrees, session named NAME at
 ;;   ROOT/NAME.
 ;;
-;; Worktrees are created from the repo's mainline branch —
-;; origin/main, else origin/master, else the local main/master —
-;; fetched best-effort from origin first (timeout-capped, failures
-;; ignored).  A remote-tracking branch lands as a detached HEAD at
-;; its tip; a free local branch is checked out attached; otherwise
-;; the worktree is created detached at the branch tip.
+;; Repos are picked with helm (single-select, or multi-select with
+;; `pi-coding-agent/repo-mark-key' marking for the workspace command;
+;; `completing-read'/`completing-read-multiple' without helm).  The
+;; pickers unbind helm's C-SPC/C-@ marking keys, which commonly
+;; conflict with input method activation.  Candidates come from the
+;; context directory, `projectile-known-projects', and one level
+;; under each `pi-coding-agent/repo-roots' entry; any path can be
+;; typed instead.  Worktrees are created from the repo's mainline
+;; branch — origin/main, else origin/master, else the local
+;; main/master — fetched best-effort from origin first
+;; (timeout-capped, failures ignored).  A remote-tracking branch
+;; lands as a detached HEAD at its tip; a free local branch is
+;; checked out attached; otherwise the worktree is created detached
+;; at the branch tip.
 
 (defun pi-coding-agent//git-run (dir &rest args)
   "Run `git -C DIR ARGS', sending combined output to the current buffer.
@@ -1334,15 +1416,120 @@ origin/BRANCH."
     (make-directory root t)
     root))
 
+(defvar pi-coding-agent-repo-history nil
+  "History of repo paths typed into the repo pickers.")
+
+(defun pi-coding-agent//git-repo-p (dir)
+  "Return non-nil when DIR looks like a git repo root (has a .git entry).
+Cheap check used for candidate listing; the pickers validate the
+final selection with `pi-coding-agent//git-repo-root'."
+  (file-exists-p (expand-file-name ".git" dir)))
+
+(defun pi-coding-agent//repo-candidates ()
+  "Git repo candidates for the repo pickers (abbreviated paths).
+Sources, in order: the current context directory,
+`projectile-known-projects' (when projectile is loaded), and one
+directory level under each entry of `pi-coding-agent/repo-roots'.
+Deduplicated; each candidate must have a .git entry."
+  (let ((seen (make-hash-table :test #'equal))
+        candidates)
+    (cl-labels ((add (dir)
+                 (let ((dir (expand-file-name dir)))
+                   (when (and (file-directory-p dir)
+                              (pi-coding-agent//git-repo-p dir)
+                              (not (gethash dir seen)))
+                     (puthash dir t seen)
+                     (push (abbreviate-file-name (directory-file-name dir))
+                           candidates)))))
+      (add (pi-coding-agent//context-directory))
+      (dolist (dir (and (boundp 'projectile-known-projects)
+                        (listp projectile-known-projects)
+                        projectile-known-projects))
+        (add dir))
+      (dolist (root pi-coding-agent/repo-roots)
+        (let ((root (expand-file-name root)))
+          (when (file-directory-p root)
+            (dolist (dir (directory-files root t "^[^.]"))
+              (add dir)))))
+      (nreverse candidates))))
+
+(defun pi-coding-agent//helm-repo-map ()
+  "Keymap for the pi repo pickers: `helm-map' minus C-SPC marking.
+C-SPC/C-@ (and their marking) are removed so the picker does not
+shadow input method activation keys; marking uses
+`pi-coding-agent/repo-mark-key' (default C-;) instead."
+  (let ((map (make-sparse-keymap))
+        (mark-key (or (bound-and-true-p pi-coding-agent/repo-mark-key)
+                      "C-;")))
+    (set-keymap-parent map helm-map)
+    (define-key map (kbd "C-SPC") nil)
+    (define-key map (kbd "C-@") nil)
+    (define-key map (kbd mark-key) #'helm-toggle-visible-mark-forward)
+    map))
+
+(defun pi-coding-agent//helm-pick-repos (candidates prompt)
+  "Helm multi-select of repo CANDIDATES with PROMPT.
+`pi-coding-agent/repo-mark-key' (C-; by default) marks several
+candidates, RET confirms.  Returns the selected strings: the marked
+candidates, or the single candidate at point; typed input is
+returned verbatim."
+  (helm :sources (helm-build-sync-source "Git repositories"
+                   :candidates candidates
+                   :must-match nil
+                   :keymap (pi-coding-agent//helm-repo-map)
+                   :action (lambda (_candidate)
+                             (helm-marked-candidates)))
+        :buffer "*helm pi git repos*"
+        :marked-candidates t
+        :prompt prompt))
+
+(defun pi-coding-agent//helm-pick-repo (candidates prompt)
+  "Helm single-select of repo CANDIDATES with PROMPT.
+Returns the selected candidate string, or the typed input."
+  (helm :sources (helm-build-sync-source "Git repository"
+                   :candidates candidates
+                   :must-match nil
+                   :keymap (pi-coding-agent//helm-repo-map)
+                   :action 'identity)
+        :buffer "*helm pi git repo*"
+        :prompt prompt))
+
+(defun pi-coding-agent//pick-repos (prompt)
+  "Pick one or more git repos with PROMPT: helm multi-select.
+Without helm, falls back to `completing-read-multiple' (candidates
+separated by commas).  Returns a list of picked strings; nil when
+nothing was picked — with helm this means the user cancelled (C-g)."
+  (let* ((cands (pi-coding-agent//repo-candidates))
+         (picks (if (featurep 'helm)
+                    (pi-coding-agent//helm-pick-repos cands prompt)
+                  (completing-read-multiple
+                   prompt cands nil nil nil 'pi-coding-agent-repo-history))))
+    (cl-remove-if (lambda (s) (string-empty-p (or s ""))) picks)))
+
+(defun pi-coding-agent//pick-repo (prompt)
+  "Pick a git repo with PROMPT: helm single-select.
+Without helm, falls back to `completing-read'.  Returns the picked
+string; nil when the user cancelled (helm) or input was empty
+(completing-read returns \"\")."
+  (let* ((cands (pi-coding-agent//repo-candidates))
+         (pick (if (featurep 'helm)
+                   (pi-coding-agent//helm-pick-repo cands prompt)
+                 (completing-read prompt cands nil nil nil
+                                  'pi-coding-agent-repo-history))))
+    pick))
+
 (defun pi-coding-agent//read-git-repo (prompt &optional default-dir)
-  "Prompt with PROMPT for a directory inside a git repository.
-Re-prompts (with a message) while the chosen directory is not inside
-a git repository; an empty input falls back to DEFAULT-DIR when it is
-a repository.  Returns the repository's top-level directory."
+  "Pick a git repository with PROMPT, re-prompting until it is valid.
+Known repos are offered as candidates (see
+`pi-coding-agent//repo-candidates'); any directory can be typed
+instead.  Empty input falls back to DEFAULT-DIR when it is a
+repository.  Returns the repository's top-level directory."
   (let (repo)
     (cl-loop
-     for dir = (let ((d (read-directory-name prompt default-dir nil nil)))
-                 (if (string-empty-p (or d "")) (or default-dir d) d))
+     for pick = (pi-coding-agent//pick-repo prompt)
+     for dir = (cond ((null pick) (keyboard-quit)) ; helm C-g: abort quietly
+                     ((string-empty-p pick) (or default-dir ""))
+                     (t pick))
      until (and (not (string-empty-p (or dir "")))
                 (setq repo (pi-coding-agent//git-repo-root dir)))
      do (message "%s is not inside a git repository — choose again"
@@ -1350,21 +1537,34 @@ a repository.  Returns the repository's top-level directory."
     repo))
 
 (defun pi-coding-agent//read-git-repos (prompt)
-  "Prompt with PROMPT for one or more git repositories; empty input finishes.
-Re-prompts (with a message) while a chosen directory is not inside a
-git repository.  Returns the repository top-level directories,
-deduplicated, in selection order."
-  (let (repos)
+  "Pick one or more git repositories with PROMPT.
+Uses helm multi-select (`pi-coding-agent/repo-mark-key' marks
+candidates, RET confirms; known repos are offered, see
+`pi-coding-agent//repo-candidates') or `completing-read-multiple'
+without helm.  The whole batch is re-offered when any picked entry
+is not inside a git repository.  Returns the repository top-level
+directories, deduplicated, in selection order."
+  (let (picks roots)
     (cl-loop
-     for dir = (read-directory-name prompt nil nil nil)
-     while (not (string-empty-p (or dir "")))
-     for repo = (pi-coding-agent//git-repo-root dir)
-     do (if repo
-            (unless (member repo repos)
-              (push repo repos))
-          (message "%s is not inside a git repository — choose again"
-                   (abbreviate-file-name (directory-file-name dir)))))
-    (nreverse repos)))
+     do (setq picks (pi-coding-agent//pick-repos prompt))
+     while (and picks
+                (cl-some #'null
+                         (setq roots (mapcar #'pi-coding-agent//git-repo-root
+                                             picks))))
+     do (message "Not a git repository: %s — choose again"
+                 (mapconcat #'identity
+                            (cl-loop for pick in picks for root in roots
+                                     unless root collect
+                                     (abbreviate-file-name
+                                      (directory-file-name pick)))
+                            ", ")))
+    ;; With helm, nil means the user cancelled (C-g); abort quietly
+    ;; instead of reporting "no repositories".  The completing-read
+    ;; fallback returns nil only on empty input, which is a genuine
+    ;; "no repos" result.
+    (when (and (null picks) (featurep 'helm))
+      (keyboard-quit))
+    (cl-remove-duplicates roots :test #'equal)))
 
 (defvar pi-coding-agent-worktree-suffix-history nil
   "History of worktree suffixes entered by the user.")
@@ -1504,7 +1704,8 @@ perspective, pi window layout) is named after the workspace."
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (let* ((repos (pi-coding-agent//read-git-repos
-                 "Git repository for the workspace (empty when done): "))
+                 (format "Git repositories for the workspace (%s marks, RET confirms): "
+                         pi-coding-agent/repo-mark-key)))
          (name (string-trim
                 (read-string "Workspace name: " nil
                              'pi-coding-agent-workspace-name-history))))

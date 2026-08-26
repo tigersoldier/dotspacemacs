@@ -82,12 +82,6 @@ terminal modes keep `default-directory' in sync with the shell."
         dir)
     (buffer-local-value 'default-directory buffer)))
 
-(defun my-persp//save-filter (buffer)
-  "Save filter: skip `*'-prefixed buffers except terminals.
-Terminals get their own specs via `my-persp//save-terminal'."
-  (and (string-prefix-p "*" (buffer-name buffer))
-       (not (my-persp//terminal-buffer-p buffer))))
-
 (defun my-persp//save-terminal (buffer)
   "Save terminal BUFFER as (def-buffer-<kind> NAME CWD)."
   (when-let* ((kind (my-persp//terminal-kind buffer))
@@ -136,12 +130,22 @@ Terminals get their own specs via `my-persp//save-terminal'."
   ;; time `*persp-hash*' is still nil and persp-names would error.
   (add-hook 'persp-created-functions #'my-persp//inject-common-buffers)
   (add-hook 'persp-mode-hook #'my-persp//inject-common-buffers-all)
-  ;; Terminal save/load.  The default save list skips all `*'-prefixed
-  ;; buffers (which would swallow *vterm*/*eshell*); replace the skip
-  ;; filter with a terminal-aware one and append the terminal spec
-  ;; function after the file/dired defaults.
-  (setq persp-filter-save-buffers-functions (list #'my-persp//save-filter))
-  (add-to-list 'persp-save-buffer-functions #'my-persp//save-terminal t)
+  ;; Terminal save/load.  persp's default save dispatch skips all
+  ;; `*'-prefixed buffers (via `persp-filter-save-buffers-functions')
+  ;; and then falls through to the generic `(def-buffer NAME FILE MODE)'
+  ;; handler, which would swallow terminals (saved without their cwd and
+  ;; restored as empty buffers).  The terminal handler must therefore
+  ;; run at the FRONT of the save dispatch, before the `*'-skip filter
+  ;; and the file/dired defaults, so terminals are saved as
+  ;; (def-buffer-<kind> NAME CWD) specs and relaunched in their saved
+  ;; working directory on restore.  The stock filter is left in place —
+  ;; it still skips non-terminal `*'-prefixed buffers.  `add-to-list'
+  ;; alone would not move the symbol to the front when an earlier
+  ;; registration already placed it elsewhere, so the position is
+  ;; enforced explicitly.
+  (setq persp-save-buffer-functions
+        (cons #'my-persp//save-terminal
+              (delq #'my-persp//save-terminal persp-save-buffer-functions)))
   (add-to-list 'persp-load-buffer-functions #'my-persp//load-terminal))
 
 ;;; funcs.el ends here
