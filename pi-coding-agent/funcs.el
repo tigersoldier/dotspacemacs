@@ -387,6 +387,14 @@ default); `alpha' sorts by title (lexical)."
                  (const :tag "Alphabetical" alpha))
   :group 'pi-coding-agent)
 
+(defcustom pi-coding-agent/ssh-config-file "~/.ssh/config"
+  "SSH configuration file scanned for remote-host candidates.
+`pi-coding-agent/start-remote-session' reads the plain (non-wildcard)
+`Host' entries from this file — following `Include' directives — and
+turns each into a TRAMP directory (/ssh:HOST:~)."
+  :type 'file
+  :group 'pi-coding-agent)
+
 (defvar pi-coding-agent//registry nil
   "Alist mapping perspective name to a session-entry plist.
 Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
@@ -774,44 +782,80 @@ closed."
 (defun pi-coding-agent//normalized-dir (dir)
   "Return DIR expanded (route-preserving) with a trailing slash.
 Matches the normalization `pi-coding-agent--session-file-cwd-or-error'
-applies to recorded cwds."
-  (file-name-as-directory
-   (pi-coding-agent--route-preserving-expand-file-name dir)))
+applies to recorded cwds.  Remote (TRAMP) DIRs are additionally
+canonicalized through TRAMP (`~' home components expanded), so one
+remote directory compares equal regardless of `~' spelling."
+  (if (pi-coding-agent--remote-prefix-for-path dir)
+      (file-name-as-directory (expand-file-name dir))
+    (file-name-as-directory
+     (pi-coding-agent--route-preserving-expand-file-name dir))))
 
-(defun pi-coding-agent//session-entries-in-dir (dir)
+(defun pi-coding-agent//entry-cwd (file cwd)
+  "Return session entry CWD anchored for its session FILE.
+Local files keep CWD as-is; remote (TRAMP) FILES anchor the
+process-local CWD (as recorded in the session header) with the file's
+remote prefix, so directory comparisons via
+`pi-coding-agent//normalized-dir' work across the remote/local
+boundary."
+  (if (and cwd (pi-coding-agent--remote-prefix-for-path file))
+      (pi-coding-agent--emacs-directory cwd file)
+    cwd))
+
+(defun pi-coding-agent//session-entries-in-dir (dir &optional root)
   "Return session entries whose recorded cwd is DIR (exact match).
 DIR is compared expanded and with a trailing slash, matching the
 normalization `pi-coding-agent--session-file-cwd-or-error' applies to
-recorded cwds."
+recorded cwds.  ROOT overrides the scanned session root (see
+`pi-coding-agent//session-entries')."
   (let ((dir (pi-coding-agent//normalized-dir dir)))
     (cl-remove-if-not
      (lambda (entry)
        (let ((cwd (plist-get entry :cwd)))
          (and (stringp cwd)
               (equal (pi-coding-agent//normalized-dir cwd) dir))))
-     (pi-coding-agent//session-entries))))
+     (pi-coding-agent//session-entries root))))
 
-(defun pi-coding-agent//session-entries ()
-  "Return plist entries for all sessions under the pi session root.
-The root is `pi-coding-agent/session-root', overridden by the
-PI_AGENT_DIR environment variable when set (pi then stores sessions
-under <PI_AGENT_DIR>/sessions).  Each entry carries an :opened flag
-(non-nil when the file is loaded by an active pi chat buffer — see
-`pi-coding-agent//opened-session-files')."
-  (let* ((root (pi-coding-agent//session-root))
-         (files (and (file-directory-p root)
-                     (directory-files-recursively root "\\.jsonl$")))
+(defun pi-coding-agent//file-in-opened-p (file opened)
+  "Return non-nil when FILE is one of the opened session files OPENED.
+Remote files are compared in TRAMP-canonical form (`~' home
+components expanded), so scan results and live-session state can
+differ in `~' spelling and still match; local files are compared
+plainly."
+  (if (pi-coding-agent--remote-prefix-for-path file)
+      (let ((canon (expand-file-name file)))
+        (cl-some (lambda (f) (equal (expand-file-name f) canon)) opened))
+    (member file opened)))
+
+(defun pi-coding-agent//session-entries (&optional root)
+  "Return plist entries for all sessions under ROOT.
+ROOT defaults to the pi session root: `pi-coding-agent/session-root',
+overridden by the PI_AGENT_DIR environment variable when set (pi then
+stores sessions under <PI_AGENT_DIR>/sessions).  A remote (TRAMP) ROOT
+is scanned best-effort: connection failures yield an empty list
+instead of signalling, so an unreachable host degrades to no closed
+sessions rather than blocking the caller.  Each entry carries an
+:opened flag (non-nil when the file is loaded by an active pi chat
+buffer — see `pi-coding-agent//opened-session-files')."
+  (let* ((root (or root (pi-coding-agent//session-root)))
+         (remote-p (pi-coding-agent--remote-prefix-for-path root))
+         (files (if remote-p
+                    (condition-case nil
+                        (and (file-directory-p root)
+                             (directory-files-recursively root "\\.jsonl$"))
+                      (error nil))
+                  (and (file-directory-p root)
+                       (directory-files-recursively root "\\.jsonl$"))))
          (opened (pi-coding-agent//opened-session-files))
          entries)
     (dolist (file files)
       (when-let* ((meta (pi-coding-agent//session-metadata-cached file)))
         (push (list :file file
-                    :cwd (plist-get meta :cwd)
+                    :cwd (pi-coding-agent//entry-cwd file (plist-get meta :cwd))
                     :first-message (plist-get meta :first-message)
                     :name (plist-get meta :session-name)
                     :count (plist-get meta :message-count)
                     :modified (plist-get meta :modified-time)
-                    :opened (member file opened))
+                    :opened (pi-coding-agent//file-in-opened-p file opened))
               entries)))
     ;; Drop cache entries for deleted files.
     (maphash (lambda (file _)
@@ -847,7 +891,7 @@ cwds."
     t))
 
 (defun pi-coding-agent//session-targets (&optional dir include-closed
-                                        exclude-current)
+                                        exclude-current root)
   "Return (LIVE . CLOSED) candidate alists for the session pickers.
 
 LIVE lists the active pi chat buffers — the ground truth for live
@@ -868,8 +912,8 @@ Each alist maps a candidate string to its target; duplicate labels
 \(`pi-coding-agent//disambiguated-label').  LIVE always precedes
 CLOSED, and the pickers keep that order (see
 `pi-coding-agent//pick-session')."
-  (let* ((entries (if dir (pi-coding-agent//session-entries-in-dir dir)
-                    (pi-coding-agent//session-entries)))
+  (let* ((entries (if dir (pi-coding-agent//session-entries-in-dir dir root)
+                    (pi-coding-agent//session-entries root)))
          (by-file (make-hash-table :test 'equal))
          (seen (make-hash-table :test 'equal))
          (current-persp (get-current-persp))
@@ -1519,11 +1563,13 @@ unnamed session."
                         (abbreviate-file-name (directory-file-name dir)))))))
     (and (not (string-empty-p name)) name)))
 
-(defun pi-coding-agent//new-session-choice (dir)
+(defun pi-coding-agent//new-session-choice (dir &optional root)
   "Choose between DIR's existing sessions and a fresh session.
 Returns (existing . TARGET) when an existing session was chosen,
 (new . NAME) when a fresh session named NAME (nil = unnamed) should
-be started.
+be started.  ROOT overrides the scanned session root (see
+`pi-coding-agent//session-entries'); it is how the remote-session flow
+scans the chosen host's own session directory.
 
 With no existing sessions (none live, none closed) a fresh session
 is chosen directly; when DIR already runs a live unnamed session
@@ -1534,7 +1580,7 @@ through the unified session picker — live (●) first, then closed
 title — plus the \"✚ New session\" candidate and free-form input
 (any non-matching name) both starting a fresh named session; an
 empty input starts an unnamed session."
-  (let* ((groups (pi-coding-agent//session-targets dir t nil))
+  (let* ((groups (pi-coding-agent//session-targets dir t nil root))
          (live (pi-coding-agent//sort-targets
                 (car groups) pi-coding-agent/session-sort-opened))
          (closed (pi-coding-agent//sort-targets
@@ -1626,6 +1672,197 @@ sessions a fresh unnamed session is started directly."
                                    default-dir default-dir t))
          (dir (pi-coding-agent--route-preserving-expand-file-name dir))
          (choice (pi-coding-agent//new-session-choice dir)))
+    (pcase choice
+      (`(existing . ,target)
+       (pi-coding-agent//open-or-switch-target target))
+      (`(new . ,name)
+       (pi-coding-agent//start-fresh-session dir name)))))
+
+;; ---------------------------------------------------------------------
+;; Remote sessions (TRAMP)
+;;
+;; `pi-coding-agent/start-remote-session' (SPC a i m) starts a session
+;; on a remote host the way `pi-coding-agent/start-new-session' does
+;; locally: choose a host from the ssh config (a single configured
+;; host is used without prompting), choose the remote directory
+;; (default: the host's home), then the normal new-session flow —
+;; existing sessions of that directory first (the closed list is
+;; scanned on the remote host), a fresh session otherwise.
+;;
+;; The pi process itself runs on the remote host through TRAMP: the
+;; package's `pi-coding-agent--start-process' detects the remote
+;; prefix in the session directory and starts pi over ssh
+;; (`make-process' with :file-handler and a ready-marker protocol),
+;; so the remote host needs the pi CLI installed and reachable via
+;; `ssh HOST'.
+
+(defun pi-coding-agent//ssh-config-include-files (patterns file)
+  "Return readable files named by ssh config `Include' PATTERNS.
+PATTERNS is the raw value of an `Include' directive in FILE.
+`~' references and glob(7) wildcards are expanded; relative paths
+resolve against `~/.ssh' (a user config), per ssh_config(5).
+Unreadable or missing files are skipped."
+  (let ((base (if (string-prefix-p "/etc/" (expand-file-name file))
+                  "/etc/ssh"
+                "~/.ssh"))
+        files)
+    (dolist (pat (split-string patterns "[[:space:]]+" t))
+      (let* ((pat (expand-file-name pat base))
+             (matches (if (string-match-p "[*?\\[]" pat)
+                          (file-expand-wildcards pat t)
+                        (list pat))))
+        (dolist (m matches)
+          (when (file-readable-p m)
+            (push m files)))))
+    (nreverse files)))
+
+(defun pi-coding-agent//ssh-config-parse (&optional files depth)
+  "Parse ssh config FILES, returning (HOSTS . INFO).
+FILES is a string or list of strings; nil means
+`pi-coding-agent/ssh-config-file'.  HOSTS lists the plain host names
+in config order — wildcard and negation patterns (containing `*',
+`?', `[' or `!') and `Match' blocks are skipped — deduplicated.
+INFO is an alist mapping each host to (HOSTNAME . USER) taken from
+its block; option lines attach to every plain pattern of the
+current `Host' line.  `Include' directives are followed recursively
+(depth-capped)."
+  (let* ((files (cond ((null files)
+                       (list (expand-file-name pi-coding-agent/ssh-config-file)))
+                      ((stringp files) (list files))
+                      (t files)))
+         (hosts '())
+         (info '()))
+    (dolist (file files)
+      (when (and (< (or depth 0) 10)
+                 (file-readable-p file))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (let ((cur nil)        ; plain patterns of the current Host line
+                (in-match nil))  ; inside a `Match' block: skip Hosts
+            (goto-char (point-min))
+            (while (re-search-forward
+                    "^[[:space:]]*\\([A-Za-z][A-Za-z0-9-]*\\)[[:space:]]+\\(.*\\)$"
+                    nil t)
+              (let* ((kw (downcase (match-string 1)))
+                     (rest (string-trim (match-string 2))))
+                (pcase kw
+                  ("match"
+                   (setq in-match t cur nil))
+                  ("host"
+                   (setq in-match nil cur nil)
+                   (dolist (pat (split-string rest "[[:space:]]+" t))
+                     (when (string-match-p "\\`[A-Za-z0-9._-]+\\'" pat)
+                       (push pat hosts)
+                       (push pat cur))))
+                  ("include"
+                   (unless in-match
+                     (let ((sub (pi-coding-agent//ssh-config-parse
+                                 (pi-coding-agent//ssh-config-include-files
+                                  rest file)
+                                 (1+ (or depth 0)))))
+                       ;; hosts/info are kept reversed; the include's
+                       ;; result must be spliced BEFORE the current
+                       ;; prefix so the final nreverse restores config
+                       ;; order.
+                       (setq hosts (nconc (nreverse (car sub)) hosts)
+                             info (nconc (nreverse (cdr sub)) info)))))
+                  ((or "hostname" "user")
+                   (when (and cur (not in-match))
+                     (dolist (h cur)
+                       (let ((cell (assoc h info)))
+                         (unless cell
+                           (setq cell (cons h (cons nil nil)))
+                           (push cell info))
+                         (if (string= kw "hostname")
+                             (setcar (cdr cell) rest)
+                           (setcdr (cdr cell) rest))))))
+                  (_
+                   ;; Ordinary option (IdentityFile, Port, ...): keep
+                   ;; CUR so later HostName/User lines still attach.
+                   nil))))))))
+    (cons (delete-dups (nreverse hosts))
+          (delete-dups info))))
+
+(defun pi-coding-agent//ssh-config-hosts (&optional file)
+  "Return the host aliases from the ssh config file.
+Only plain `Host' patterns whose block declares a `HostName' field
+(an alias pointing at the real DNS name) are returned; entries that
+are already direct hostnames, or that only set options like `User'
+or `IdentityFile', are filtered out.  See
+`pi-coding-agent//ssh-config-parse' for the extraction rules."
+  (let* ((parsed (pi-coding-agent//ssh-config-parse file))
+         (info (cdr parsed)))
+    (cl-remove-if-not
+     (lambda (host) (car (cdr (assoc host info))))
+     (car parsed))))
+
+(defun pi-coding-agent//ssh-config-host-info (host &optional file)
+  "Return (HOSTNAME . USER) for HOST from the ssh config, or nil."
+  (cdr (assoc host (cdr (pi-coding-agent//ssh-config-parse file)))))
+
+(defun pi-coding-agent//read-remote-host (hosts)
+  "Prompt for one of HOSTS, annotating each with its ssh config info."
+  (let* ((info (cdr (pi-coding-agent//ssh-config-parse)))
+         ;; `completion-extra-properties' is read by the completion UI
+         ;; (vertico, Emacs's own *Completions*) during the minibuffer
+         ;; session, which runs inside this dynamic extent.
+         (completion-extra-properties
+          (list :annotation-function
+                (lambda (cand)
+                  (when-let* ((cell (assoc cand info)))
+                    (let ((hostname (car (cdr cell)))
+                          (user (cdr (cdr cell))))
+                      (concat "  "
+                              (and hostname (format "(HostName %s)" hostname))
+                              (and user (format " (user %s)" user)))))))))
+    (completing-read "Remote host: " hosts nil t nil nil nil)))
+
+(defun pi-coding-agent//remote-session-root (dir)
+  "Return the pi session root on DIR's remote host, or nil for a local DIR.
+Uses the remote default agent directory (~/.pi/agent/sessions); the
+local PI_AGENT_DIR override is not propagated to remote pi processes
+(TRAMP does not forward environment), so it is not applied here."
+  (when-let* ((prefix (pi-coding-agent--remote-prefix dir)))
+    (concat prefix "~/.pi/agent/sessions/")))
+
+(defun pi-coding-agent/start-remote-session (&optional host)
+  "Start a pi session on a remote host from `pi-coding-agent/ssh-config-file'.
+
+Prompts for the host among the aliases of the ssh config file —
+plain (non-wildcard) `Host' entries whose block declares a
+`HostName' field; with exactly one alias it is used without
+prompting.  Then behaves like `pi-coding-agent/start-new-session'
+on that host: prompts for the remote directory (default: the host's
+home), offers that directory's existing sessions — live first, then
+closed, scanned on the remote host — and starts a fresh session
+otherwise.
+
+The pi process runs on the remote host through TRAMP (ssh method),
+so the host must be reachable via `ssh HOST' with the pi CLI
+installed."
+  (interactive)
+  (require 'pi-coding-agent)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (let* ((hosts (pi-coding-agent//ssh-config-hosts))
+         (host (or host
+                   (pcase (length hosts)
+                     (0 (user-error
+                         "No host aliases in %s — add Host entries with a HostName field pointing at the real DNS name (or use SPC a i n with a /ssh:HOST:path directory)"
+                         (expand-file-name pi-coding-agent/ssh-config-file)))
+                     (1 (car hosts))
+                     (_ (pi-coding-agent//read-remote-host hosts)))))
+         (default-dir (format "/ssh:%s:~" host))
+         (dir (read-directory-name
+               (format "Start pi session on %s in directory: " host)
+               default-dir default-dir t))
+         (dir (condition-case err
+                  (pi-coding-agent//normalized-dir dir)
+                (error
+                 (user-error "Cannot reach %s: %s"
+                             host (error-message-string err)))))
+         (choice (pi-coding-agent//new-session-choice
+                  dir (pi-coding-agent//remote-session-root dir))))
     (pcase choice
       (`(existing . ,target)
        (pi-coding-agent//open-or-switch-target target))

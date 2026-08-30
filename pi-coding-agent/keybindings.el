@@ -25,13 +25,14 @@
   "ail" 'pi-coding-agent/layout             ; apply window layout
   "ain" 'pi-coding-agent/start-new-session  ; new session (always asks dir)
   "aiN" 'pi-coding-agent-new-session        ; reset / new session (current dir)
+  "aim" 'pi-coding-agent/start-remote-session ; new session on an ssh-config host (TRAMP)
   "aid" 'pi-coding-agent/close-session      ; close session + kill its buffers
   "aiD" 'pi-coding-agent/delete-session     ; delete (prompts; default = current)
   "air" 'pi-coding-agent-reload             ; restart pi process
   "ais" 'pi-coding-agent-open-session-file  ; open a JSONL session file
   "ait" 'pi-coding-agent-toggle             ; show/hide session windows
   "aig" 'pi-coding-agent-install-grammars   ; tree-sitter grammar status
-  "aim" 'pi-coding-agent-menu               ; full transient menu
+  "ai?" 'pi-coding-agent-menu               ; full transient menu
   )
 
 (spacemacs/declare-prefix-for-mode 'pi-coding-agent-chat-mode "mp" "pi")
@@ -43,6 +44,7 @@
   "i" 'pi-coding-agent/switch-session
   "I" 'pi-coding-agent/switch-session-in-dir
   "n" 'pi-coding-agent-new-session
+  "m" 'pi-coding-agent/start-remote-session ; new session on an ssh-config host (TRAMP)
   "r" 'pi-coding-agent-reload
   "t" 'pi-coding-agent-toggle
   "c" 'pi-coding-agent-run-command
@@ -55,6 +57,7 @@
   "P" 'pi-coding-agent/open-named-session
   "i" 'pi-coding-agent/switch-session
   "I" 'pi-coding-agent/switch-session-in-dir
+  "m" 'pi-coding-agent/start-remote-session ; new session on an ssh-config host (TRAMP)
   "c" 'pi-coding-agent-run-command
   "s" 'pi-coding-agent-skills-menu
   "t" 'pi-coding-agent-templates-menu

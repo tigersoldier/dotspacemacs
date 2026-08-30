@@ -320,10 +320,13 @@ file.
 | SPC a i i | pi-coding-agent/switch-session         | manager list (hub)                |
 | SPC a i I | pi-coding-agent/switch-session-in-dir  | switch current dir's sessions     |
 | SPC a i n | pi-coding-agent/start-new-session      | new with directory prompt         |
+| SPC a i m | pi-coding-agent/start-remote-session   | new on an ssh-config host (TRAMP) |
+| SPC a i ? | pi-coding-agent-menu                  | full transient menu               |
 | SPC a i d | pi-coding-agent/close-session          | close current session             |
 | SPC a i N | pi-coding-agent-new-session            | reset current (was on =n=)        |
 | SPC m p i | pi-coding-agent/switch-session         | mirror in chat/input mode leaders |
 | SPC m p I | pi-coding-agent/switch-session-in-dir  | mirror in chat/input mode leaders |
+| SPC m p m | pi-coding-agent/start-remote-session   | mirror in chat/input mode leaders |
 
 =pi-coding-agent-new-session= (package, reset current) moves from =n= to =N=.
 
@@ -411,6 +414,63 @@ All session-listing commands (=switch-session=, =switch-session-in-dir=,
 - Fresh sessions without a JSONL file (pi writes it on the first
   response) are now listed as live candidates (label = perspective
   name), selectable like any other live session.
+
+** D14. Remote (TRAMP) sessions via ssh-config hosts (2026)
+
+=pi-coding-agent/start-remote-session= (SPC a i m) gives the remote
+flow a friendly entry point: pick a host from the ssh config, then
+run the ordinary new-session flow (D10) on that host.
+
+- The pi process itself runs on the remote host: the package's
+  =pi-coding-agent--start-process= already detects a TRAMP prefix in
+  the session directory and starts pi over ssh
+  (=make-process= with =:file-handler= plus a ready-marker protocol
+  that queues RPC stdin until the remote process prints its marker),
+  and checks dependencies against the remote PATH.  No layer code
+  needed for the transport; the layer only supplies the host
+  discovery.
+- Hosts come from =pi-coding-agent/ssh-config-file= (default
+  =~/.ssh/config=): plain (non-wildcard) =Host= patterns in config
+  order, =Include= directives followed recursively (depth-capped,
+  globs expanded, relative paths per ssh_config(5) against =~/.ssh=
+  for user configs), =Match= blocks skipped — a =Host= keyword
+  terminates a =Match= block per ssh semantics, so such blocks parse
+  as ordinary hosts.  =HostName= / =User= per host are collected for
+  the alias filter and completion annotations (TRAMP resolves the
+  connection itself via ssh).
+- Alias filter: only hosts whose block declares a =HostName= field
+  are offered — the host must be an alias for a real DNS name.
+  Entries that are already direct hostnames, or that only set
+  options like =User= / =IdentityFile=, are filtered out.  Option
+  lines attach to every plain pattern of a =Host= line, so
+  =Host alpha beta= + =HostName x= lists both.
+- Single alias: used without prompting (a config with one alias
+  makes the picker ceremony); several aliases: =completing-read=
+  with annotations; none: user-error pointing at =SPC a i n= with a
+  =/ssh:HOST:path= directory.
+- The directory prompt defaults to =/ssh:HOST:~= (remote home); the
+  route-preserving path helpers keep the TRAMP prefix byte-for-byte
+  intact through the whole flow.
+- Closed-session scan on the remote host: the picker's scan
+  (=pi-coding-agent//session-entries=) takes an optional ROOT, and
+  the remote flow scans =<prefix>~/.pi/agent/sessions/= — the remote
+  pi's default agent dir; the local =PI_AGENT_DIR= override is not
+  forwarded by TRAMP, so it is deliberately not applied remotely.
+  Remote scans are best-effort: connection failures yield an empty
+  closed list instead of blocking the picker.
+- Remote path canonicalization: session headers record the
+  process-local cwd, so remote entries' =:cwd= is anchored to the
+  file's TRAMP prefix (=pi-coding-agent//entry-cwd=), and
+  =pi-coding-agent//normalized-dir= canonicalizes remote dirs through
+  TRAMP (=expand-file-name= expands the =~= home component).  One
+  remote directory therefore compares equal regardless of =~=
+  spelling, which keeps session identity (buffer names, the
+  unnamed-session refusal, the live/closed lists) consistent; the
+  chosen dir is canonicalized before entering the new-session flow.
+- Key choice: =m= (machine) for the remote-session flow; the
+  transient menu moves from =m= to =?= (=SPC a i ?=) to free it,
+  keeping the menu on =p= in the chat/input mode leaders.  Mirrored
+  as =SPC m p m= in the chat/input mode leaders.
 
 ** Implementation notes
 

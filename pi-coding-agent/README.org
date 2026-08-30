@@ -97,6 +97,24 @@ row.
   refused when the directory already runs a live unnamed session (then
   a name is required for the parallel session).  With no existing
   sessions a fresh unnamed session starts directly.
+- =SPC a i m= (=pi-coding-agent/start-remote-session=) — start a new
+  session on a remote host, the same flow as =SPC a i n= but with the
+  directory on a host from the ssh config (=pi-coding-agent/ssh-config-file=,
+  default =~/.ssh/config=; =Include= directives are followed,
+  wildcard patterns and =Match= blocks skipped).  Only host
+  *aliases* are offered — `Host' entries whose block declares a
+  =HostName= field pointing at the real DNS name; entries that are
+  already direct hostnames (or only set =User=/=IdentityFile=) are
+  filtered out.  With exactly one alias it is used without
+  prompting; with several the aliases are offered for selection
+  (annotated with their =HostName= and =User=).  Then the normal
+  new-session flow runs on that host:
+  the directory prompt defaults to the host's home (=/ssh:HOST:~=),
+  existing sessions of that directory are offered — the closed list
+  is scanned on the remote host — and a fresh session starts
+  otherwise.  The pi process itself runs on the remote host through
+  TRAMP (the package starts it over ssh), so the host needs the pi
+  CLI installed and reachable via =ssh HOST=.
 - =SPC a i d= (=pi-coding-agent/close-session=) — close a pi session:
   the current perspective's session when it has one, otherwise the
   live sessions are listed (active pi chat buffers; the perspective
@@ -213,11 +231,12 @@ inside session perspectives.
 - =SPC a i I= — switch between the current directory's sessions (with layout)
 - =SPC a i p= — start or focus the pi session for the current project
 - =SPC a i n= — start a new session (asks for the directory)
+- =SPC a i m= — start a new session on a remote ssh-config alias (TRAMP)
 - =SPC a i d= — close a session (and its workspace)
 - =SPC a i D= — delete a session (moved to trash; prompts, default: current)
 - =SPC a i l= — apply the saved window layout (start/focus a session)
 - =SPC a i t= — hide/show the pi windows
-- =SPC a i m= — full transient menu (model, thinking level, sessions, …)
+- =SPC a i ?= — full transient menu (model, thinking level, sessions, …)
 - =SPC a i S= — start a named (parallel) session
 - =SPC a i N= — reset / new session in the current directory
 
@@ -341,6 +360,7 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 | =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
 | =l=        | =pi-coding-agent/layout=             | Apply window layout             |
 | =n=        | =pi-coding-agent/start-new-session=  | New session or open existing (asks dir) |
+| =m=        | =pi-coding-agent/start-remote-session= | New session on an ssh-config alias (TRAMP) |
 | =N=        | =pi-coding-agent-new-session=        | Reset / new session            |
 | =d=        | =pi-coding-agent/close-session=      | Close session + workspace      |
 | =D=        | =pi-coding-agent/delete-session=     | Delete (prompts; default: current session) |
@@ -348,7 +368,7 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 | =s=        | =pi-coding-agent-open-session-file=  | Open a JSONL session file      |
 | =t=        | =pi-coding-agent-toggle=             | Show/hide session windows      |
 | =g=        | =pi-coding-agent-install-grammars=   | Grammar status/install         |
-| =m=        | =pi-coding-agent-menu=               | Full transient menu            |
+| =?=        | =pi-coding-agent-menu=               | Full transient menu            |
 
 Major-mode (=,= / =SPC m p= in chat/input buffers; in the chat
 buffer =t= is already =pi-coding-agent-toggle=, so templates live on
@@ -365,6 +385,7 @@ buffer =t= is already =pi-coding-agent-toggle=, so templates live on
 | =e= | =pi-coding-agent-extensions-menu=    | Extension commands                             |
 | =p= | =pi-coding-agent-menu=               | Full transient menu                            |
 | =P= | =pi-coding-agent/open-named-session= | Start named (parallel) session                 |
+| =m= | =pi-coding-agent/start-remote-session= | New session on an ssh-config alias (TRAMP)      |
 | =n= | =pi-coding-agent-new-session=        | Reset / new session (chat only)                |
 | =r= | =pi-coding-agent-reload=             | Restart the pi process (chat only)             |
 | =t= | =pi-coding-agent-toggle=             | Show/hide session windows (chat only)          |
