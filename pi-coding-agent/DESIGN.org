@@ -139,17 +139,46 @@ perspective (you are already in it).
   file resumed).  Caveat: N sessions = N pi processes at startup.
 - Both modes documented in the README.
 
-*** D9. Close-session
+*** D9. Close/delete session
 
-One command only (the delete-all-buffers idea was dropped):
-=pi-coding-agent/close-session=:
-1. Capture buffer specs (D7).
-2. Kill the pi process, then the perspective's buffers (files, terminals,
-   chat/input) — standard per-buffer unsaved-change prompts; common buffers
-   and other perspectives' buffers never touched.
-3. Kill the perspective; land in the default perspective.
-4. Registry entry (mapping + captured specs) persists; reopening restores
-   the workspace.
+Two commands sharing one teardown core (=pi-coding-agent//close-session-
+in-persp=): =pi-coding-agent/close-session= (SPC a i d) and
+=pi-coding-agent/delete-session= (SPC a i D):
+
+1. Target selection: the pickers list ACTIVE pi chat buffers (live
+   processes), not perspectives — the perspective containing the
+   chosen buffer is resolved only when the selection is acted on.
+   Close uses the current perspective's session without prompting
+   (listing only when it has none); delete always prompts and
+   additionally offers closed sessions (files on disk not loaded by
+   an active buffer) — under helm the two groups are separate
+   sections, active first.  The picker's default is the current
+   perspective's session, resolved from its active chat buffer; when
+   there is no active buffer it falls back to the registered session
+   (registry entry or chat buffer), so the default still resolves
+   for dead-process perspectives.
+2. Capture buffer specs (D7) — close only.
+3. Kill the pi process (only when the perspective owns its chat
+   buffer; a shared same-directory chat buffer is spared), then the
+   perspective's buffers (files, terminals, chat/input) — standard
+   per-buffer unsaved-change prompts; common buffers and other
+   perspectives' buffers never touched.
+4. Kill the perspective, then switch to the next perspective (persp
+   display order, wrapping) that is associated with a pi session — or
+   the next perspective when none is (D9 previously landed in the
+   default perspective).
+5. Close keeps the registry entry (mapping + captured specs);
+   reopening restores the workspace.  Delete additionally deletes
+   the session file — moved to the OS trash via the =trash= CLI when
+   available, permanent unlink otherwise, mirroring pi's own TUI
+   delete (=ctrl+d= in the session tree) — and drops the registry
+   entry, so the session vanishes from both lists (the layer's list
+   and pi's session manager both scan only =sessions/=).  Deleting a
+   closed session (no active buffer) deletes its file and drops any
+   registry entry; a perspective still registered for the file is
+   torn down like an active session.  Deleting an active session is
+   refused while its chat buffer is shared with another perspective
+   (the file would move out from under a live process).
 
 *** D10. New-session flow
 

@@ -1714,7 +1714,7 @@ perspective, pi window layout) is named after the workspace."
     (pi-coding-agent//workspace-session repos name)))
 
 ;; ---------------------------------------------------------------------
-;; Close session
+;; Close and delete session
 
 (defun pi-coding-agent//exclusive-buffers (persp)
   "Buffers of PERSP not present in any other real perspective.
@@ -1788,36 +1788,353 @@ Pi chat/input buffers are excluded: the open path re-creates them."
         (pi-coding-agent//update-entry-buffers (car entry) persp))))
   (pi-coding-agent//registry-save))
 
-(defun pi-coding-agent/close-session ()
-  "Close the current pi session: kill its buffers and perspective.
-Kills the pi process, then the perspective's exclusive buffers (files,
-terminals, chat/input) with standard unsaved-change prompts.  Buffers
-shared with other perspectives and common buffers are spared.  The
-workspace is remembered in the registry, so reopening the session from
-the list restores it."
-  (interactive)
-  (require 'pi-coding-agent)
-  (unless (bound-and-true-p persp-mode)
-    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+(defun pi-coding-agent//persp-pi-session-p (name)
+  "Return non-nil when perspective NAME is associated with a pi session.
+Counts a registry entry (the session mapping, resolved lazily for
+fresh sessions) or a pi chat buffer in the perspective (sessions
+started outside the registry flow, e.g. `pi-coding-agent/
+open-named-session')."
+  (or (assoc name pi-coding-agent//registry)
+      (when-let* ((persp (persp-get-by-name name))
+                  ((perspective-p persp)))
+        (pi-coding-agent//chat-buffer-in-persp persp))))
+
+(defun pi-coding-agent//ordered-persp-names ()
+  "Return real perspective names in persp's display order.
+The nil (default) perspective is excluded: it cannot host a pi
+session and `persp-contain-buffer-p' is always true for it."
+  (cl-remove-if-not (lambda (name)
+                      (perspective-p (persp-get-by-name name)))
+                    (persp-names-current-frame-fast-ordered)))
+
+(defun pi-coding-agent//active-pi-buffer-p (buf)
+  "Return non-nil when BUF is a pi chat buffer with a live process."
+  (and (buffer-live-p buf)
+       (with-current-buffer buf
+         (derived-mode-p 'pi-coding-agent-chat-mode))
+       (let ((proc (buffer-local-value 'pi-coding-agent--process buf)))
+         (and (processp proc) (process-live-p proc)))))
+
+(defun pi-coding-agent//active-chat-buffers ()
+  "Return active pi chat buffers, most recently used first."
+  (cl-remove-if-not #'pi-coding-agent//active-pi-buffer-p (buffer-list)))
+
+(defun pi-coding-agent//session-entry-by-file ()
+  "Return a hash table mapping session file paths to metadata entries."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (entry (pi-coding-agent//session-entries))
+      (puthash (plist-get entry :file) entry table))
+    table))
+
+(defun pi-coding-agent//session-base-label (entry)
+  "Base candidate label for session ENTRY: \"title · abbrev-path\"."
+  (when entry
+    (let* ((title (pi-coding-agent//entry-title entry))
+           (cwd (plist-get entry :cwd))
+           (abbrev (and (stringp cwd)
+                        (abbreviate-file-name (directory-file-name cwd)))))
+      (if abbrev (format "%s · %s" title abbrev) title))))
+
+(defun pi-coding-agent//chat-buffer-label (buf by-file)
+  "Display label for pi chat buffer BUF.
+The perspective's name when BUF belongs to one, else the session's
+\"title · path\" label, else the buffer name.  BY-FILE maps session
+files to metadata entries."
+  (or (when-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
+        (safe-persp-name persp))
+      (pi-coding-agent//session-base-label
+       (gethash (plist-get (buffer-local-value 'pi-coding-agent--state buf)
+                           :session-file)
+                by-file))
+      (buffer-name buf)))
+
+(defun pi-coding-agent//persp-for-close (buf)
+  "Resolve the perspective to close for pi chat buffer BUF.
+Prefers the current perspective when it displays BUF (a chat buffer
+can be shared by several perspectives of one directory); otherwise
+the first real perspective containing it."
+  (let ((current (get-current-persp)))
+    (cond
+     ((and (perspective-p current)
+           (memq buf (safe-persp-buffers current)))
+      (safe-persp-name current))
+     ((when-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
+        (safe-persp-name persp))))))
+
+(defun pi-coding-agent//default-close-candidate ()
+  "Return (CANDIDATE . TARGET) defaulting the session pickers.
+The current perspective's session: its active pi chat buffer when it
+has one (TARGET (:buffer BUF)); without an active pi buffer, its
+registered session (TARGET (:persp NAME)).  Nil when the current
+perspective has no session."
   (let* ((persp (get-current-persp))
          (name (safe-persp-name persp))
-         (entry (assoc name pi-coding-agent//registry)))
-    (unless entry
-      (user-error "No pi session in the current perspective"))
-    (let* ((buffers (pi-coding-agent//exclusive-buffers persp))
-           (chat (cl-find-if (lambda (buf)
-                               (with-current-buffer buf
-                                 (derived-mode-p 'pi-coding-agent-chat-mode)))
-                             buffers)))
-      (unless (y-or-n-p
-               (format "Close pi session '%s' and kill its %d buffer%s? "
-                       name (length buffers)
-                       (if (= (length buffers) 1) "" "s")))
-        (user-error "Aborted"))
-      ;; Remember the workspace before destroying it.
+         (chat (and (perspective-p persp)
+                    (pi-coding-agent//chat-buffer-in-persp persp))))
+    (cond
+     ((and chat (pi-coding-agent//active-pi-buffer-p chat))
+      (cons (pi-coding-agent//chat-buffer-label
+             chat (pi-coding-agent//session-entry-by-file))
+            (list :buffer chat)))
+     ((pi-coding-agent//persp-pi-session-p name)
+      (cons name (list :persp name :opened t :count 0
+                       :modified (current-time)))))))
+
+(defun pi-coding-agent//close-target-candidates (&optional include-closed)
+  "Return (ACTIVE . CLOSED) candidate alists for the session pickers.
+Each alist maps a candidate string to a target plist: (:buffer BUF)
+for active sessions — live pi chat buffers, most recently used first,
+the perspective resolved only when the selection is acted on — and
+(:entry ENTRY) for closed sessions (files on disk not loaded by an
+active buffer) when INCLUDE-CLOSED.  Active targets also carry the
+session's metadata for affixation; duplicate labels (same title and
+directory) are disambiguated with a uuid suffix."
+  (let* ((by-file (pi-coding-agent//session-entry-by-file))
+         (seen (make-hash-table :test 'equal))
+         active-files
+         (active (mapcar
+                  (lambda (buf)
+                    (let* ((file (plist-get
+                                  (buffer-local-value 'pi-coding-agent--state buf)
+                                  :session-file))
+                           (entry (and (stringp file) (gethash file by-file)))
+                           (label (or (when-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
+                                        (safe-persp-name persp))
+                                      (pi-coding-agent//session-base-label entry)
+                                      (buffer-name buf)))
+                           (n (gethash label seen 0)))
+                      (puthash label (1+ n) seen)
+                      (when file (push file active-files))
+                      (cons (if (> n 0)
+                                (format "%s  (%s)" label
+                                        (or (pi-coding-agent//file-uuid-prefix file) "?"))
+                              label)
+                            (if entry
+                                ;; :buffer first: the dispatch pcase keys on
+                                ;; the target's car.
+                                (append (list :buffer buf) entry)
+                              (list :buffer buf :opened t
+                                    :modified (current-time))))))
+                  (pi-coding-agent//active-chat-buffers)))
+         (closed (and include-closed
+                      (mapcar
+                       (lambda (entry)
+                         (let* ((label (pi-coding-agent//session-base-label entry))
+                                (n (gethash label seen 0))
+                                (target (append (list :entry entry) entry)))
+                           (puthash label (1+ n) seen)
+                           (plist-put target :opened nil)
+                           (cons (if (> n 0)
+                                     (format "%s  (%s)" label
+                                             (or (pi-coding-agent//file-uuid-prefix
+                                                  (plist-get entry :file))
+                                                 "?"))
+                                   label)
+                                 target)))
+                       (cl-remove-if
+                        (lambda (entry)
+                          (member (plist-get entry :file) active-files))
+                        (pi-coding-agent//session-entries))))))
+    (cons active closed)))
+
+(defun pi-coding-agent//helm-pick-close-target (active closed action default-label)
+  "Helm pick of a session from ACTIVE/CLOSED candidate alists.
+Active sessions are shown in their own section, closed sessions in a
+second one (when present).  Returns the chosen candidate string."
+  (helm :sources
+        (append
+         (list (helm-build-sync-source
+                "Active sessions"
+                :candidates (mapcar #'car active)
+                :must-match t
+                :action 'identity))
+         (and closed
+              (list (helm-build-sync-source
+                     "Closed sessions"
+                     :candidates (mapcar #'car closed)
+                     :must-match t
+                     :action 'identity))))
+        :buffer "*helm pi session*"
+        :prompt (format "%s pi session: " action)
+        :default default-label))
+
+(defun pi-coding-agent//cr-pick-close-target (active closed action default-label)
+  "completing-read over ACTIVE/CLOSED candidates; return the choice.
+Candidates keep the pre-sorted order (active first) and are annotated
+with status glyph, message count, and age."
+  (let* ((alist (append active closed))
+         (collection (pi-coding-agent//session-collection alist)))
+    (completing-read
+     (format "%s pi session%s: " action
+             (if default-label
+                 (format " (default %s)" (pi-coding-agent//truncate default-label 40))
+               ""))
+     collection nil t default-label 'pi-coding-agent-session-history)))
+
+(defun pi-coding-agent//read-close-target (&optional include-closed action)
+  "Prompt for a pi session; return a target plist.
+ACTIVE candidates are live pi chat buffers — the perspective is
+resolved at close time (`pi-coding-agent//persp-for-close'), not
+when listing; when INCLUDE-CLOSED, closed sessions follow (their
+file is deleted).  The picker's default is the current
+perspective's session — its active pi chat buffer, or its registered
+session when there is no active buffer.  Under helm the active and
+closed groups are separate sections, active first.
+ACTION is the verb used in the prompt and error (default \"Close\").
+Returns (:buffer BUF), (:entry ENTRY), or (:persp NAME)."
+  (let* ((action (or action "Close"))
+         (groups (pi-coding-agent//close-target-candidates include-closed))
+         (active (car groups))
+         (closed (cdr groups))
+         (default (pi-coding-agent//default-close-candidate)))
+    (when (and default (not (assoc (car default) active)))
+      ;; Default without an active buffer: replace any same-labelled
+      ;; closed candidate (the same session) and offer it in the
+      ;; active list.
+      (when (assoc (car default) closed)
+        (setq closed (cl-remove (car default) closed :key #'car :test #'equal)))
+      (push default active))
+    (if (and (null active) (null closed))
+        (user-error "No open pi sessions to %s" (downcase action))
+      (let ((choice (if (featurep 'helm)
+                        (pi-coding-agent//helm-pick-close-target
+                         active closed action (car default))
+                      (pi-coding-agent//cr-pick-close-target
+                       active closed action (car default)))))
+        (cond
+         ((and default (string-empty-p choice)) (cdr default))
+         ((assoc choice active) (cdr (assoc choice active)))
+         ((assoc choice closed) (cdr (assoc choice closed)))
+         (t (user-error "No session selected")))))))
+
+(defun pi-coding-agent//close-target-persp (target)
+  "Resolve TARGET from `pi-coding-agent//read-close-target' to a
+perspective name to close."
+  (cond
+   ((plist-get target :buffer)
+    (or (pi-coding-agent//persp-for-close (plist-get target :buffer))
+        (user-error "The selected session belongs to no perspective")))
+   ((plist-get target :persp) (plist-get target :persp))
+   (t (user-error "Invalid close target"))))
+
+(defun pi-coding-agent//choose-session-to-close ()
+  "Resolve the perspective name to close.
+The current perspective's session when it has one (registry entry or
+pi chat buffer); otherwise the active pi sessions are listed and the
+perspective is resolved from the chosen buffer at close time."
+  (let ((name (safe-persp-name (get-current-persp))))
+    (if (pi-coding-agent//persp-pi-session-p name)
+        name
+      (pi-coding-agent//close-target-persp
+       (pi-coding-agent//read-close-target nil "Close")))))
+
+(defun pi-coding-agent//switch-to-next-persp (closed-name persp-order)
+  "Switch to the next perspective after closing CLOSED-NAME.
+PERSP-ORDER is the ordered perspective list from before the close.
+Prefers the next perspective after CLOSED-NAME (wrapping) that is
+associated with a pi session; when no remaining perspective has a pi
+session, the next perspective (wrapping) is used.  No-op when only
+the default perspective remains."
+  (let* ((pos (cl-position closed-name persp-order))
+         (order (if pos
+                    (append (nthcdr (1+ pos) persp-order)
+                            (cl-subseq persp-order 0 pos))
+                  (cl-remove closed-name persp-order :test #'equal)))
+         (with-pi (cl-remove-if-not #'pi-coding-agent//persp-pi-session-p
+                                    persp-order))
+         (next (or (cl-find-if (lambda (name) (member name with-pi)) order)
+                   (car order))))
+    (when (and next
+               (not (string= next (safe-persp-name (get-current-persp)))))
+      (persp-switch next))))
+
+(defun pi-coding-agent//delete-session-file (file)
+  "Delete session FILE: move it to the OS trash, else delete it.
+Mirrors pi's own TUI delete: the `trash' command is used when
+available, falling back to a permanent unlink — the session is
+recoverable from the trash on systems with the `trash' CLI.  Returns
+non-nil on success.  Returns nil (with a message) when FILE does not
+exist on disk — a fresh session whose JSONL pi never wrote; there is
+nothing to delete and the session is not listable anyway.  Signals
+when both trash and unlink fail."
+  (if (file-exists-p file)
+      (let* ((trash (executable-find "trash"))
+             (status (and trash
+                          (apply #'process-file trash nil nil nil
+                                 (if (string-prefix-p "-" file)
+                                     (list "--" file)
+                                   (list file))))))
+        (if (or (and status (zerop status))
+                (not (file-exists-p file)))
+            (progn
+              (when trash
+                (message "pi: moved session file to trash (%s)"
+                         (abbreviate-file-name file)))
+              t)
+          ;; Trash unavailable or failed: delete permanently.
+          (condition-case err
+              (progn
+                (delete-file file)
+                (message "pi: deleted session file (%s)"
+                         (abbreviate-file-name file))
+                t)
+            (error
+             (user-error "pi: failed to delete session file %s%s: %s"
+                         (abbreviate-file-name file)
+                         (if trash " (trash also failed)" "")
+                         (error-message-string err))))))
+    (message "pi: no session file to delete (%s)"
+             (abbreviate-file-name file))
+    nil))
+
+(defun pi-coding-agent//close-session-in-persp (name &optional delete)
+  "Close the pi session of perspective NAME: process, buffers, persp.
+Confirms first.  Kills the pi process (when the perspective has its
+own chat buffer), then the perspective's exclusive buffers (standard
+unsaved-change prompts; common buffers and buffers shared with other
+perspectives are spared), then the perspective itself.
+
+When DELETE is non-nil the session file is also deleted — moved to
+the OS trash via the `trash' command, else permanently, the same
+behavior as pi's own TUI delete — and the registry entry is dropped,
+so the session no longer appears in the session list; deleting is
+refused while the session's chat buffer is shared with another
+perspective (the file would move out from under a live process).
+Otherwise the registry entry (mapping and captured buffer specs)
+persists, so reopening the session from the list restores its
+workspace."
+  (let* ((persp (persp-get-by-name name))
+         (entry (assoc name pi-coding-agent//registry))
+         (buffers (and (perspective-p persp)
+                       (pi-coding-agent//exclusive-buffers persp)))
+         (chat (cl-find-if (lambda (buf)
+                             (with-current-buffer buf
+                               (derived-mode-p 'pi-coding-agent-chat-mode)))
+                           buffers)))
+    (when (and delete
+               (perspective-p persp)
+               (pi-coding-agent//chat-buffer-in-persp persp)
+               (null chat))
+      (user-error "Cannot delete: session '%s' is shared with another \
+perspective" name))
+    (unless (y-or-n-p
+             (format "%s pi session '%s' and kill its %d buffer%s? "
+                     (if delete "Delete" "Close")
+                     name (length buffers)
+                     (if (= (length buffers) 1) "" "s")))
+      (user-error "Aborted"))
+    ;; Remember the workspace before destroying it (close only; a
+    ;; deleted session's registry entry is dropped below).
+    (when (and entry (not delete))
       (setcdr entry (plist-put (cdr entry) :buffers
                                (pi-coding-agent//capture-buffer-specs persp)))
-      (pi-coding-agent//registry-save)
+      (pi-coding-agent//registry-save))
+    ;; Resolve the session file for the delete while the chat buffer
+    ;; is still alive (fresh entries may not have one yet).
+    (let ((file-to-delete
+           (and delete entry
+                (pi-coding-agent//registry-fill-session-file
+                 name (cdr entry)))))
       ;; Stop the pi process first (killing its chat buffer must not
       ;; trigger a process query).
       (when chat
@@ -1838,9 +2155,108 @@ the list restores it."
         (when (buffer-live-p buf)
           (pi-coding-agent//skip-kill-confirmation-for buf)
           (kill-buffer buf)))
-      ;; Close the perspective; frames showing it switch to the default
-      ;; perspective.
-      (persp-kill (list name) t))))
+      ;; Delete: remove the file (trash first, unlink fallback) and
+      ;; drop the registry entry before the perspective is killed, so
+      ;; the before-kill hook does not re-capture it.  A missing file
+      ;; (a fresh session pi never wrote) is fine — nothing to
+      ;; delete, and nothing listable; a real delete failure is
+      ;; reported but must not abort the teardown (that would leave a
+      ;; zombie perspective with a dead process and a stale registry
+      ;; entry).
+      (when delete
+        (when file-to-delete
+          (condition-case err
+              (pi-coding-agent//delete-session-file file-to-delete)
+            (error
+             (message "pi: failed to delete session file %s: %s — the \
+session may still appear in the session list"
+                      (abbreviate-file-name file-to-delete)
+                      (error-message-string err)))))
+        (pi-coding-agent//registry-remove name)
+        (pi-coding-agent//registry-save)))
+    ;; Close the perspective; frames showing it switch to the default
+    ;; perspective (the caller then switches to the next pi persp).
+    (persp-kill (list name) t)))
+
+(defun pi-coding-agent/close-session ()
+  "Close a pi session and its perspective.
+Closes the current perspective's session when it has one; otherwise
+lists the open sessions for the user to pick one.  Stops the pi
+process, kills the perspective's buffers (standard unsaved-change
+prompts; common buffers and buffers shared with other perspectives
+are spared), deletes the perspective, then switches to the next
+perspective that has a pi session (or the next perspective when none
+does).  The workspace is remembered in the registry, so reopening the
+session from the list restores it."
+  (interactive)
+  (require 'pi-coding-agent)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (let* ((name (pi-coding-agent//choose-session-to-close))
+         (persp-order (pi-coding-agent//ordered-persp-names)))
+    (pi-coding-agent//close-session-in-persp name nil)
+    (pi-coding-agent//switch-to-next-persp name persp-order)))
+
+(defun pi-coding-agent//delete-closed-session (entry)
+  "Delete closed session ENTRY (no active pi buffer loads its file).
+Deletes the session file (OS trash first, permanent unlink as
+fallback) and drops any registry entry.  When a perspective is still
+registered for the session, it is torn down like an active session
+via `pi-coding-agent//close-session-in-persp' (single confirmation,
+buffers included).  Returns the perspective name that was closed, or
+nil."
+  (let* ((file (plist-get entry :file))
+         (persp-name (and file (pi-coding-agent//registry-persp-name-for-file file)))
+         (persp (and persp-name (persp-get-by-name persp-name))))
+    (if (perspective-p persp)
+        (progn
+          (pi-coding-agent//close-session-in-persp persp-name t)
+          persp-name)
+      (unless (y-or-n-p (format "Delete closed session '%s'? "
+                                (pi-coding-agent//entry-title entry)))
+        (user-error "Aborted"))
+      (when file
+        (condition-case err
+            (pi-coding-agent//delete-session-file file)
+          (error
+           (message "pi: failed to delete session file %s: %s — the \
+session may still appear in the session list"
+                    (abbreviate-file-name file)
+                    (error-message-string err)))))
+      (when persp-name
+        (pi-coding-agent//registry-remove persp-name)
+        (pi-coding-agent//registry-save))
+      persp-name)))
+
+(defun pi-coding-agent/delete-session ()
+  "Delete a pi session: remove it from the session list.
+Always prompts — the current session is the default — offering both
+active sessions (live pi chat buffers; the perspective is resolved
+when deleting) and closed sessions (their file is deleted).  Under
+helm the two groups are separate sections, active first.  An active
+session is torn down like `pi-coding-agent/close-session', then its
+file is deleted — moved to the OS trash via the `trash' command when
+available, otherwise deleted permanently, the same behavior as pi's
+own TUI delete — and its registry entry dropped; a closed session is
+deleted the same way, dropping any registry entry (a dead
+perspective still registered for it is torn down too)."
+  (interactive)
+  (require 'pi-coding-agent)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (let* ((target (pi-coding-agent//read-close-target t "Delete"))
+         (persp-order (pi-coding-agent//ordered-persp-names)))
+    (cond
+     ((plist-get target :entry)
+      (let ((closed (pi-coding-agent//delete-closed-session
+                     (plist-get target :entry))))
+        (when closed
+          (pi-coding-agent//switch-to-next-persp closed persp-order))))
+     ((or (plist-get target :buffer) (plist-get target :persp))
+      (let ((persp-name (pi-coding-agent//close-target-persp target)))
+        (pi-coding-agent//close-session-in-persp persp-name t)
+        (pi-coding-agent//switch-to-next-persp persp-name persp-order)))
+     (t (user-error "Invalid delete target")))))
 
 ;; ---------------------------------------------------------------------
 ;; Emacs bridge entry (called by the pi bridge extension via emacsclient)

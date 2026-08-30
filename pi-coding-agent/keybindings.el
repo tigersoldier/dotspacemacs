@@ -26,6 +26,7 @@
   "ain" 'pi-coding-agent/start-new-session  ; new session (always asks dir)
   "aiN" 'pi-coding-agent-new-session        ; reset / new session (current dir)
   "aid" 'pi-coding-agent/close-session      ; close session + kill its buffers
+  "aiD" 'pi-coding-agent/delete-session     ; delete (prompts; default = current)
   "air" 'pi-coding-agent-reload             ; restart pi process
   "ais" 'pi-coding-agent-open-session-file  ; open a JSONL session file
   "ait" 'pi-coding-agent-toggle             ; show/hide session windows

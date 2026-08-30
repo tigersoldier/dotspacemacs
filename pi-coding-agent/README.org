@@ -84,12 +84,31 @@ shows all buffers.
   already runs a live unnamed session (then a name is required for the
   parallel session).  With no existing sessions a fresh unnamed
   session starts directly.
-- =SPC a i d= (=pi-coding-agent/close-session=) — close the current
-  session: stops the pi process, kills the perspective's buffers
-  (standard unsaved-change prompts; common buffers and buffers shared
-  with other perspectives are spared), and removes the perspective.
-  The workspace is remembered, so reopening the session from the list
-  restores its buffers.
+- =SPC a i d= (=pi-coding-agent/close-session=) — close a pi session:
+  the current perspective's session when it has one, otherwise the
+  active pi sessions are listed (live chat buffers; the perspective
+  is resolved from the chosen buffer).  Stops the pi process, kills
+  the perspective's buffers (standard unsaved-change prompts; common
+  buffers and buffers shared with other perspectives are spared),
+  and removes the perspective.  Afterwards Emacs lands in the next
+  perspective that has a pi session (or the next perspective when
+  none does).  The workspace is remembered, so reopening the session
+  from the list restores its buffers.
+- =SPC a i D= (=pi-coding-agent/delete-session=) — delete a session
+  and remove it from the session list.  Always prompts — the current
+  session is the default — offering both active sessions (live pi
+  chat buffers) and closed sessions; under helm the two groups are
+  separate sections, active first.  An active session is closed like
+  =SPC a i d=, then its file is deleted — moved to the OS trash via
+  the =trash= command when available, otherwise deleted permanently,
+  the same behavior as pi's own TUI delete (=ctrl+d= in the session
+  tree) — and its registry entry dropped; a closed session is
+  deleted the same way (a dead perspective still registered for it
+  is torn down too).  Either way the session no longer appears in
+  the session list — neither this layer's nor pi's own.  Deleting an
+  active session is refused while its chat buffer is shared with
+  another perspective (the file would move out from under a live
+  process).
 - =SPC a i w= (=pi-coding-agent/new-worktree-session=) — create a
   fresh git worktree and start a pi session in it.  Picks a git
   repository via helm (known repos from the context directory,
@@ -180,7 +199,8 @@ inside session perspectives.
 - =SPC a i I= — switch between the current directory's sessions (with layout)
 - =SPC a i p= — start or focus the pi session for the current project
 - =SPC a i n= — start a new session (asks for the directory)
-- =SPC a i d= — close the current session (and its workspace)
+- =SPC a i d= — close a session (and its workspace)
+- =SPC a i D= — delete a session (moved to trash; prompts, default: current)
 - =SPC a i l= — apply the saved window layout (start/focus a session)
 - =SPC a i t= — hide/show the pi windows
 - =SPC a i m= — full transient menu (model, thinking level, sessions, …)
@@ -309,6 +329,7 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 | =n=        | =pi-coding-agent/start-new-session=  | New session or open existing (asks dir) |
 | =N=        | =pi-coding-agent-new-session=        | Reset / new session            |
 | =d=        | =pi-coding-agent/close-session=      | Close session + workspace      |
+| =D=        | =pi-coding-agent/delete-session=     | Delete (prompts; default: current session) |
 | =r=        | =pi-coding-agent-reload=             | Restart the pi process         |
 | =s=        | =pi-coding-agent-open-session-file=  | Open a JSONL session file      |
 | =t=        | =pi-coding-agent-toggle=             | Show/hide session windows      |
