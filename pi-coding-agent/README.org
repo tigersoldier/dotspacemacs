@@ -410,3 +410,8 @@ Layer option (defined in =config.el=):
   #+end_src
   or via =M-x customize-group pi-coding-agent=, then re-apply with
   =SPC a i l=.
+- =pi-coding-agent/remote-connect-timeout= — seconds allowed for the
+  initial TRAMP connection of =SPC a i m= (default =20=; an ssh
+  =ConnectTimeout= is passed, so an unreachable host fails with a
+  clear error instead of hanging on =Opening connection ...=).  Set
+  to =nil= to keep TRAMP's own defaults.

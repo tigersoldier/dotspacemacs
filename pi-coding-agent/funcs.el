@@ -395,6 +395,17 @@ turns each into a TRAMP directory (/ssh:HOST:~)."
   :type 'file
   :group 'pi-coding-agent)
 
+(defcustom pi-coding-agent/remote-connect-timeout 20
+  "Timeout in seconds for the initial TRAMP connection of
+`pi-coding-agent/start-remote-session'.
+An ssh `ConnectTimeout' option is added to the connection (and
+`tramp-connection-timeout' bound to the same value), so an
+unreachable or unresponsive host fails with a clear error instead of
+hanging on \"Opening connection ...\".  nil keeps TRAMP's own
+defaults."
+  :type '(choice (const :tag "TRAMP defaults" nil) natnum)
+  :group 'pi-coding-agent)
+
 (defvar pi-coding-agent//registry nil
   "Alist mapping perspective name to a session-entry plist.
 Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
@@ -1825,6 +1836,16 @@ local PI_AGENT_DIR override is not propagated to remote pi processes
   (when-let* ((prefix (pi-coding-agent--remote-prefix dir)))
     (concat prefix "~/.pi/agent/sessions/")))
 
+(defun pi-coding-agent//remote-login-args (timeout)
+  "Full ssh login args for the `login-args' connection property.
+The property REPLACES the method's args, so the complete ssh arg
+list (including the %h / %u / %p / %c specs) is rebuilt with an
+added `-o ConnectTimeout=TIMEOUT' option; TIMEOUT nil keeps the
+method defaults."
+  (append (list (list "-l" "%u") (list "-p" "%p") (list "%c"))
+          (and timeout (list (list "-o" (format "ConnectTimeout=%d" timeout))))
+          (list (list "-e" "none") (list "%h"))))
+
 (defun pi-coding-agent/start-remote-session (&optional host)
   "Start a pi session on a remote host from `pi-coding-agent/ssh-config-file'.
 
@@ -1844,7 +1865,8 @@ installed."
   (require 'pi-coding-agent)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((hosts (pi-coding-agent//ssh-config-hosts))
+  (let* ((timeout pi-coding-agent/remote-connect-timeout)
+         (hosts (pi-coding-agent//ssh-config-hosts))
          (host (or host
                    (pcase (length hosts)
                      (0 (user-error
@@ -1852,10 +1874,39 @@ installed."
                          (expand-file-name pi-coding-agent/ssh-config-file)))
                      (1 (car hosts))
                      (_ (pi-coding-agent//read-remote-host hosts)))))
-         (default-dir (format "/ssh:%s:~" host))
+         ;; Bound while the connection is established: ssh's own
+         ;; ConnectTimeout (via the login-args property, which
+         ;; replaces the method args) aborts an unreachable or
+         ;; unresponsive host instead of hanging; TRAMP's overall
+         ;; timeout is bound to the same value for good measure.
+         (tramp-connection-timeout (or timeout
+                                       (and (boundp 'tramp-connection-timeout)
+                                            tramp-connection-timeout)))
+         (tramp-connection-properties
+          (if timeout
+              (cons (list (format "/ssh:%s:" host)
+                          "login-args"
+                          (pi-coding-agent//remote-login-args timeout))
+                    tramp-connection-properties)
+            tramp-connection-properties))
+         ;; Pre-flight: connect once and resolve the remote home
+         ;; BEFORE the directory prompt, so the hang-prone first
+         ;; connection happens at a predictable point with a clear
+         ;; error instead of inside read-file-name's default
+         ;; expansion.  The canonical home (no `~') also keeps the
+         ;; prompt itself free of hidden connections.
+         (home (condition-case err
+                   (progn
+                     (message "Connecting to %s ..." host)
+                     (pi-coding-agent//normalized-dir
+                      (format "/ssh:%s:~" host)))
+                 (error
+                  (user-error
+                   "Cannot reach %s via ssh: %s — check `ssh %s' in a terminal (password? host key? network?)"
+                   host (error-message-string err) host))))
          (dir (read-directory-name
                (format "Start pi session on %s in directory: " host)
-               default-dir default-dir t))
+               home home t))
          (dir (condition-case err
                   (pi-coding-agent//normalized-dir dir)
                 (error

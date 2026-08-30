@@ -448,6 +448,19 @@ run the ordinary new-session flow (D10) on that host.
   makes the picker ceremony); several aliases: =completing-read=
   with annotations; none: user-error pointing at =SPC a i n= with a
   =/ssh:HOST:path= directory.
+- Connection hardening: the first TRAMP connection (which resolves
+  the remote home for the directory-prompt default) happens in an
+  explicit pre-flight step with a =Connecting to HOST ...= message
+  and a clear error naming the host, instead of inside
+  =read-file-name='s default expansion where a hang is opaque.  An
+  ssh =ConnectTimeout= (=pi-coding-agent/remote-connect-timeout=,
+  default 20s) is injected via the =login-args= connection property
+  — which REPLACES the method's args, so the full ssh arg list is
+  rebuilt with =%h/=/%u/=/%p/=/%c= intact — because TRAMP's own
+  =tramp-connection-timeout= is not reliably enforced while waiting
+  on ssh (verified empirically).  The directory prompt then defaults
+  to the canonical home (no =~=), so the prompt itself triggers no
+  hidden connection.
 - The directory prompt defaults to =/ssh:HOST:~= (remote home); the
   route-preserving path helpers keep the TRAMP prefix byte-for-byte
   intact through the whole flow.
