@@ -369,19 +369,22 @@ the same environment."
       (expand-file-name "sessions" agent-dir)
     (expand-file-name pi-coding-agent/session-root)))
 
-(defcustom pi-coding-agent/session-sort-opened 'alpha
-  "Sort order for opened sessions in the switch-session list.
-`alpha' sorts by title, `chrono' by last modification (newest first)."
-  :type '(choice (const :tag "Alphabetical" alpha)
+(defcustom pi-coding-agent/session-sort-opened 'dir-then-name
+  "Sort order for live sessions in the switch-session list.
+Live sessions are the active pi chat buffers.  `dir-then-name' sorts
+by session directory, then by title (the default); `alpha' sorts by
+title only, `chrono' by last modification (newest first)."
+  :type '(choice (const :tag "Directory, then name" dir-then-name)
+                 (const :tag "Alphabetical" alpha)
                  (const :tag "Chronological" chrono))
   :group 'pi-coding-agent)
 
-(defcustom pi-coding-agent/session-sort-closed 'alpha
+(defcustom pi-coding-agent/session-sort-closed 'chrono
   "Sort order for closed sessions in the switch-session list.
-`alpha' sorts by title (lexical), `chrono' by last modification
-(newest first).  The default is `alpha' — both groups sort lexically."
-  :type '(choice (const :tag "Alphabetical" alpha)
-                 (const :tag "Chronological" chrono))
+`chrono' sorts by last modification, newest first (descending — the
+default); `alpha' sorts by title (lexical)."
+  :type '(choice (const :tag "Chronological (newest first)" chrono)
+                 (const :tag "Alphabetical" alpha))
   :group 'pi-coding-agent)
 
 (defvar pi-coding-agent//registry nil
@@ -518,11 +521,15 @@ label so the session title no longer auto-syncs to it."
 
 (defun pi-coding-agent//desired-label-title (file)
   "Return the title a session label should have, or nil when undecidable.
-Session /name wins, then the first-message snippet, then \"New session\"."
+Session /name wins, then the first-message snippet, then \"New session\".
+Whitespace runs are collapsed (see `pi-coding-agent//collapse-whitespace')
+so perspective names never contain newlines."
   (when-let* ((meta (pi-coding-agent//session-metadata-cached file)))
-    (or (let ((name (plist-get meta :session-name)))
-          (and (stringp name) (not (string-empty-p name)) name))
-        (let ((fm (plist-get meta :first-message)))
+    (or (let ((name (pi-coding-agent//collapse-whitespace
+                     (plist-get meta :session-name))))
+          (and (stringp name) name))
+        (let ((fm (pi-coding-agent//collapse-whitespace
+                   (plist-get meta :first-message))))
           (and (stringp fm) (pi-coding-agent//truncate fm 40)))
         "New session")))
 
@@ -712,7 +719,8 @@ drift case handled by `pi-coding-agent//switch-to-session'."
         meta))))
 
 (defun pi-coding-agent//live-session-mappings ()
-  "Return ((PERSP-NAME . SESSION-FILE) ...) for live pi sessions.
+  "Return ((PERSP-NAME . SESSION-FILE) ...) for perspectives showing
+pi chat buffers.
 Each real perspective contributes its registry session file (fresh
 entries with :session-file nil are resolved from the chat buffer state
 and persisted) plus the settled session file of every pi chat buffer it
@@ -721,7 +729,12 @@ displays.  This covers sessions started outside the registry flow
 `pi-coding-agent' in an unregistered perspective) and fresh sessions
 whose JSONL file pi creates only on the first assistant response.  A
 chat buffer shared by several perspectives of one directory (D6) maps
-to each perspective that displays it."
+to each perspective that displays it.
+
+Used by `pi-coding-agent//open-or-switch' to resolve the perspective
+to switch to for a session file when the registry misses.  The session
+LISTS determine liveness from the active pi chat buffers instead (see
+`pi-coding-agent//opened-session-files' / `pi-coding-agent//session-targets')."
   (when (bound-and-true-p persp-mode)
     (let (pairs)
       (dolist (name (persp-names))
@@ -743,31 +756,48 @@ to each perspective that displays it."
       (nreverse pairs))))
 
 (defun pi-coding-agent//opened-session-files ()
-  "Return session files currently opened in a live perspective."
-  (delete-dups (mapcar #'cdr (pi-coding-agent//live-session-mappings))))
+  "Return session files loaded by an active pi chat buffer.
+Live sessions are defined by their chat buffers, not by the registry
+or the perspective mapping: every active pi chat buffer (mode
+`pi-coding-agent-chat-mode', live process) is a live session, and its
+loaded session file — when pi has written one yet — is that session's
+file.  Session files on disk not loaded by an active buffer are
+closed."
+  (delete-dups
+   (cl-loop for buf in (pi-coding-agent//active-chat-buffers)
+            for file = (plist-get (buffer-local-value
+                                   'pi-coding-agent--state buf)
+                                  :session-file)
+            when (and (stringp file) (not (string-empty-p file)))
+            collect file)))
+
+(defun pi-coding-agent//normalized-dir (dir)
+  "Return DIR expanded (route-preserving) with a trailing slash.
+Matches the normalization `pi-coding-agent--session-file-cwd-or-error'
+applies to recorded cwds."
+  (file-name-as-directory
+   (pi-coding-agent--route-preserving-expand-file-name dir)))
 
 (defun pi-coding-agent//session-entries-in-dir (dir)
   "Return session entries whose recorded cwd is DIR (exact match).
 DIR is compared expanded and with a trailing slash, matching the
 normalization `pi-coding-agent--session-file-cwd-or-error' applies to
 recorded cwds."
-  (let ((dir (file-name-as-directory
-              (pi-coding-agent--route-preserving-expand-file-name dir))))
+  (let ((dir (pi-coding-agent//normalized-dir dir)))
     (cl-remove-if-not
      (lambda (entry)
        (let ((cwd (plist-get entry :cwd)))
          (and (stringp cwd)
-              (equal (file-name-as-directory
-                      (pi-coding-agent--route-preserving-expand-file-name
-                       cwd))
-                     dir))))
+              (equal (pi-coding-agent//normalized-dir cwd) dir))))
      (pi-coding-agent//session-entries))))
 
 (defun pi-coding-agent//session-entries ()
   "Return plist entries for all sessions under the pi session root.
 The root is `pi-coding-agent/session-root', overridden by the
 PI_AGENT_DIR environment variable when set (pi then stores sessions
-under <PI_AGENT_DIR>/sessions)."
+under <PI_AGENT_DIR>/sessions).  Each entry carries an :opened flag
+(non-nil when the file is loaded by an active pi chat buffer — see
+`pi-coding-agent//opened-session-files')."
   (let* ((root (pi-coding-agent//session-root))
          (files (and (file-directory-p root)
                      (directory-files-recursively root "\\.jsonl$")))
@@ -790,40 +820,192 @@ under <PI_AGENT_DIR>/sessions)."
              pi-coding-agent//session-cache)
     (nreverse entries)))
 
+(defun pi-coding-agent//disambiguated-label (label n file)
+  "LABEL, suffixed with a short uuid when seen N (>0) times before.
+Two sessions can render identically (same title and directory); the
+second and later ones get a uuid suffix so each candidate stays
+selectable.  FILE supplies the uuid prefix; \"?\" when unavailable."
+  (if (> n 0)
+      (format "%s  (%s)" label
+              (or (pi-coding-agent//file-uuid-prefix file) "?"))
+    label))
+
+(defun pi-coding-agent//session-buffer-dir-p (buf dir)
+  "Return non-nil when pi chat buffer BUF's session directory is DIR.
+The buffer's session directory is read like
+`pi-coding-agent//context-directory' reads it (via
+`pi-coding-agent--chat-session-directory') and compared with the same
+normalization `pi-coding-agent//normalized-dir' applies to recorded
+cwds."
+  (when-let* ((buf-dir (condition-case nil
+                           (with-current-buffer buf
+                             (pi-coding-agent--chat-session-directory))
+                         (error nil)))
+              ((stringp buf-dir))
+              ((equal (pi-coding-agent//normalized-dir buf-dir)
+                      (pi-coding-agent//normalized-dir dir))))
+    t))
+
+(defun pi-coding-agent//session-targets (&optional dir include-closed
+                                        exclude-current)
+  "Return (LIVE . CLOSED) candidate alists for the session pickers.
+
+LIVE lists the active pi chat buffers — the ground truth for live
+sessions — most recently used first, each mapped to a target plist
+\(:buffer BUF :file FILE :entry ENTRY :label LABEL :opened t), where
+ENTRY is the session's file metadata when pi has written its JSONL
+file yet (nil for fresh sessions).  CLOSED lists the session files on
+disk not loaded by an active buffer, each mapped to (:entry ENTRY
+:label LABEL :opened nil); it is empty when INCLUDE-CLOSED is nil.
+
+When DIR is given, only sessions of that directory are listed.  When
+EXCLUDE-CURRENT is non-nil, the current perspective's session is
+dropped: its live chat buffers from LIVE, its session file from
+CLOSED.
+
+Each alist maps a candidate string to its target; duplicate labels
+(same title and directory) are disambiguated with a uuid suffix
+\(`pi-coding-agent//disambiguated-label').  LIVE always precedes
+CLOSED, and the pickers keep that order (see
+`pi-coding-agent//pick-session')."
+  (let* ((entries (if dir (pi-coding-agent//session-entries-in-dir dir)
+                    (pi-coding-agent//session-entries)))
+         (by-file (make-hash-table :test 'equal))
+         (seen (make-hash-table :test 'equal))
+         (current-persp (get-current-persp))
+         (current-buffers (and exclude-current
+                               (perspective-p current-persp)
+                               (safe-persp-buffers current-persp)))
+         (current-file (and exclude-current
+                            (pi-coding-agent//current-session-file)))
+         live closed)
+    (dolist (entry entries)
+      (puthash (plist-get entry :file) entry by-file))
+    ;; LIVE: active pi chat buffers (live process), most recently used
+    ;; first.  The registry/perspective mapping is not consulted: it can
+    ;; be stale (a killed perspective still registered) or miss sessions
+    ;; started outside the registry flow, while the chat buffers always
+    ;; reflect what is actually running.
+    (dolist (buf (pi-coding-agent//active-chat-buffers))
+      (when (and (or (null dir) (pi-coding-agent//session-buffer-dir-p buf dir))
+                 (or (null current-buffers)
+                     (not (memq buf current-buffers))))
+        (let* ((file (plist-get (buffer-local-value
+                                 'pi-coding-agent--state buf)
+                                :session-file))
+               (file (and (stringp file) (not (string-empty-p file)) file))
+               (entry (and file (gethash file by-file)))
+               (label (pi-coding-agent//chat-buffer-label buf by-file))
+               (n (gethash label seen 0)))
+          (puthash label (1+ n) seen)
+          (push (cons (pi-coding-agent//disambiguated-label label n file)
+                      (append (list :buffer buf :label label :opened t)
+                              (and file (list :file file))
+                              (and entry (list :entry entry))))
+                live))))
+    ;; CLOSED: session files on disk not loaded by an active buffer
+    ;; (the :opened flag of `pi-coding-agent//session-entries' is
+    ;; derived from the active buffers).
+    (when include-closed
+      (dolist (entry entries)
+        (let* ((file (plist-get entry :file))
+               (label (pi-coding-agent//session-base-label entry))
+               (n (gethash label seen 0)))
+          (unless (or (plist-get entry :opened)
+                      (and current-file (equal file current-file)))
+            (puthash label (1+ n) seen)
+            (push (cons (pi-coding-agent//disambiguated-label label n file)
+                        (list :entry entry :label label :opened nil))
+                  closed)))))
+    (cons (nreverse live) (nreverse closed))))
+
+(defun pi-coding-agent//collapse-whitespace (string)
+  "Collapse whitespace runs in STRING to single spaces, ends trimmed.
+Newlines and tabs in first-message titles would otherwise break the
+session list into multi-line rows (helm and *Completions* display
+candidates verbatim), making sessions look like they have no text,
+directory, or time.  Returns nil for non-strings and blank strings."
+  (when (stringp string)
+    (let ((collapsed (string-trim
+                      (replace-regexp-in-string "[ \t\n\r]+" " " string))))
+      (and (not (string-empty-p collapsed)) collapsed))))
+
 (defun pi-coding-agent//entry-title (entry)
-  "Display title for session ENTRY (name, first message, or placeholder)."
-  (or (let ((name (plist-get entry :name)))
-        (and (stringp name) (not (string-empty-p name)) name))
-      (let ((fm (plist-get entry :first-message)))
+  "Display title for session ENTRY (name, first message, or placeholder).
+Newlines and other whitespace runs are collapsed to single spaces, so
+titles stay on one line in the session lists."
+  (or (let ((name (pi-coding-agent//collapse-whitespace
+                   (plist-get entry :name))))
+        (and (stringp name) name))
+      (let ((fm (pi-coding-agent//collapse-whitespace
+                 (plist-get entry :first-message))))
         (and (stringp fm) (pi-coding-agent//truncate fm 40)))
       "(no messages)"))
 
-(defun pi-coding-agent//sort-group (entries mode)
-  "Sort ENTRIES by MODE (`alpha' or `chrono')."
+(defun pi-coding-agent//target-meta (target slot default)
+  "Return session TARGET's metadata SLOT, falling back to DEFAULT.
+The slot is read from the target's :entry when it has one, else from
+the target itself — live sessions carry their file metadata in
+:entry, while fallback targets (e.g. the close picker's default
+perspective) carry :count/:modified directly."
+  (or (plist-get (plist-get target :entry) slot)
+      (plist-get target slot)
+      default))
+
+(defun pi-coding-agent//target-title (target)
+  "Sort/display title for session TARGET: its entry's title, else its label."
+  (if-let* ((entry (plist-get target :entry)))
+      (pi-coding-agent//entry-title entry)
+    (plist-get target :label)))
+
+(defun pi-coding-agent//target-count (target)
+  "Message count of session TARGET."
+  (pi-coding-agent//target-meta target :count 0))
+
+(defun pi-coding-agent//target-modified (target)
+  "Last-modification time of session TARGET."
+  (pi-coding-agent//target-meta target :modified (current-time)))
+
+(defun pi-coding-agent//target-dir (target)
+  "Normalized session directory of TARGET, or nil when undeterminable.
+Closed targets read the recorded :cwd from their :entry; live targets
+without a file entry fall back to the chat buffer's session
+directory."
+  (or (when-let* ((entry (plist-get target :entry))
+                  (cwd (plist-get entry :cwd)))
+        (pi-coding-agent//normalized-dir cwd))
+      (when-let* ((buf (plist-get target :buffer)))
+        (condition-case nil
+            (pi-coding-agent//normalized-dir
+             (with-current-buffer buf
+               (pi-coding-agent--chat-session-directory)))
+          (error nil)))))
+
+(defun pi-coding-agent//sort-targets (targets mode)
+  "Sort session TARGETS (a candidate alist) by MODE.
+`alpha' sorts by title, `chrono' by last modification (newest first),
+`dir-then-name' by session directory, then by title."
   (pcase mode
     ('alpha
-     (sort (copy-sequence entries)
+     (sort (copy-sequence targets)
            (lambda (a b)
-             (string< (pi-coding-agent//entry-title a)
-                      (pi-coding-agent//entry-title b)))))
+             (string< (pi-coding-agent//target-title (cdr a))
+                      (pi-coding-agent//target-title (cdr b))))))
     ('chrono
-     (sort (copy-sequence entries)
+     (sort (copy-sequence targets)
            (lambda (a b)
-             (time-less-p (plist-get b :modified)
-                          (plist-get a :modified)))))
-    (_ entries)))
-
-(defun pi-coding-agent//sort-entries (entries)
-  "Opened sessions first (per `pi-coding-agent/session-sort-opened'),
-then closed (per `pi-coding-agent/session-sort-closed'); both default
-to lexical order by title."
-  (append
-   (pi-coding-agent//sort-group
-    (cl-remove-if-not (lambda (e) (plist-get e :opened)) entries)
-    pi-coding-agent/session-sort-opened)
-   (pi-coding-agent//sort-group
-    (cl-remove-if-not (lambda (e) (not (plist-get e :opened))) entries)
-    pi-coding-agent/session-sort-closed)))
+             (time-less-p (pi-coding-agent//target-modified (cdr b))
+                          (pi-coding-agent//target-modified (cdr a))))))
+    ('dir-then-name
+     (sort (copy-sequence targets)
+           (lambda (a b)
+             (let ((dir-a (or (pi-coding-agent//target-dir (cdr a)) ""))
+                   (dir-b (or (pi-coding-agent//target-dir (cdr b)) "")))
+               (if (string= dir-a dir-b)
+                   (string< (pi-coding-agent//target-title (cdr a))
+                            (pi-coding-agent//target-title (cdr b)))
+                 (string< dir-a dir-b))))))
+    (_ targets)))
 
 (defun pi-coding-agent//age-string (time)
   "Humanized age of TIME, e.g. \"now\", \"5m\", \"3h\", \"2d\"."
@@ -833,46 +1015,68 @@ to lexical order by title."
           ((< secs 86400) (format "%dh" (/ secs 3600)))
           (t (format "%dd" (/ secs 86400))))))
 
-(defun pi-coding-agent//session-candidates (entries &optional dir)
-  "Build (CANDIDATE . ENTRY) conses for the switch-session list.
-Candidates are \"title · abbrev-path\" — or just \"title\" when DIR is
-given (all sessions share that directory) — with a uuid disambiguator
-when two sessions would render identically."
-  (let ((seen (make-hash-table :test 'equal))
-        candidates)
-    (dolist (entry entries)
-      (let* ((title (pi-coding-agent//entry-title entry))
-             (cwd (plist-get entry :cwd))
-             (abbrev (and (null dir) (stringp cwd)
-                          (abbreviate-file-name (directory-file-name cwd))))
-             (base (if abbrev (format "%s · %s" title abbrev) title))
-             (n (gethash base seen 0)))
-        (puthash base (1+ n) seen)
-        (let ((cand (if (> n 0)
-                        (format "%s  (%s)" base
-                                (or (pi-coding-agent//file-uuid-prefix
-                                     (plist-get entry :file))
-                                    "?"))
-                      base)))
-          (push (cons cand entry) candidates))))
-    (nreverse candidates)))
+(defun pi-coding-agent//session-header (title)
+  "Section header row \"──── TITLE ────\" marking a group boundary."
+  (format "────── %s ──────" title))
 
-(defun pi-coding-agent//make-session-affixation (alist)
-  "Return an affixation function showing status, count, and age.
-Candidates without an ENTRY (e.g. the \"✚ New session\" action item)
-get a \"✚ \" glyph and no suffix."
+(defconst pi-coding-agent//live-sessions-header
+  (pi-coding-agent//session-header "Live sessions")
+  "Non-selectable boundary row preceding the live session candidates.
+Inserted by `pi-coding-agent//cr-pick-session-target' between the
+live and closed groups; selecting it re-prompts.")
+
+(defconst pi-coding-agent//closed-sessions-header
+  (pi-coding-agent//session-header "Closed sessions")
+  "Non-selectable boundary row preceding the closed session candidates.
+Inserted by `pi-coding-agent//cr-pick-session-target' after the live
+group; selecting it re-prompts.")
+
+(defun pi-coding-agent//annotated-session-candidate (cand target)
+  "Annotated display string for session candidate CAND with TARGET.
+Separators and action items (nil target, e.g. \"✚ New session\")
+render as-is; sessions get a \"● \"/\"○ \" status glyph plus
+\"  N msgs  AGE\"."
+  (if (or (null target) (eq (plist-get target :separator) t))
+      cand
+    (format "%s%s  %d msgs  %s"
+            (if (plist-get target :opened) "● " "○ ")
+            cand
+            (pi-coding-agent//target-count target)
+            (pi-coding-agent//age-string
+             (pi-coding-agent//target-modified target)))))
+
+(defun pi-coding-agent//helm-session-candidates (alist)
+  "Return (DISPLAY . REAL) cons candidates for helm from session ALIST.
+DISPLAY annotates the candidate with status glyph, message count, and
+age; REAL is the clean candidate string used for dispatch, so helm
+matching (on DISPLAY) and the caller's `assoc' lookups stay
+consistent."
+  (mapcar (lambda (cand)
+            (cons (pi-coding-agent//annotated-session-candidate
+                   (car cand) (cdr cand))
+                  (car cand)))
+          alist))
+
+(defun pi-coding-agent//session-target-affixation (alist)
+  "Return an affixation function for session candidate ALIST.
+Candidates are annotated with a status glyph (● live / ○ closed)
+plus message count and age; section-header rows (:separator targets)
+and action items (nil target, e.g. \"✚ New session\") get no
+annotation."
   (lambda (cands)
     (mapcar
      (lambda (cand)
-       (let* ((entry (cdr (assoc cand alist)))
-              (glyph (cond ((null entry) "✚ ")
-                           ((plist-get entry :opened) "● ")
+       (let* ((target (cdr (assoc cand alist)))
+              (glyph (cond ((null target) "")
+                           ((eq (plist-get target :separator) t) "")
+                           ((plist-get target :opened) "● ")
                            (t "○ ")))
-              (suffix (if entry
+              (suffix (if (and target
+                               (not (eq (plist-get target :separator) t)))
                           (format "  %d msgs  %s"
-                                  (or (plist-get entry :count) 0)
+                                  (pi-coding-agent//target-count target)
                                   (pi-coding-agent//age-string
-                                   (plist-get entry :modified)))
+                                   (pi-coding-agent//target-modified target)))
                         "")))
          (list cand glyph suffix)))
      cands)))
@@ -889,9 +1093,98 @@ pre-sorted candidate order."
        ((eq (car-safe action) 'metadata)
         `(metadata (category . pi-session)
                    (affixation-function
-                    . ,(pi-coding-agent//make-session-affixation alist))
+                    . ,(pi-coding-agent//session-target-affixation alist))
                    (display-sort-function . identity)))
        (t nil)))))
+
+(defun pi-coding-agent//cr-pick-session-target (live closed prompt
+                                                &optional default-label
+                                                must-match extra)
+  "completing-read over LIVE/CLOSED candidate alists; return the choice.
+Candidates keep the pre-sorted order (live before closed) with
+section-header rows (`pi-coding-agent//live-sessions-header' /
+`pi-coding-agent//closed-sessions-header') marking the boundary
+between the two groups, annotated with status glyph, message count,
+and age.  EXTRA (an alist, e.g. the \"✚ New session\" action) is
+appended after the closed group.  Selecting a header row re-prompts.
+Returns the chosen candidate string, or the typed input when
+MUST-MATCH is nil."
+  (cl-loop
+   with alist = (append (list (cons pi-coding-agent//live-sessions-header
+                                    '(:separator t)))
+                        live
+                        (and closed
+                             (list (cons pi-coding-agent//closed-sessions-header
+                                         '(:separator t))))
+                        closed
+                        extra)
+   with collection = (pi-coding-agent//session-collection alist)
+   for choice = (completing-read
+                 prompt collection nil must-match default-label
+                 'pi-coding-agent-session-history)
+   until (not (eq (plist-get (cdr (assoc choice alist)) :separator) t))
+   do (message "Pick a session, not a section header")
+   finally return choice))
+
+;; Declared for the byte-compiler: `helm-make-source' (helm-core's
+;; helm-source.el) is only available at runtime, once helm is loaded.
+(declare-function helm-make-source "helm-source.el")
+
+(defun pi-coding-agent//helm-pick-session-target (live closed prompt
+                                                 &optional default-label
+                                                 must-match extra)
+  "Helm pick of a session from LIVE/CLOSED candidate alists.
+Live sessions are shown in their own \"Live sessions\" section,
+closed sessions in a \"Closed sessions\" one (when present) — the
+boundary between the groups; EXTRA is a list of (SOURCE-NAME . ALIST)
+sections appended after them (e.g. the \"✚ New session\" action).
+Candidates are annotated with status glyph, message count, and age;
+the returned string is the clean candidate (no annotation)."
+  ;; Sources are built with `helm-make-source' (a function), not the
+  ;; `helm-build-sync-source' macro: funcs.el is loaded/compiled before
+  ;; helm is, so a macro call would never be expanded and would fail at
+  ;; runtime with "Invalid function".  `helm-make-source' lives in
+  ;; helm-core's helm-source.el, which helm.el requires at load time.
+  (require 'helm)
+  (helm :sources
+        (append
+         (list (helm-make-source
+                "Live sessions" 'helm-source-sync
+                :candidates (pi-coding-agent//helm-session-candidates live)
+                :must-match must-match
+                :action 'identity))
+         (and closed
+              (list (helm-make-source
+                     "Closed sessions" 'helm-source-sync
+                     :candidates (pi-coding-agent//helm-session-candidates closed)
+                     :must-match must-match
+                     :action 'identity)))
+         (cl-loop for (name . alist) in extra
+                  collect (helm-make-source
+                           name 'helm-source-sync
+                           :candidates (pi-coding-agent//helm-session-candidates alist)
+                           :must-match nil
+                           :action 'identity)))
+        :buffer "*helm pi session*"
+        :prompt prompt
+        :default default-label))
+
+(defun pi-coding-agent//pick-session (live closed prompt
+                                      &optional default-label must-match extra)
+  "Unified session picker over LIVE/CLOSED candidate alists.
+Live sessions are always offered before closed ones, with a clear
+boundary between the groups: separate \"Live sessions\" /
+\"Closed sessions\" sources under helm, section-header rows under
+completing-read (vertico, ivy, plain minibuffer).  EXTRA is an
+action alist (e.g. \"✚ New session\"), offered as its own source
+under helm and appended after the closed group otherwise.  Returns
+the chosen candidate string — or the typed input when MUST-MATCH is
+nil."
+  (if (featurep 'helm)
+      (pi-coding-agent//helm-pick-session-target
+       live closed prompt default-label must-match extra)
+    (pi-coding-agent//cr-pick-session-target
+     live closed prompt default-label must-match extra)))
 
 ;; ---------------------------------------------------------------------
 ;; Opening, switching, reviving
@@ -1072,33 +1365,66 @@ a registered perspective)."
         (pi-coding-agent//switch-to-session persp-name file)
       (pi-coding-agent//open-session entry))))
 
+(defun pi-coding-agent//switch-to-live-buffer (buf)
+  "Switch to the perspective owning live pi chat buffer BUF.
+When BUF belongs to no perspective (a session started outside the
+persp flow), its session file is opened into a fresh perspective
+instead — which reuses the directory's canonical chat buffer — or,
+for a fresh session without a file yet, BUF is displayed directly."
+  (if-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
+      (let ((name (safe-persp-name persp)))
+        (if (perspective-p (persp-get-by-name name))
+            (persp-switch name)
+          (user-error "The selected session's perspective is gone")))
+    (if-let* ((file (plist-get (buffer-local-value
+                                'pi-coding-agent--state buf)
+                               :session-file))
+              ((stringp file))
+              ((not (string-empty-p file))))
+        (pi-coding-agent//open-or-switch (list :file file))
+      (switch-to-buffer buf))))
+
+(defun pi-coding-agent//open-or-switch-target (target)
+  "Open or switch to session TARGET from the session pickers.
+TARGET is (:buffer BUF) for a live session (switch to the
+perspective owning the active chat buffer) or (:entry ENTRY) for a
+closed one (open it, switching to it when it is already opened)."
+  (cond
+   ((plist-get target :buffer)
+    (pi-coding-agent//switch-to-live-buffer (plist-get target :buffer)))
+   ((plist-get target :entry)
+    (pi-coding-agent//open-or-switch (plist-get target :entry)))
+   (t (user-error "Invalid session target"))))
+
 (defun pi-coding-agent/switch-session ()
   "List all pi sessions; open the chosen one or switch to it if opened.
-The current session is excluded.  Opened sessions are marked with ●
-and listed first, closed sessions after; both groups sort lexically by
-title (configurable via `pi-coding-agent/session-sort-opened' and
-`pi-coding-agent/session-sort-closed')."
+The current session is excluded.  Live sessions — the active pi chat
+buffers (●) — are listed first, then closed sessions (○, files on
+disk not loaded by a live session), with a section boundary between
+the two groups: separate \"Live sessions\" / \"Closed sessions\"
+sources under helm, header rows otherwise.  Both groups sort by title
+(configurable via `pi-coding-agent/session-sort-opened' and
+`pi-coding-agent/session-sort-closed').  Picking a live session
+switches to its perspective; picking a closed one opens it (reviving
+the perspective still registered for it)."
   (interactive)
   (require 'pi-coding-agent)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (pi-coding-agent//sync-labels)
-  (let* ((current (pi-coding-agent//current-session-file))
-         (entries (pi-coding-agent//sort-entries
-                   (cl-remove-if (lambda (e)
-                                   (and current
-                                        (equal (plist-get e :file) current)))
-                                 (pi-coding-agent//session-entries))))
-         (alist (pi-coding-agent//session-candidates entries)))
-    (if (null alist)
+  (let* ((groups (pi-coding-agent//session-targets nil t t))
+         (live (pi-coding-agent//sort-targets
+                (car groups) pi-coding-agent/session-sort-opened))
+         (closed (pi-coding-agent//sort-targets
+                  (cdr groups) pi-coding-agent/session-sort-closed)))
+    (if (and (null live) (null closed))
         (user-error "No other pi sessions found (looked in %s)"
                     (expand-file-name pi-coding-agent/session-root))
-      (let ((choice (completing-read
-                     "Pi session: "
-                     (pi-coding-agent//session-collection alist)
-                     nil t nil 'pi-coding-agent-session-history)))
-        (when-let* ((entry (cdr (assoc choice alist))))
-          (pi-coding-agent//open-or-switch entry))))))
+      (let ((choice (pi-coding-agent//pick-session
+                     live closed "Pi session: " nil t)))
+        (when choice
+          (pi-coding-agent//open-or-switch-target
+           (cdr (or (assoc choice live) (assoc choice closed)))))))))
 
 (defun pi-coding-agent/switch-session-in-dir ()
   "Switch to another pi session of the current directory, with its layout.
@@ -1106,10 +1432,10 @@ title (configurable via `pi-coding-agent/session-sort-opened' and
 The directory is the session's own directory inside pi chat/input
 buffers, the terminal's working directory in terminal buffers, and
 the visited file's directory (else `default-directory') elsewhere.
-Lists only that directory's sessions — opened (●) first, then closed
-(○), each sorted lexically by title — excluding the current one.
-Picking an opened session switches to its perspective (reviving a
-dead pi process); picking a closed session opens it in a fresh
+Lists only that directory's sessions — live (●) first, then closed
+(○), with a section boundary between the groups, each sorted by
+title — excluding the current one.  Picking a live session switches
+to its perspective; picking a closed session opens it in a fresh
 perspective with its workspace restored.  Either way the pi window
 layout (chat/input left, edit right) is applied afterwards."
   (interactive)
@@ -1118,24 +1444,22 @@ layout (chat/input left, edit right) is applied afterwards."
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (pi-coding-agent//sync-labels)
   (let* ((dir (pi-coding-agent//context-directory))
-         (current (pi-coding-agent//current-session-file))
-         (entries (pi-coding-agent//sort-entries
-                   (cl-remove-if
-                    (lambda (entry)
-                      (and current
-                           (equal (plist-get entry :file) current)))
-                    (pi-coding-agent//session-entries-in-dir dir))))
-         (alist (pi-coding-agent//session-candidates entries dir)))
-    (if (null alist)
+         (groups (pi-coding-agent//session-targets dir t t))
+         (live (pi-coding-agent//sort-targets
+                (car groups) pi-coding-agent/session-sort-opened))
+         (closed (pi-coding-agent//sort-targets
+                  (cdr groups) pi-coding-agent/session-sort-closed)))
+    (if (and (null live) (null closed))
         (user-error "No other pi sessions found in %s"
                     (abbreviate-file-name (directory-file-name dir)))
-      (let ((choice (completing-read
+      (let ((choice (pi-coding-agent//pick-session
+                     live closed
                      (format "Pi session in %s: "
                              (abbreviate-file-name (directory-file-name dir)))
-                     (pi-coding-agent//session-collection alist)
-                     nil t nil 'pi-coding-agent-session-history)))
-        (when-let* ((entry (cdr (assoc choice alist))))
-          (pi-coding-agent//open-or-switch entry)
+                     nil t)))
+        (when choice
+          (pi-coding-agent//open-or-switch-target
+           (cdr (or (assoc choice live) (assoc choice closed))))
           ;; Re-assert the pi window layout for the switched-to session
           ;; (chat/input left, edit right), putting whatever buffer the
           ;; switch restored as current into the edit pane.  The
@@ -1195,43 +1519,46 @@ unnamed session."
                         (abbreviate-file-name (directory-file-name dir)))))))
     (and (not (string-empty-p name)) name)))
 
-(defun pi-coding-agent//new-session-choice (dir entries)
+(defun pi-coding-agent//new-session-choice (dir)
   "Choose between DIR's existing sessions and a fresh session.
-ENTRIES are the directory's session entries (see
-`pi-coding-agent//session-entries-in-dir').  Returns (existing .
-ENTRY) when an existing session was chosen, (new . NAME) when a fresh
-session named NAME (nil = unnamed) should be started.
+Returns (existing . TARGET) when an existing session was chosen,
+(new . NAME) when a fresh session named NAME (nil = unnamed) should
+be started.
 
-With no existing sessions a fresh session is chosen directly; when
-DIR already runs a live unnamed session whose file pi has not written
-yet, a name is prompted first (parallel sessions need a name).  With
-existing sessions, they are offered through completing-read — opened
-first, then closed, each sorted lexically — with the \"✚ New
-session\" candidate and free-form input (any non-matching name) both
-starting a fresh named session; an empty input starts an unnamed
-session."
-  (if (null entries)
-      (cons 'new (and (pi-coding-agent//live-session-in-dir-p dir)
-                      (pi-coding-agent//read-new-session-name dir)))
-    (let* ((alist (append (pi-coding-agent//session-candidates entries dir)
-                          (list (cons pi-coding-agent//new-session-candidate
-                                      nil))))
-           (choice (completing-read
-                    (format "Pi session in %s (type a new name for a new session): "
-                            (abbreviate-file-name (directory-file-name dir)))
-                    (pi-coding-agent//session-collection alist)
-                    nil nil nil 'pi-coding-agent-session-history))
-           (entry (cdr (assoc choice alist))))
-      (cond
-       (entry
-        (cons 'existing entry))
-       ((string= choice pi-coding-agent//new-session-candidate)
-        (cons 'new (pi-coding-agent//read-new-session-name dir)))
-       ((or (null choice) (string-empty-p choice))
-        (cons 'new nil))
-       (t
-        (cons 'new (let ((name (string-trim choice)))
-                     (and (not (string-empty-p name)) name))))))))
+With no existing sessions (none live, none closed) a fresh session
+is chosen directly; when DIR already runs a live unnamed session
+whose file pi has not written yet, a name is prompted first (parallel
+sessions need a name).  With existing sessions, they are offered
+through the unified session picker — live (●) first, then closed
+(○), with a section boundary between the groups, each sorted by
+title — plus the \"✚ New session\" candidate and free-form input
+(any non-matching name) both starting a fresh named session; an
+empty input starts an unnamed session."
+  (let* ((groups (pi-coding-agent//session-targets dir t nil))
+         (live (pi-coding-agent//sort-targets
+                (car groups) pi-coding-agent/session-sort-opened))
+         (closed (pi-coding-agent//sort-targets
+                  (cdr groups) pi-coding-agent/session-sort-closed)))
+    (if (and (null live) (null closed))
+        (cons 'new (and (pi-coding-agent//live-session-in-dir-p dir)
+                        (pi-coding-agent//read-new-session-name dir)))
+      (let* ((extra (list (cons pi-coding-agent//new-session-candidate nil)))
+             (choice (pi-coding-agent//pick-session
+                      live closed
+                      (format "Pi session in %s (type a new name for a new session): "
+                              (abbreviate-file-name (directory-file-name dir)))
+                      nil nil (list (cons "New session" extra))))
+             (target (cdr (assoc choice (append live closed)))))
+        (cond
+         (target
+          (cons 'existing target))
+         ((string= choice pi-coding-agent//new-session-candidate)
+          (cons 'new (pi-coding-agent//read-new-session-name dir)))
+         ((or (null choice) (string-empty-p choice))
+          (cons 'new nil))
+         (t
+          (cons 'new (let ((name (string-trim choice)))
+                       (and (not (string-empty-p name)) name)))))))))
 
 (defun pi-coding-agent//start-fresh-session (dir &optional name)
   "Start a brand-new pi session in DIR as its own perspective.
@@ -1280,12 +1607,13 @@ name for a parallel session" dir))
 Always prompts for the directory (unlike `pi-coding-agent/layout',
 which reuses the recorded directory inside pi buffers); the prompt
 default follows the layout's directory logic.  When the directory has
-existing sessions, they are offered for selection — opened (●) first,
-then closed (○), each sorted lexically — via completing-read, so the
-picker works under helm, ivy, vertico, or the plain minibuffer.
-Picking an existing session opens it (or switches to it when already
-opened), with its layout; typing a new session name — or picking the
-\"✚ New session\" candidate and entering one — starts a fresh named
+existing sessions, they are offered for selection — live (●) first,
+then closed (○), with a section boundary between the groups, each
+sorted by title — via the unified session picker, so it works under
+helm, ivy, vertico, or the plain minibuffer.  Picking an existing
+session opens it (or switches to it when already opened), with its
+layout; typing a new session name — or picking the \"✚ New
+session\" candidate and entering one — starts a fresh named
 session; an empty name starts an unnamed session, refused when the
 directory already runs a live unnamed session.  With no existing
 sessions a fresh unnamed session is started directly."
@@ -1297,11 +1625,10 @@ sessions a fresh unnamed session is started directly."
          (dir (read-directory-name "Start new pi session in directory: "
                                    default-dir default-dir t))
          (dir (pi-coding-agent--route-preserving-expand-file-name dir))
-         (choice (pi-coding-agent//new-session-choice
-                  dir (pi-coding-agent//session-entries-in-dir dir))))
+         (choice (pi-coding-agent//new-session-choice dir)))
     (pcase choice
-      (`(existing . ,entry)
-       (pi-coding-agent//open-or-switch entry))
+      (`(existing . ,target)
+       (pi-coding-agent//open-or-switch-target target))
       (`(new . ,name)
        (pi-coding-agent//start-fresh-session dir name)))))
 
@@ -1473,7 +1800,12 @@ shadow input method activation keys; marking uses
 candidates, RET confirms.  Returns the selected strings: the marked
 candidates, or the single candidate at point; typed input is
 returned verbatim."
-  (helm :sources (helm-build-sync-source "Git repositories"
+  ;; `helm-make-source' is a function (the `helm-build-sync-source'
+  ;; macro equivalent) — funcs.el is loaded/compiled before helm is, so
+  ;; a macro call would never be expanded and would fail at runtime
+  ;; with "Invalid function".
+  (require 'helm)
+  (helm :sources (helm-make-source "Git repositories" 'helm-source-sync
                    :candidates candidates
                    :must-match nil
                    :keymap (pi-coding-agent//helm-repo-map)
@@ -1486,7 +1818,8 @@ returned verbatim."
 (defun pi-coding-agent//helm-pick-repo (candidates prompt)
   "Helm single-select of repo CANDIDATES with PROMPT.
 Returns the selected candidate string, or the typed input."
-  (helm :sources (helm-build-sync-source "Git repository"
+  (require 'helm)
+  (helm :sources (helm-make-source "Git repository" 'helm-source-sync
                    :candidates candidates
                    :must-match nil
                    :keymap (pi-coding-agent//helm-repo-map)
@@ -1880,130 +2213,38 @@ perspective has no session."
       (cons name (list :persp name :opened t :count 0
                        :modified (current-time)))))))
 
-(defun pi-coding-agent//close-target-candidates (&optional include-closed)
-  "Return (ACTIVE . CLOSED) candidate alists for the session pickers.
-Each alist maps a candidate string to a target plist: (:buffer BUF)
-for active sessions — live pi chat buffers, most recently used first,
-the perspective resolved only when the selection is acted on — and
-(:entry ENTRY) for closed sessions (files on disk not loaded by an
-active buffer) when INCLUDE-CLOSED.  Active targets also carry the
-session's metadata for affixation; duplicate labels (same title and
-directory) are disambiguated with a uuid suffix."
-  (let* ((by-file (pi-coding-agent//session-entry-by-file))
-         (seen (make-hash-table :test 'equal))
-         active-files
-         (active (mapcar
-                  (lambda (buf)
-                    (let* ((file (plist-get
-                                  (buffer-local-value 'pi-coding-agent--state buf)
-                                  :session-file))
-                           (entry (and (stringp file) (gethash file by-file)))
-                           (label (or (when-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
-                                        (safe-persp-name persp))
-                                      (pi-coding-agent//session-base-label entry)
-                                      (buffer-name buf)))
-                           (n (gethash label seen 0)))
-                      (puthash label (1+ n) seen)
-                      (when file (push file active-files))
-                      (cons (if (> n 0)
-                                (format "%s  (%s)" label
-                                        (or (pi-coding-agent//file-uuid-prefix file) "?"))
-                              label)
-                            (if entry
-                                ;; :buffer first: the dispatch pcase keys on
-                                ;; the target's car.
-                                (append (list :buffer buf) entry)
-                              (list :buffer buf :opened t
-                                    :modified (current-time))))))
-                  (pi-coding-agent//active-chat-buffers)))
-         (closed (and include-closed
-                      (mapcar
-                       (lambda (entry)
-                         (let* ((label (pi-coding-agent//session-base-label entry))
-                                (n (gethash label seen 0))
-                                (target (append (list :entry entry) entry)))
-                           (puthash label (1+ n) seen)
-                           (plist-put target :opened nil)
-                           (cons (if (> n 0)
-                                     (format "%s  (%s)" label
-                                             (or (pi-coding-agent//file-uuid-prefix
-                                                  (plist-get entry :file))
-                                                 "?"))
-                                   label)
-                                 target)))
-                       (cl-remove-if
-                        (lambda (entry)
-                          (member (plist-get entry :file) active-files))
-                        (pi-coding-agent//session-entries))))))
-    (cons active closed)))
-
-(defun pi-coding-agent//helm-pick-close-target (active closed action default-label)
-  "Helm pick of a session from ACTIVE/CLOSED candidate alists.
-Active sessions are shown in their own section, closed sessions in a
-second one (when present).  Returns the chosen candidate string."
-  (helm :sources
-        (append
-         (list (helm-build-sync-source
-                "Active sessions"
-                :candidates (mapcar #'car active)
-                :must-match t
-                :action 'identity))
-         (and closed
-              (list (helm-build-sync-source
-                     "Closed sessions"
-                     :candidates (mapcar #'car closed)
-                     :must-match t
-                     :action 'identity))))
-        :buffer "*helm pi session*"
-        :prompt (format "%s pi session: " action)
-        :default default-label))
-
-(defun pi-coding-agent//cr-pick-close-target (active closed action default-label)
-  "completing-read over ACTIVE/CLOSED candidates; return the choice.
-Candidates keep the pre-sorted order (active first) and are annotated
-with status glyph, message count, and age."
-  (let* ((alist (append active closed))
-         (collection (pi-coding-agent//session-collection alist)))
-    (completing-read
-     (format "%s pi session%s: " action
-             (if default-label
-                 (format " (default %s)" (pi-coding-agent//truncate default-label 40))
-               ""))
-     collection nil t default-label 'pi-coding-agent-session-history)))
-
 (defun pi-coding-agent//read-close-target (&optional include-closed action)
   "Prompt for a pi session; return a target plist.
-ACTIVE candidates are live pi chat buffers — the perspective is
+LIVE candidates are the active pi chat buffers — the perspective is
 resolved at close time (`pi-coding-agent//persp-for-close'), not
 when listing; when INCLUDE-CLOSED, closed sessions follow (their
 file is deleted).  The picker's default is the current
 perspective's session — its active pi chat buffer, or its registered
-session when there is no active buffer.  Under helm the active and
-closed groups are separate sections, active first.
+session when there is no active buffer.  Live sessions are always
+offered before closed ones, with a section boundary between the
+groups (separate sources under helm, header rows otherwise).
 ACTION is the verb used in the prompt and error (default \"Close\").
 Returns (:buffer BUF), (:entry ENTRY), or (:persp NAME)."
   (let* ((action (or action "Close"))
-         (groups (pi-coding-agent//close-target-candidates include-closed))
-         (active (car groups))
+         (groups (pi-coding-agent//session-targets nil include-closed))
+         (live (car groups))
          (closed (cdr groups))
          (default (pi-coding-agent//default-close-candidate)))
-    (when (and default (not (assoc (car default) active)))
+    (when (and default (not (assoc (car default) live)))
       ;; Default without an active buffer: replace any same-labelled
       ;; closed candidate (the same session) and offer it in the
-      ;; active list.
+      ;; live list.
       (when (assoc (car default) closed)
         (setq closed (cl-remove (car default) closed :key #'car :test #'equal)))
-      (push default active))
-    (if (and (null active) (null closed))
+      (push default live))
+    (if (and (null live) (null closed))
         (user-error "No open pi sessions to %s" (downcase action))
-      (let ((choice (if (featurep 'helm)
-                        (pi-coding-agent//helm-pick-close-target
-                         active closed action (car default))
-                      (pi-coding-agent//cr-pick-close-target
-                       active closed action (car default)))))
+      (let ((choice (pi-coding-agent//pick-session
+                     live closed (format "%s pi session: " action)
+                     (car default) t)))
         (cond
          ((and default (string-empty-p choice)) (cdr default))
-         ((assoc choice active) (cdr (assoc choice active)))
+         ((assoc choice live) (cdr (assoc choice live)))
          ((assoc choice closed) (cdr (assoc choice closed)))
          (t (user-error "No session selected")))))))
 

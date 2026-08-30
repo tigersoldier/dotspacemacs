@@ -17,7 +17,7 @@
 (spacemacs/declare-prefix "ai" "pi-coding-agent")
 (spacemacs/set-leader-keys
   "aip" 'pi-coding-agent                    ; start or focus session
-  "aii" 'pi-coding-agent/switch-session     ; list sessions: open or switch
+  "aii" 'pi-coding-agent/switch-session     ; list sessions: live first, then closed
   "aiI" 'pi-coding-agent/switch-session-in-dir ; switch current dir's sessions
   "aiS" 'pi-coding-agent/open-named-session ; start named session
   "aiw" 'pi-coding-agent/new-worktree-session ; worktree from a repo + session

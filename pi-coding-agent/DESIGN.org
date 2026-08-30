@@ -26,18 +26,35 @@ perspective per opened pi session.  Rejected: project.el (keys by directory,
 cannot express parallel sessions in one dir) and a custom buffer registry
 (reimplements persp-mode).
 
-*** D2. Session list UI: completion-based, framework-agnostic
+*** D2. Session list UI: unified live/closed picker, framework-agnostic
 
-Two layers:
-1. Generic layer: =completing-read= with affixation (directory, message
-   count, age columns), candidates pre-ordered (opened first, then
-   closed, each sorted lexically by title — configurable via
-   =session-sort-opened= / =session-sort-closed=), opened/closed shown
-   via status glyph (●/○).  Works under helm-mode, ivy, vertico, plain
-   minibuffer.
-2. Helm-specific support: deferred.  (Installed helm has no
-   =group-function= metadata support; a two-source helm picker can be added
-   later without touching the generic layer.)
+One list model shared by every session picker (=switch-session=,
+=switch-session-in-dir=, =start-new-session=, =close-session=,
+=delete-session=):
+
+1. A single builder (=pi-coding-agent//session-targets=) returns
+   (LIVE . CLOSED) candidate alists.  LIVE = active pi chat buffers
+   (the ground truth, see D3), most recently used first; CLOSED =
+   files on disk not loaded by an active buffer.  Each candidate maps
+   to a target plist the caller dispatches on (:buffer for live,
+   :entry for closed).
+2. Rendering is one shared picker (=pi-coding-agent//pick-session=):
+   under helm the groups are separate sources ("Live sessions" /
+   "Closed sessions" — real section headers); otherwise
+   completing-read with non-selectable header rows
+   (=────── Live sessions ──────=) between the groups, affixation
+   (status glyph ●/○, message count, age), pre-sorted order (live
+   first) preserved via display-sort-function identity.  Selecting a
+   header row re-prompts.  This works under helm-mode, ivy, vertico
+   and the plain minibuffer.
+3. Some commands list only one group: close-session offers live
+   sessions only (its default is the current perspective's session);
+   switch lists both; delete lists both.
+
+(2026 update: previously the switch list derived "opened" from the
+persp mapping and had no group boundary; the close/delete picker had
+helm sections but no completing-read boundary.  Both are now the
+shared model above.)
 
 *** D3. Session identity and perspective mapping
 
@@ -45,8 +62,14 @@ Two layers:
   persisted to the cache directory (=spacemacs-cache-directory=), updated on
   perspective create/rename/destroy, saved on Emacs exit (atomic writes:
   temp file + rename).
-- =opened= <-> a live perspective exists for the session file.  A perspective
-  with a dead pi process is still opened; switching revives it.
+- =live= <-> an active pi chat buffer exists (mode
+  =pi-coding-agent-chat-mode= with a live process).  Liveness is
+  always read from the chat buffers (=active-chat-buffers=), never
+  from the registry or the perspective mapping — those can be stale
+  (a killed perspective still registered) or miss sessions started
+  outside the registry flow.  A perspective with a dead pi process
+  lists as closed; switching to it revives the process (the registry
+  still maps the perspective).
 - After an Emacs restart everything is closed unless auto-resume is enabled
   (see D8).
 
@@ -88,7 +111,18 @@ Closed -> open (selecting a closed session):
    must not pick the most-recent pi-chat buffer from another
    perspective.)
 
-Opened -> switch (selecting an opened session):
+Live -> switch (selecting a live session):
+1. =pi-coding-agent//switch-to-live-buffer=: =persp-switch= to the
+   perspective owning the active chat buffer (Spacemacs restores its
+   window configuration).  A live buffer outside any perspective falls
+   back to opening its file (which reuses the directory's canonical
+   chat buffer).
+
+Closed -> switch (reviving a registered perspective): picking a
+closed session still routes through =pi-coding-agent//open-or-switch=,
+which prefers the perspective the registry (or
+=live-session-mappings=) still maps for the file — the session's
+perspective exists but its process died.  =switch-to-session= then:
 1. =persp-switch= to the perspective (Spacemacs restores its window
    configuration).
 2. If the pi process is dead: revive silently (=setup-session= + resume of
@@ -145,18 +179,18 @@ Two commands sharing one teardown core (=pi-coding-agent//close-session-
 in-persp=): =pi-coding-agent/close-session= (SPC a i d) and
 =pi-coding-agent/delete-session= (SPC a i D):
 
-1. Target selection: the pickers list ACTIVE pi chat buffers (live
-   processes), not perspectives — the perspective containing the
-   chosen buffer is resolved only when the selection is acted on.
-   Close uses the current perspective's session without prompting
-   (listing only when it has none); delete always prompts and
-   additionally offers closed sessions (files on disk not loaded by
-   an active buffer) — under helm the two groups are separate
-   sections, active first.  The picker's default is the current
-   perspective's session, resolved from its active chat buffer; when
-   there is no active buffer it falls back to the registered session
-   (registry entry or chat buffer), so the default still resolves
-   for dead-process perspectives.
+1. Target selection: the pickers list LIVE pi chat buffers (active
+   processes) — the perspective containing the chosen buffer is
+   resolved only when the selection is acted on.  Close uses the
+   current perspective's session without prompting (listing only when
+   it has none); delete always prompts and additionally offers closed
+   sessions (files on disk not loaded by an active buffer).  Both use
+   the unified picker (D2): live first, section boundary, annotated
+   candidates.  The picker's default is the current perspective's
+   session, resolved from its active chat buffer; when there is no
+   active buffer it falls back to the registered session (registry
+   entry or chat buffer), so the default still resolves for
+   dead-process perspectives.
 2. Capture buffer specs (D7) — close only.
 3. Kill the pi process (only when the perspective owns its chat
    buffer; a shared same-directory chat buffer is spared), then the
@@ -187,10 +221,12 @@ in-persp=): =pi-coding-agent/close-session= (SPC a i d) and
   layout= logic (terminal cwd in terminals, recorded dir in pi buffers,
   buffer dir elsewhere).
 - With existing sessions in the chosen directory, offers them through
-  =completing-read= (opened ● first, then closed ○, each sorted
-  lexically): picking one opens/switches to it (with its layout), typing a
-  fresh name (or picking the =✚ New session= candidate and entering one)
-  starts a named session, an empty name starts an unnamed session.
+  the unified picker (D2) — live ● first, then closed ○, with a
+  section boundary, live sorted by directory then title, closed
+  newest first: picking one opens/switches to it (with its layout),
+  typing a fresh name (or picking the
+  =✚ New session= candidate and entering one) starts a named session,
+  an empty name starts an unnamed session.
 - Refuses an unnamed session when the directory already has a live unnamed
   session (package allows one unnamed chat buffer per dir); a name is then
   required for parallelism.  With no session files at all a fresh unnamed
@@ -203,9 +239,9 @@ in-persp=): =pi-coding-agent/close-session= (SPC a i d) and
   lazily from chat state).
 - =pi-coding-agent/switch-session-in-dir= (SPC a i I) is the scoped
   switch: only the current directory's sessions (recorded dir in pi
-  buffers, terminal cwd in terminals, visited file's dir elsewhere), same
-  ordering, current session excluded; switching re-applies the pi window
-  layout.
+  buffers, terminal cwd in terminals, visited file's dir elsewhere),
+  same live-first ordering and section boundary (D2), current session
+  excluded; switching re-applies the pi window layout.
 
 *** D12. Pi-extension → Emacs bridge (tools that drive the hosting Emacs)
 
@@ -342,9 +378,39 @@ design (the session list falls back to scanning perspective buffers).
 - Point saving (cursor positions): deferred to a future generic
   Emacs/persp extension; not a pi-layer concern.
 - Window-configuration restore for closed sessions.
-- Helm-specific session picker (two-source grouping): deferred.
+- Helm-specific session picker (two-source grouping): done — the
+  unified picker (D2) renders live/closed as separate helm sources.
 - Terminal process state restore (fresh shells in saved cwd only).
 - Generic delete-all-buffers command: dropped.
+
+** D13. Unified session listing (2026)
+
+All session-listing commands (=switch-session=, =switch-session-in-dir=,
+=start-new-session=, =close-session=, =delete-session=) share one model
+(D2):
+
+- Live sessions are always listed by their active pi chat buffers
+  (=pi-coding-agent//active-chat-buffers=), most recently used first.
+  The old persp-mapping-based =opened= flag could mark a session live
+  whose perspective had been killed (stale registry) or whose process
+  had died, and could miss sessions started outside the registry
+  flow; the buffer scan cannot lie.  A dead-process perspective's
+  session now lists as closed; picking it still revives the
+  perspective (the registry maps it).
+- The builder =pi-coding-agent//session-targets= (dir filter,
+  include-closed, exclude-current) feeds every picker; dispatch is
+  =pi-coding-agent//open-or-switch-target= (live :buffer ->
+  =pi-coding-agent//switch-to-live-buffer=, closed :entry ->
+  =pi-coding-agent//open-or-switch=).
+- Boundary: separate helm sources, header rows under completing-read
+  (re-prompting when a header is selected).  Live always precedes
+  closed; within a group the switch list sorts by
+  =session-sort-opened= (default =dir-then-name= — directory, then
+  title) / =session-sort-closed= (default =chrono= — newest first),
+  close/delete keep most-recent-first.
+- Fresh sessions without a JSONL file (pi writes it on the first
+  response) are now listed as live candidates (label = perspective
+  name), selectable like any other live session.
 
 ** Implementation notes
 

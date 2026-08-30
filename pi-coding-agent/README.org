@@ -50,43 +50,56 @@ current perspective's buffers plus common buffers (=*scratch*=,
 =*Messages*=; see the optional =my-persp= layer below).  =SPC b B=
 shows all buffers.
 
+All session pickers share one list model: **live sessions** are the
+active pi chat buffers (sessions whose pi process is alive), listed
+most recently used first; **closed sessions** are the session files on
+disk not loaded by a live session.  Whenever both are listed, live
+sessions come first, separated from the closed ones by a section
+boundary — separate =Live sessions= / =Closed sessions= sources under
+helm, header rows otherwise.  Each candidate is annotated with a
+status glyph (● live / ○ closed), message count, and age; titles
+collapse newlines to single spaces so every session is exactly one
+row.
+
 - =SPC a i i= (=pi-coding-agent/switch-session=) — list all pi
-  sessions (the current one is excluded): opened ones (marked ●) first,
-  then closed.  Each candidate
-  shows the session title (name or first message), directory, message
-  count, and age.  Selecting a closed session opens it: a new
-  perspective is created, the pi process is started, the session file
-  is resumed, and the previously remembered workspace buffers are
-  restored.  Selecting an opened session switches to its perspective
-  (reviving a dead pi process).  Sort orders are configurable:
-  =pi-coding-agent/session-sort-opened= (default =alpha=) and
-  =pi-coding-agent/session-sort-closed= (default =alpha= — both groups
-  sort lexically by title).
+  sessions (the current one is excluded): live sessions (●) first,
+  then closed (○).  Live sessions sort by directory, then by title;
+  closed sessions by recency, newest first (descending).  Selecting a
+  live session switches to its perspective; selecting a closed session
+  opens it: a new perspective is created, the pi process is started,
+  the session file is resumed, and the previously remembered workspace
+  buffers are restored (a dead perspective still registered for the
+  session is revived instead).  Sort orders are configurable:
+  =pi-coding-agent/session-sort-opened= (default =dir-then-name=
+  — directory, then title) and =pi-coding-agent/session-sort-closed=
+  (default =chrono= — newest first).
 - =SPC a i I= (=pi-coding-agent/switch-session-in-dir=) — switch
   between the current directory's pi sessions, applying the pi window
   layout afterwards.  The directory is the session's own directory
   inside pi chat/input buffers, the terminal's working directory in
   terminal buffers, and the visited file's directory (else
   =default-directory=) elsewhere.  Same list as =SPC a i i= but scoped:
-  opened (●) first, then closed (○), each sorted lexically; the
+  live (●) first, then closed (○), with the same section boundary,
+  live sorted by directory then title, closed newest first; the
   current session is excluded.
 - =SPC a i n= (=pi-coding-agent/start-new-session=) — start a brand
   new session: always prompts for the directory (the default follows
   the layout's directory logic — terminal cwd, session dir inside pi
   buffers, buffer dir elsewhere).  When the directory has existing
-  sessions, they are offered for selection (opened ● first, then
-  closed ○, each sorted lexically) via =completing-read=, so the
-  picker works with helm, ivy, vertico or the plain minibuffer:
-  picking an existing session opens or switches to it (with its
-  layout), typing a new session name (or picking the =✚ New session=
-  candidate and entering one) starts a fresh named session, and an
-  empty name starts an unnamed session — refused when the directory
-  already runs a live unnamed session (then a name is required for the
-  parallel session).  With no existing sessions a fresh unnamed
-  session starts directly.
+  sessions, they are offered for selection (live ● first, then
+  closed ○, with a section boundary between the groups, live sorted
+  by directory then title, closed newest first) via the unified
+  session picker, so it works with helm,
+  ivy, vertico or the plain minibuffer: picking an existing session
+  opens or switches to it (with its layout), typing a new session name
+  (or picking the =✚ New session= candidate and entering one) starts a
+  fresh named session, and an empty name starts an unnamed session —
+  refused when the directory already runs a live unnamed session (then
+  a name is required for the parallel session).  With no existing
+  sessions a fresh unnamed session starts directly.
 - =SPC a i d= (=pi-coding-agent/close-session=) — close a pi session:
   the current perspective's session when it has one, otherwise the
-  active pi sessions are listed (live chat buffers; the perspective
+  live sessions are listed (active pi chat buffers; the perspective
   is resolved from the chosen buffer).  Stops the pi process, kills
   the perspective's buffers (standard unsaved-change prompts; common
   buffers and buffers shared with other perspectives are spared),
@@ -96,13 +109,13 @@ shows all buffers.
   from the list restores its buffers.
 - =SPC a i D= (=pi-coding-agent/delete-session=) — delete a session
   and remove it from the session list.  Always prompts — the current
-  session is the default — offering both active sessions (live pi
-  chat buffers) and closed sessions; under helm the two groups are
-  separate sections, active first.  An active session is closed like
-  =SPC a i d=, then its file is deleted — moved to the OS trash via
-  the =trash= command when available, otherwise deleted permanently,
-  the same behavior as pi's own TUI delete (=ctrl+d= in the session
-  tree) — and its registry entry dropped; a closed session is
+  session is the default — offering both live sessions (active pi
+  chat buffers) and closed sessions, live first with a section
+  boundary (separate sources under helm).  An active session is
+  closed like =SPC a i d=, then its file is deleted — moved to the OS
+  trash via the =trash= command when available, otherwise deleted
+  permanently, the same behavior as pi's own TUI delete (=ctrl+d= in
+  the session tree) — and its registry entry dropped; a closed session is
   deleted the same way (a dead perspective still registered for it
   is torn down too).  Either way the session no longer appears in
   the session list — neither this layer's nor pi's own.  Deleting an
@@ -195,7 +208,8 @@ inside session perspectives.
 
 ** Usage
 
-- =SPC a i i= — list all sessions: open the chosen one or switch to it
+- =SPC a i i= — list all sessions (live first, then closed): open the
+  chosen one or switch to it
 - =SPC a i I= — switch between the current directory's sessions (with layout)
 - =SPC a i p= — start or focus the pi session for the current project
 - =SPC a i n= — start a new session (asks for the directory)
@@ -321,7 +335,7 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 
 | Key        | Command                              | Description                    |
 |------------+--------------------------------------+--------------------------------|
-| =i=        | =pi-coding-agent/switch-session=     | List sessions; open or switch  |
+| =i=        | =pi-coding-agent/switch-session=     | List sessions (live first, then closed); open or switch |
 | =I=        | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =p=        | =pi-coding-agent=                    | Start or focus session         |
 | =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
@@ -342,7 +356,7 @@ buffer =t= is already =pi-coding-agent-toggle=, so templates live on
 
 | Key | Command                              | Description                                    |
 |-----+--------------------------------------+------------------------------------------------|
-| =i= | =pi-coding-agent/switch-session=     | List sessions; open or switch                  |
+| =i= | =pi-coding-agent/switch-session=     | List sessions (live first, then closed); open or switch |
 | =I= | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =c= | =pi-coding-agent-run-command=        | Run a pi slash command by name (+ args)        |
 | =s= | =pi-coding-agent-skills-menu=        | Skills: letter runs, Shift+letter edits source |
