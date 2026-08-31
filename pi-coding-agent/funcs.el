@@ -16,6 +16,8 @@
 (defvar tramp-connection-timeout)
 (defvar tramp-connection-properties)
 (defvar tramp-process-connection-type)
+(defvar tramp-remote-path)
+(defvar pi-coding-agent-executable)
 
 ;; Absolute path to this layer's directory (resolved from funcs.el's
 ;; path). Used for the window layout file and PATH setup.
@@ -402,6 +404,25 @@ default); `alpha' sorts by title (lexical)."
 `Host' entries from this file — following `Include' directives — and
 turns each into a TRAMP directory (/ssh:HOST:~)."
   :type 'file
+  :group 'pi-coding-agent)
+
+(defcustom pi-coding-agent/remote-executables nil
+  "Per-host mapping of verified remote pi and node executables.
+Alist of (HOST . (PI-PATH . NODE-PATH)): PI-PATH is the absolute
+path of the pi binary on that remote host, NODE-PATH the node
+binary that pi's shebang (`#!/usr/bin/env node') resolves through —
+nil when node only needs to be found through PATH.  The mapping is
+filled in automatically by `pi-coding-agent/start-remote-session'
+once the executables have been located and verified working on the
+host (the user is asked to locate them when the search fails), and
+is consulted again on later sessions to skip the search.  Sessions
+started through `pi-coding-agent/start-remote-session' bind
+`pi-coding-agent-executable' to the mapped path, which makes the pi
+spawn independent of the remote PATH."
+  :type '(alist :key-type (string :tag "host")
+                :value-type (cons (string :tag "pi executable")
+                                  (choice (string :tag "node executable")
+                                          (const :tag "found through PATH" nil))))
   :group 'pi-coding-agent)
 
 (defcustom pi-coding-agent/remote-connect-timeout 20
@@ -1888,6 +1909,7 @@ authentication — TRAMP can prompt interactively) or `unreachable'
 possibly empty.
 
 Why not just connect: TRAMP's connection timeouts cannot abort a
+Why not just connect: TRAMP's connection timeouts cannot abort a
 connection whose ssh stays alive but silent.  TRAMP 2.7 waits in
 `tramp-accept-process-output' with JUST-THIS-ONE, which suspends
 timer dispatch, so neither ssh's ConnectTimeout (which does not
@@ -1895,7 +1917,12 @@ bound name resolution anyway) nor `tramp-connection-timeout' fires;
 Emacs freezes — observed with mDNS names (`.local') that hang in
 name-resolution retries.  The probe runs as an ordinary asynchronous
 subprocess, where the kill deadline is reliably enforced, and only
-hands over to TRAMP once `ssh HOST' has been seen to complete."
+hands over to TRAMP once `ssh HOST' has been seen to complete.
+
+The remote command is `printf %s\\n \"$HOME\"' rather than a
+plain `true' so a successful probe also reports the remote home
+directory (the DIAGNOSTIC of a `reachable' result); the caller uses
+it to make user-private bin directories visible to TRAMP."
   (let* ((timeout (max 1 (or timeout
                              pi-coding-agent/remote-connect-timeout
                              20)))
@@ -1912,7 +1939,7 @@ hands over to TRAMP once `ssh HOST' has been seen to complete."
                           :noquery t
                           :command (list "ssh" "-o" "BatchMode=yes"
                                          "-o" (format "ConnectTimeout=%d" timeout)
-                                         host "true")))
+                                         host "printf '%s\\n' \"$HOME\"")))
                    (deadline (+ (float-time) timeout)))
               (while (and (process-live-p proc)
                           (< (float-time) deadline))
@@ -1925,7 +1952,11 @@ hands over to TRAMP once `ssh HOST' has been seen to complete."
                 (setq result
                       (cons 'unreachable (format "no response within %ds" timeout))))
                ((zerop (process-exit-status proc))
-                (setq result (cons 'reachable "")))
+                (setq result
+                      (cons 'reachable
+                            (string-trim
+                             (with-current-buffer outbuf
+                               (buffer-string))))))
                ((= 255 (process-exit-status proc))
                 (let ((diag (string-trim
                              (concat (with-current-buffer outbuf
@@ -1952,6 +1983,137 @@ hands over to TRAMP once `ssh HOST' has been seen to complete."
         (when (buffer-live-p buf)
           (kill-buffer buf))))
     result))
+
+(defun pi-coding-agent//remote-shell-run (script)
+  "Run SCRIPT with /bin/sh -c on the live TRAMP connection.
+`default-directory' must be a remote directory when called.
+Returns (EXIT-STATUS . TRIMMED-OUTPUT); the process runs over the
+already-established connection, so a dead connection fails fast."
+  (let ((buf (generate-new-buffer " *pi-remote-shell*")))
+    (unwind-protect
+        (cons (process-file "sh" nil buf nil "-c" script)
+              (string-trim
+               (with-current-buffer buf
+                 (buffer-substring-no-properties (point-min) (point-max)))))
+      (when (buffer-live-p buf)
+        (kill-buffer buf)))))
+
+(defun pi-coding-agent//remote-ask-executable (host name)
+  "Ask the user to locate executable NAME on remote HOST.
+Completes over the remote file system, then verifies the chosen
+path is remotely executable.  Loops until a valid path is given or
+the user quits; returns the absolute remote path or nil."
+  (let ((root (format "/ssh:%s:" host))
+        (prompt (format "%s executable on %s — locate it (C-g to abort): "
+                        name host)))
+    (catch 'located
+      (dotimes (_ 3)
+        (let ((answer (condition-case nil
+                          (read-file-name prompt root nil t)
+                        (quit (user-error "pi: cannot continue without %s on %s"
+                                          name host)))))
+          (when (and (stringp answer) (not (string-empty-p answer))
+                     (file-executable-p answer))
+            (throw 'found answer))
+          (message "Not an executable: %s" answer)))
+      (user-error "pi: cannot continue without %s on %s" name host))))
+
+(defun pi-coding-agent//remote-verify-pi (host pi-path node-path)
+  "Verify that pi at PI-PATH runs on HOST; return its version line.
+Runs `pi --version' over the live connection; NODE-PATH (optional)
+is the mapped node binary whose directory is prepended to PATH so
+pi's `#!/usr/bin/env node' shebang resolves.  Returns the trimmed
+version output, or nil when the run fails."
+  (pcase (pi-coding-agent//remote-shell-run
+          (format "%s%s --version"
+                  (if node-path
+                      (format "PATH=%s:$PATH; export PATH; "
+                              (shell-quote-argument
+                               (directory-file-name
+                                (file-name-directory node-path))))
+                    "")
+                  (tramp-shell-quote-argument pi-path)))
+    (`(0 . ,out) (and (not (string-empty-p out)) out))))
+
+(defun pi-coding-agent//remote-locate-executables (host &optional home)
+  "Locate the pi and node executables on remote HOST before starting pi.
+The live TRAMP connection to HOST must be established.  The saved
+mapping in `pi-coding-agent/remote-executables' is consulted and
+re-verified first (the pi binary must still exist and actually
+run), then the connection's PATH and common install locations are
+searched, and finally the user is asked to locate the binary
+interactively.  A candidate is only accepted after it has been
+verified working by running it remotely; the mapping for HOST is
+then updated and persisted with `customize-save-variable'.
+Returns (PI-PATH . NODE-PATH); NODE-PATH is nil when node is only
+needed through PATH."
+  (let* ((root (format "/ssh:%s:" host))
+         (home (and home (directory-file-name home)))
+         (remote (lambda (p) (concat root p)))
+         (entry (alist-get host pi-coding-agent/remote-executables nil nil #'string-equal))
+         (default-directory root)
+         pi-path node-path)
+    ;; 1. Saved mapping: re-verify that the pi binary still exists
+    ;;    and actually runs before trusting it.
+    (when (and entry (stringp (car entry))
+               (file-executable-p (funcall remote (car entry))))
+      (setq pi-path (car entry) node-path (cdr entry)))
+    (when (and pi-path
+               (not (pi-coding-agent//remote-verify-pi host pi-path node-path)))
+      (setq pi-path nil))
+    ;; 2. Search the connection's PATH and common install locations.
+    (unless pi-path
+      (let ((found (cdr (pi-coding-agent//remote-shell-run "command -v pi 2>/dev/null"))))
+        (when (and (string-prefix-p "/" found) (file-executable-p (funcall remote found)))
+          (setq pi-path found))))
+    (unless pi-path
+      (dolist (dir (delq nil (list (and home (concat home "/.local/bin"))
+                                   (and home (concat home "/bin"))
+                                   "/usr/local/bin" "/opt/homebrew/bin")))
+        (when (and (not pi-path)
+                   (file-executable-p (funcall remote (concat dir "/pi"))))
+          (setq pi-path (concat dir "/pi")))))
+    ;; 3. Ask the user to locate it.
+    (while (not pi-path)
+      (let ((answer (read-file-name
+                     (format "pi executable not found on %s - locate it (C-g to abort): " host)
+                     root nil t nil #'file-executable-p)))
+        (if (file-executable-p answer)
+            (setq pi-path (or (file-remote-p answer 'localname) answer))
+          (message "Not an executable: %s" answer))))
+    ;; 4. node: pi's `#!/usr/bin/env node' shebang resolves it through
+    ;; PATH; record where it lives when it is not on the default PATH.
+    (unless node-path
+      (let ((found (pi-coding-agent//remote-shell-run "command -v node 2>/dev/null")))
+        (when (and (eq (car found) 0) (string-prefix-p "/" (cdr found)))
+          (setq node-path (cdr found)))))
+    (unless node-path
+      (dolist (dir (delq nil (list (and home (concat home "/.local/bin"))
+                                   "/usr/local/bin" "/usr/bin"
+                                   (and home (concat home "/.bun/bin")))))
+        (when (and (not node-path)
+                   (file-executable-p (funcall remote (concat dir "/node"))))
+          (setq node-path (concat dir "/node")))))
+    ;; 5. Verify the whole chain actually works before recording it.
+    (unless (pi-coding-agent//remote-verify-pi host pi-path node-path)
+      (let ((answer (and (yes-or-no-p
+                          (format "pi at %s on %s did not run - likely its node runtime is missing. Locate node on %s? "
+                                  pi-path host host))
+                         (read-file-name (format "node executable on %s: " host)
+                                         root nil t nil #'file-executable-p))))
+        (setq node-path (and answer (file-remote-p answer 'localname)))
+        (unless (pi-coding-agent//remote-verify-pi host pi-path node-path)
+          (user-error "pi at %s on %s still does not run (node: %s) - check `ssh %s' and install pi + node"
+                      pi-path host (or node-path "missing") host))))
+    ;; 6. Persist the verified mapping for this host.
+    (setq pi-coding-agent/remote-executables
+          (cons (cons host (cons pi-path node-path))
+                (assq-delete-all host pi-coding-agent/remote-executables)))
+    (customize-save-variable 'pi-coding-agent/remote-executables
+                             pi-coding-agent/remote-executables)
+    (message "pi on %s: %s%s" host pi-path
+             (if node-path (format " (node: %s)" node-path) ""))
+    (cons pi-path node-path)))
 
 (defun pi-coding-agent/start-remote-session (&optional host)
   "Start a pi session on a remote host from `pi-coding-agent/ssh-config-file'.
@@ -2001,7 +2163,9 @@ installed."
          ;; retries, hung auth) would freeze Emacs inside TRAMP's
          ;; wait loop, whose timeouts cannot fire while timers are
          ;; suspended.  The probe's kill deadline turns that into a
-         ;; clean error; see its doc string.
+         ;; clean error; see its doc string.  A successful probe also
+         ;; reports the remote home directory, used below to make the
+         ;; user's private bin directories visible on the connection.
          (probe (progn
                   (message "Probing %s (ssh, %ds timeout) ..." host timeout)
                   (pi-coding-agent//remote-host-probe host timeout)))
@@ -2028,6 +2192,28 @@ installed."
          ;; shell stays non-interactive (zsh never sources .zshrc), so
          ;; TRAMP connects cleanly and fast.
          (tramp-process-connection-type nil)
+         ;; Make user-private bin directories visible to everything
+         ;; riding this connection: TRAMP exports the remote PATH from
+         ;; `tramp-remote-path' during login, and its default covers
+         ;; only system directories.  A pi installed in ~/.local/bin
+         ;; (npm -g with the default prefix) would otherwise not be
+         ;; found by the RPC process ("exec: pi: not found", exit
+         ;; 127), because the plain login shell we force for TRAMP
+         ;; skips the rc files that set up the user's PATH.
+         ;; The directories are spelled out absolutely (from the
+         ;; probe's home report): TRAMP validates entries with a
+         ;; quoted remote `test -d', in which tilde never expands, so
+         ;; a literal "~/.local/bin" entry would always be dropped.
+         ;; Non-existent directories are dropped by TRAMP, so this is
+         ;; harmless on hosts without them.
+         (tramp-remote-path
+          (append (and (stringp (cdr probe))
+                       (string-prefix-p "/" (string-trim (cdr probe)))
+                       (let ((home (directory-file-name
+                                    (string-trim (cdr probe)))))
+                         (list (concat home "/.local/bin")
+                               (concat home "/bin"))))
+                  tramp-remote-path))
          ;; Pre-flight: connect once and resolve the remote home
          ;; BEFORE the directory prompt, so the first TRAMP connection
          ;; happens at a predictable point after a successful probe,
@@ -2040,10 +2226,18 @@ installed."
          ;; `tramp-connection-properties' entries only seed freshly
          ;; created cache tables.
          (_ (ignore-errors
-              (tramp-set-connection-property
-               (tramp-dissect-file-name (format "/ssh:%s:" host))
-               "login-args"
-               (pi-coding-agent//remote-login-args timeout))))
+              (let ((vec (tramp-dissect-file-name (format "/ssh:%s:" host))))
+                ;; The login-args must be visible to TRAMP even when a
+                ;; connection cache for this host already exists — pushed
+                ;; `tramp-connection-properties' entries only seed freshly
+                ;; created cache tables.  The "remote-path" cache is
+                ;; dropped for the same reason: it is saved persistently,
+                ;; and a stale entry computed without the user-private
+                ;; directories would shadow the binding above.
+                (tramp-flush-connection-property vec "remote-path")
+                (tramp-set-connection-property
+                 vec "login-args"
+                 (pi-coding-agent//remote-login-args timeout)))))
          (home (condition-case err
                    (progn
                      (message "Connecting to %s ..." host)
@@ -2053,6 +2247,19 @@ installed."
                   (user-error
                    "Cannot reach %s via ssh: %s — check `ssh %s' in a terminal (password? host key? network?)"
                    host (error-message-string err) host))))
+         ;; Locate (or re-verify) the remote pi and node executables
+         ;; BEFORE starting the pi agent: the spawn runs in a shell
+         ;; whose PATH is not the user's interactive one (the login
+         ;; shell is bypassed on purpose), so `pi' may not be found
+         ;; there even though it works in an ssh login session.  The
+         ;; located paths are verified by actually running pi remotely,
+         ;; recorded in `pi-coding-agent/remote-executables', and bound
+         ;; as the absolute executable path below — making the pi spawn
+         ;; independent of the remote PATH entirely.
+         (executables (condition-case err
+                          (pi-coding-agent//remote-locate-executables
+                           host (file-remote-p home 'localname))
+                        (quit (user-error "pi: cancelled — no executable mapping for %s" host))))
          (dir (read-directory-name
                (format "Start pi session on %s in directory: " host)
                home home t))
@@ -2063,11 +2270,21 @@ installed."
                              host (error-message-string err)))))
          (choice (pi-coding-agent//new-session-choice
                   dir (pi-coding-agent//remote-session-root dir))))
-    (pcase choice
-      (`(existing . ,target)
-       (pi-coding-agent//open-or-switch-target target))
-      (`(new . ,name)
-       (pi-coding-agent//start-fresh-session dir name)))))
+    (let ((pi-coding-agent-executable (list (car executables))))
+      (pcase choice
+        (`(existing . ,target)
+         (pi-coding-agent//open-or-switch-target target)
+         ;; Cover later re-spawns of the pi process (restart, session
+         ;; file re-open) with the verified absolute path.
+         (when (derived-mode-p 'pi-coding-agent-mode)
+           (setq-local pi-coding-agent-executable
+                       (list (car executables)))))
+        (`(new . ,name)
+         (let ((chat (pi-coding-agent//start-fresh-session dir name)))
+           (when (buffer-live-p chat)
+             (with-current-buffer chat
+               (setq-local pi-coding-agent-executable
+                           (list (car executables)))))))))))
 
 ;; ---------------------------------------------------------------------
 ;; Worktree and workspace sessions
