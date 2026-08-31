@@ -2115,6 +2115,27 @@ needed through PATH."
              (if node-path (format " (node: %s)" node-path) ""))
     (cons pi-path node-path)))
 
+(defun pi-coding-agent//remote-extra-args (host)
+  "Extra pi arguments usable on remote HOST.
+Drops every \"-e LOCAL-FILE\" pair whose file lives on this machine
+(not a remote file name) — a remote pi process cannot load it, and
+the Emacs bridge extension in particular could not work remotely
+anyway: its tool drives this Emacs through `emacsclient', which
+would have to run on HOST and reach this Emacs' server socket.  All
+other arguments are passed through unchanged."
+  (let (out (tail pi-coding-agent-extra-args))
+    (while tail
+      (let ((arg (pop tail)))
+        (if (and (string-equal arg "-e") tail)
+            (let ((path (pop tail)))
+              (if (file-remote-p path)
+                  (setq out (append out (list "-e" path)))
+                (message
+                 "pi: skipping extension %s for the session on %s (local-only; the bridge needs emacsclient, which only exists here)"
+                 path host)))
+          (setq out (append out (list arg))))))
+    out))
+
 (defun pi-coding-agent/start-remote-session (&optional host)
   "Start a pi session on a remote host from `pi-coding-agent/ssh-config-file'.
 
@@ -2270,7 +2291,8 @@ installed."
                              host (error-message-string err)))))
          (choice (pi-coding-agent//new-session-choice
                   dir (pi-coding-agent//remote-session-root dir))))
-    (let ((pi-coding-agent-executable (list (car executables))))
+    (let ((pi-coding-agent-executable (list (car executables)))
+          (pi-coding-agent-extra-args (pi-coding-agent//remote-extra-args host)))
       (pcase choice
         (`(existing . ,target)
          (pi-coding-agent//open-or-switch-target target)
