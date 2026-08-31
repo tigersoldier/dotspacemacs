@@ -8,6 +8,15 @@
 
 ;;; Code:
 
+;; Tramp connection variables that `pi-coding-agent/start-remote-session'
+;; let-binds around its connection.  This file is byte-compiled with
+;; `lexical-binding', and Tramp reads these variables dynamically deep
+;; inside its connection code — without these declarations the byte
+;; compiler would create lexical (ineffective) bindings for them.
+(defvar tramp-connection-timeout)
+(defvar tramp-connection-properties)
+(defvar tramp-process-connection-type)
+
 ;; Absolute path to this layer's directory (resolved from funcs.el's
 ;; path). Used for the window layout file and PATH setup.
 (defvar pi-coding-agent--dir
@@ -396,13 +405,18 @@ turns each into a TRAMP directory (/ssh:HOST:~)."
   :group 'pi-coding-agent)
 
 (defcustom pi-coding-agent/remote-connect-timeout 20
-  "Timeout in seconds for the initial TRAMP connection of
+  "Timeout in seconds for remote connections in
 `pi-coding-agent/start-remote-session'.
-An ssh `ConnectTimeout' option is added to the connection (and
-`tramp-connection-timeout' bound to the same value), so an
-unreachable or unresponsive host fails with a clear error instead of
-hanging on \"Opening connection ...\".  nil keeps TRAMP's own
-defaults."
+Before opening TRAMP, the host is probed with an asynchronous `ssh'
+that is hard-killed after this many seconds; this bounds failure
+modes that TRAMP cannot, because TRAMP's wait loop suspends timer
+dispatch (its timeouts never fire) whenever ssh stays alive but
+silent — notably mDNS names (`.local') hanging in name-resolution
+retries.  An ssh `ConnectTimeout' option is additionally added to
+the TRAMP connection (and `tramp-connection-timeout' bound to the
+same value), so an unreachable or unresponsive host fails with a
+clear error instead of hanging on \"Opening connection ...\".  nil
+keeps TRAMP's own defaults."
   :type '(choice (const :tag "TRAMP defaults" nil) natnum)
   :group 'pi-coding-agent)
 
@@ -1839,12 +1853,105 @@ local PI_AGENT_DIR override is not propagated to remote pi processes
 (defun pi-coding-agent//remote-login-args (timeout)
   "Full ssh login args for the `login-args' connection property.
 The property REPLACES the method's args, so the complete ssh arg
-list (including the %h / %u / %p / %c specs) is rebuilt with an
-added `-o ConnectTimeout=TIMEOUT' option; TIMEOUT nil keeps the
-method defaults."
-  (append (list (list "-l" "%u") (list "-p" "%p") (list "%c"))
+list is rebuilt: `-l %u' / `-p %p' specs, an added
+`-o ConnectTimeout=TIMEOUT' option (TIMEOUT nil keeps the ssh
+method default), the `%c' ControlMaster specifier is DROPPED, and
+an explicit remote command `exec /bin/sh -i' is appended.
+
+Why no `%c' (ControlMaster): macOS's ssh detaches when it becomes
+a connection-share master for a process without a controlling
+terminal (setsid + stdout to /dev/null), so the remote shell's
+output never reaches TRAMP, which waits for it forever.
+
+Why the remote command: TRAMP recognizes the connection by the
+remote shell's prompt (`tramp-shell-prompt-pattern' requires the
+prompt to end with `#', `%', `>' or similar).  The default ssh
+method runs the remote LOGIN shell, whose rc files (powerline,
+oh-my-zsh, ...) often draw prompts that never match — TRAMP then
+waits forever, again un-timeoutable.  `exec /bin/sh -i' runs a
+plain shell instead (no .zshrc/.bashrc games) that prints a
+recognized prompt; TRAMP then switches to its own clean shell."
+  (append (list (list "-l" "%u") (list "-p" "%p"))
           (and timeout (list (list "-o" (format "ConnectTimeout=%d" timeout))))
-          (list (list "-e" "none") (list "%h"))))
+          (list (list "-e" "none") (list "%h")
+                (list "exec") (list "/bin/sh" "-i"))))
+
+(defun pi-coding-agent//remote-host-probe (host &optional timeout)
+  "Probe HOST's ssh reachability with a bounded asynchronous subprocess.
+Run `ssh HOST true' with `-o BatchMode=yes' and `-o
+ConnectTimeout=TIMEOUT' (default `pi-coding-agent/remote-connect-timeout',
+minimum 1s) asynchronously, and hard-kill the probe at the
+deadline.  Return (RESULT . DIAGNOSTIC): RESULT is `reachable'
+(exit 0), `auth' (host answered but rejected BatchMode
+authentication — TRAMP can prompt interactively) or `unreachable'
+(killed at the deadline, or ssh failed); DIAGNOSTIC is ssh's stderr,
+possibly empty.
+
+Why not just connect: TRAMP's connection timeouts cannot abort a
+connection whose ssh stays alive but silent.  TRAMP 2.7 waits in
+`tramp-accept-process-output' with JUST-THIS-ONE, which suspends
+timer dispatch, so neither ssh's ConnectTimeout (which does not
+bound name resolution anyway) nor `tramp-connection-timeout' fires;
+Emacs freezes — observed with mDNS names (`.local') that hang in
+name-resolution retries.  The probe runs as an ordinary asynchronous
+subprocess, where the kill deadline is reliably enforced, and only
+hands over to TRAMP once `ssh HOST' has been seen to complete."
+  (let* ((timeout (max 1 (or timeout
+                             pi-coding-agent/remote-connect-timeout
+                             20)))
+         (outbuf (generate-new-buffer " *pi-remote-probe stdout*"))
+         (errbuf (generate-new-buffer " *pi-remote-probe stderr*"))
+         result)
+    (unwind-protect
+        (condition-case err
+            (let* ((proc (make-process
+                          :name "pi-remote-probe"
+                          :buffer outbuf
+                          :stderr errbuf
+                          :connection-type 'pipe
+                          :noquery t
+                          :command (list "ssh" "-o" "BatchMode=yes"
+                                         "-o" (format "ConnectTimeout=%d" timeout)
+                                         host "true")))
+                   (deadline (+ (float-time) timeout)))
+              (while (and (process-live-p proc)
+                          (< (float-time) deadline))
+                ;; No JUST-THIS-ONE argument: timers must keep running
+                ;; so the deadline below is enforced.
+                (accept-process-output proc 0.25))
+              (cond
+               ((process-live-p proc)
+                (delete-process proc)
+                (setq result
+                      (cons 'unreachable (format "no response within %ds" timeout))))
+               ((zerop (process-exit-status proc))
+                (setq result (cons 'reachable "")))
+               ((= 255 (process-exit-status proc))
+                (let ((diag (string-trim
+                             (concat (with-current-buffer outbuf
+                                       (buffer-string))
+                                     " "
+                                     (with-current-buffer errbuf
+                                       (buffer-string))))))
+                  (if (string-match-p
+                       (rx (or "Permission denied" "publickey"
+                               "passphrase" "HOST KEY VERIFICATION FAILED"
+                               "authenticity"))
+                      diag)
+                      ;; Host answered; authentication was merely
+                      ;; refused non-interactively.  TRAMP can prompt.
+                      (setq result (cons 'auth diag))
+                    (setq result (cons 'unreachable diag)))))
+               (t (setq result
+                        (cons 'unreachable
+                              (format "ssh exited with status %d"
+                                      (process-exit-status proc)))))))
+          (file-error
+           (setq result (cons 'unreachable (error-message-string err)))))
+      (dolist (buf (list outbuf errbuf))
+        (when (buffer-live-p buf)
+          (kill-buffer buf))))
+    result))
 
 (defun pi-coding-agent/start-remote-session (&optional host)
   "Start a pi session on a remote host from `pi-coding-agent/ssh-config-file'.
@@ -1889,12 +1996,54 @@ installed."
                           (pi-coding-agent//remote-login-args timeout))
                     tramp-connection-properties)
             tramp-connection-properties))
+         ;; Reachability probe BEFORE any TRAMP work: an ssh that stays
+         ;; alive but silent (mDNS name stuck in name-resolution
+         ;; retries, hung auth) would freeze Emacs inside TRAMP's
+         ;; wait loop, whose timeouts cannot fire while timers are
+         ;; suspended.  The probe's kill deadline turns that into a
+         ;; clean error; see its doc string.
+         (probe (progn
+                  (message "Probing %s (ssh, %ds timeout) ..." host timeout)
+                  (pi-coding-agent//remote-host-probe host timeout)))
+         (_ (pcase probe
+              (`(reachable . ,_) nil)
+              (`(auth . ,diag)
+               (message "%s is reachable; ssh authentication will be handled by TRAMP%s"
+                        host (if (string-empty-p diag) ""
+                               (format " (%s)" diag))))
+              (`(unreachable . ,diag)
+               (user-error
+                "Cannot reach %s via ssh within %ds%s — check `ssh %s' in a terminal"
+                host timeout
+                (if (string-empty-p diag) ""
+                  (format ": %s" diag))
+                host))))
+         ;; Force pipes instead of a pty for the login: TRAMP's default
+         ;; (pty) makes ssh open an INTERACTIVE remote login shell,
+         ;; whose rc files (e.g. powerline/oh-my-zsh zsh prompts) draw
+         ;; fancy prompts that never match `tramp-shell-prompt-pattern'
+         ;; — TRAMP then waits for a recognizable prompt forever, and
+         ;; its wait loop cannot be timed out (timers suspended while
+         ;; waiting for the single process).  With pipes the remote
+         ;; shell stays non-interactive (zsh never sources .zshrc), so
+         ;; TRAMP connects cleanly and fast.
+         (tramp-process-connection-type nil)
          ;; Pre-flight: connect once and resolve the remote home
-         ;; BEFORE the directory prompt, so the hang-prone first
-         ;; connection happens at a predictable point with a clear
-         ;; error instead of inside read-file-name's default
-         ;; expansion.  The canonical home (no `~') also keeps the
-         ;; prompt itself free of hidden connections.
+         ;; BEFORE the directory prompt, so the first TRAMP connection
+         ;; happens at a predictable point after a successful probe,
+         ;; with a clear error instead of inside read-file-name's
+         ;; default expansion.  The canonical home (no `~') also keeps
+         ;; the prompt itself free of hidden connections.
+         ;; `tramp-set-connection-property' ensures the login-args
+         ;; (see `pi-coding-agent//remote-login-args') also apply when
+         ;; a connection cache for this host already exists — pushed
+         ;; `tramp-connection-properties' entries only seed freshly
+         ;; created cache tables.
+         (_ (ignore-errors
+              (tramp-set-connection-property
+               (tramp-dissect-file-name (format "/ssh:%s:" host))
+               "login-args"
+               (pi-coding-agent//remote-login-args timeout))))
          (home (condition-case err
                    (progn
                      (message "Connecting to %s ..." host)
