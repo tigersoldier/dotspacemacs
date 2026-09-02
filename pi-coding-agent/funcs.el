@@ -1677,20 +1677,26 @@ back and an error signalled."
       (user-error "A pi session is already running in %s — give a session \
 name for a parallel session" dir))
     (persp-switch persp-name)
-    (let ((chat (condition-case err
-                    (pi-coding-agent--setup-session dir name)
-                  (error
-                   (when (perspective-p (persp-get-by-name persp-name))
-                     (persp-kill (list persp-name) t))
-                   (user-error "pi: failed to start session: %s"
-                               (error-message-string err))))))
-      (pi-coding-agent//registry-put persp-name
-                                     :session-file nil
-                                     :label-locked (and name t)
-                                     :buffers nil)
-      (pi-coding-agent//registry-save)
-      (let ((input (buffer-local-value 'pi-coding-agent--input-buffer chat)))
-        (pi-coding-agent//apply-pi-layout chat input nil t))
+    ;; Everything between the perspective switch and the finished
+    ;; layout is inside the guard: any failure (process startup or the
+    ;; window-purpose layout, which can hit transient frame errors)
+    ;; rolls the fresh perspective back so a retry starts clean.
+    (let ((chat
+           (condition-case err
+               (let ((chat (pi-coding-agent--setup-session dir name)))
+                 (pi-coding-agent//registry-put persp-name
+                                                :session-file nil
+                                                :label-locked (and name t)
+                                                :buffers nil)
+                 (pi-coding-agent//registry-save)
+                 (let ((input (buffer-local-value 'pi-coding-agent--input-buffer chat)))
+                   (pi-coding-agent//apply-pi-layout chat input nil t))
+                 chat)
+             (error
+              (when (perspective-p (persp-get-by-name persp-name))
+                (persp-kill (list persp-name) t))
+              (user-error "pi: failed to start session: %s"
+                          (error-message-string err))))))
       chat)))
 
 (defun pi-coding-agent/start-new-session ()
@@ -3200,13 +3206,17 @@ perspective still registered for it is torn down too)."
 (defvar pi-coding-agent-essential-grammar-action)
 (defvar pi-coding-agent--grammar-prompt-done)
 
-(defun pi-coding-agent//open-session-request (dir &optional name)
+(defun pi-coding-agent//open-session-request (dir &optional name prompt)
   "Open a fresh pi session at DIR as its own perspective and switch to it.
 
 Non-interactive twin of `pi-coding-agent/start-new-session': DIR is
 mandatory, NAME opens a named (parallel) session that bypasses the
 live-unnamed-session refusal and is labelled with NAME only
-(label-locked).  Runs the standard flow via `pi-coding-agent//
+(label-locked).  PROMPT (optional string) is sent as the fresh
+session's first user message through the standard
+`pi-coding-agent--send-prompt' path once the process is up; pi queues
+or handles it, and send failures are surfaced in the chat buffer.
+Runs the standard flow via `pi-coding-agent//
 start-fresh-session' (create+switch perspective, fresh pi process,
 registry entry, pi window layout).  Returns the plist (:ok t :persp
 NAME :directory DIR); signals an error when the request is invalid or
@@ -3220,16 +3230,21 @@ the launch fails (rolling back the fresh perspective)."
                (pi-coding-agent--route-preserving-expand-file-name dir))))
     (unless (file-directory-p dir)
       (user-error "Not a directory: %s" dir))
-    (pi-coding-agent//start-fresh-session dir name)
-    (let ((persp-name (safe-persp-name (get-current-persp))))
-      (message "pi: opened session in %s (perspective %s)" dir persp-name)
-      (list :ok t :persp persp-name :directory dir))))
+    (let ((chat (pi-coding-agent//start-fresh-session dir name)))
+      (when (and (stringp prompt) (not (string-empty-p prompt)))
+        (with-current-buffer chat
+          (pi-coding-agent--send-prompt prompt)))
+      (let ((persp-name (safe-persp-name (get-current-persp))))
+        (message "pi: opened session in %s (perspective %s)" dir persp-name)
+        (list :ok t :persp persp-name :directory dir)))))
 
 (defun pi-coding-agent/open-session-at-directory-bridge (b64)
   "Bridge entry invoked via `emacsclient -e' by the pi bridge extension.
 
-B64 is a base64-encoded JSON request object `{directory, name}'.
-Executes the new-session flow non-interactively and returns a JSON
+B64 is a base64-encoded JSON request object `{directory, name,
+prompt}'.  PROMPT is optional; when present it is sent as the new
+session's first user message.  Executes the new-session flow
+non-interactively and returns a JSON
 string: `{\"ok\": true, \"persp\": \"...\", \"directory\": \"/abs\"}'
 or `{\"ok\": false, \"error\": \"...\"}'.
 Runs strictly prompt-free: dependency/grammar questions are
@@ -3242,6 +3257,7 @@ their normal prompting."
       (let* ((request (json-parse-string (base64-decode-string b64)))
              (dir (gethash "directory" request))
              (name (gethash "name" request))
+             (prompt (gethash "prompt" request))
              ;; A server eval runs while the pi tool waits on
              ;; emacsclient: never ask.  'warn keeps the session
              ;; usable (chat buffer degrades to plain text) and defers
@@ -3251,7 +3267,9 @@ their normal prompting."
              (pi-coding-agent--grammar-prompt-done t))
         (when (eq name :null)
           (setq name nil))
-        (json-encode (pi-coding-agent//open-session-request dir name)))
+        (when (eq prompt :null)
+          (setq prompt nil))
+        (json-encode (pi-coding-agent//open-session-request dir name prompt)))
     (error
      (json-encode (list :ok :json-false
                         :error (error-message-string err))))))

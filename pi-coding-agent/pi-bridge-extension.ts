@@ -5,7 +5,8 @@
 // Tool: emacs_new_session — ask Emacs to open a brand-new pi session
 // in another directory: Emacs creates a new perspective (persp-mode
 // workspace), starts the session there, applies the pi window layout,
-// and switches to it.
+// and switches to it. An optional prompt is delivered to the fresh
+// session as its first user message.
 //
 // Channel: the extension shells out to `emacsclient -e` with a
 // base64-encoded JSON request.  The hosting Emacs evaluates
@@ -28,6 +29,7 @@ export default function (pi: ExtensionAPI) {
       "Ask the hosting Emacs (pi-coding-agent frontend) to open a brand-new pi " +
       "session in DIRECTORY: Emacs creates a new perspective (workspace) for it, " +
       "starts the pi session there, applies the pi window layout, and switches to it. " +
+      "An optional PROMPT is delivered to the fresh session as its first user message. " +
       "Fails with a clear error when Emacs is unreachable (server not running) or the " +
       "directory already has a live unnamed session (pass NAME for a parallel session).",
     promptSnippet:
@@ -36,6 +38,7 @@ export default function (pi: ExtensionAPI) {
       "Use emacs_new_session when the user wants a fresh session/workspace in another directory (e.g. to switch projects) instead of doing it manually.",
       "Pass an absolute or ~-style path; verify the directory exists (bash: test -d) before calling.",
       "Pass name when the directory already runs a session, to open a parallel named session.",
+      "Pass prompt to have Emacs deliver a first user message to the fresh session right after it opens (e.g. a task goal).",
     ],
     parameters: Type.Object({
       directory: Type.String({
@@ -46,6 +49,12 @@ export default function (pi: ExtensionAPI) {
         Type.String({
           description:
             "Optional session name; required to open a parallel session when the directory already has a live unnamed session",
+        }),
+      ),
+      prompt: Type.Optional(
+        Type.String({
+          description:
+            "Optional first user message to send to the new session once it opens",
         }),
       ),
     }),
@@ -67,6 +76,7 @@ export default function (pi: ExtensionAPI) {
       const payload = JSON.stringify({
         directory: params.directory,
         name: params.name ?? null,
+        prompt: params.prompt ?? null,
       });
       const b64 = Buffer.from(payload, "utf8").toString("base64");
       const lisp = `(pi-coding-agent/open-session-at-directory-bridge "${b64}")`;
