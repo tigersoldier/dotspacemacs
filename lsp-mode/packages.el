@@ -13,23 +13,13 @@
 ;;; Code:
 
 (defconst lsp-mode-packages
-  '((lsp-mode)
-    (company-lsp)))
+  '((lsp-mode)))
 
 (defun lsp-mode/post-init-lsp-mode ()
   (add-hook 'php-mode-hook
             (lambda ()
               (require 'lsp-mode)
-              (require 'company-lsp)
-              (setq-local company-backends '(company-lsp))
               (company-mode t)
               (lsp))))
-
-(defun lsp-mode/post-init-company-lsp ()
-  (setq company-lsp-cache-candidates 'auto)
-  (setq company-transformers nil)
-  (spacemacs|add-company-backends
-    :backends company-lsp
-    :modes php-mode))
 
 ;;; packages.el ends here

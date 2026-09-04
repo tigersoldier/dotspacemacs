@@ -71,10 +71,8 @@ values."
      spell-checking
      syntax-checking
      version-control
-     (java :variables java-backend 'javacomp)
      lsp
      lsp-mode
-     javacomp
      myconfigs
      bazel
      spacemacs-purpose
