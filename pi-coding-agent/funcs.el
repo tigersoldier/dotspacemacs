@@ -762,15 +762,35 @@ drift case handled by `pi-coding-agent//switch-to-session'."
 ;; Session scanning and the switch-session list
 
 (defun pi-coding-agent//session-metadata-cached (file)
-  "Return cached metadata for session FILE, re-parsing when mtime changed."
-  (let* ((attrs (file-attributes file))
-         (mtime (and attrs (file-attribute-modification-time attrs)))
-         (cached (gethash file pi-coding-agent//session-cache)))
-    (if (and cached (equal (car cached) mtime))
-        (cdr cached)
-      (let ((meta (pi-coding-agent--session-metadata file)))
-        (puthash file (cons mtime meta) pi-coding-agent//session-cache)
-        meta))))
+  "Return cached metadata for session FILE, re-parsing when mtime changed.
+Metadata uses the layer's dialect — (:modified-time TIME :first-message
+TEXT :message-count COUNT :session-name NAME :cwd DIR) — parsed with
+the package's canonical `pi-coding-agent-jsonl-read-session-info'
+scanner (the package dropped `pi-coding-agent--session-metadata' in
+the session-browser change; :modified-time comes from FILE's own mtime,
+matching the old function).  Fail-open: a vanished or unreadable FILE
+— e.g. one whose directory no longer exists — yields nil with a
+message instead of an error, so session listing and deletion never
+abort on stale or missing session files."
+  (condition-case err
+      (let* ((attrs (file-attributes file))
+             (mtime (and attrs (file-attribute-modification-time attrs)))
+             (cached (gethash file pi-coding-agent//session-cache)))
+        (if (and cached (equal (car cached) mtime))
+            (cdr cached)
+          (let* ((info (pi-coding-agent-jsonl-read-session-info file))
+                 (meta (and info
+                            (list :modified-time mtime
+                                  :first-message (plist-get info :firstMessage)
+                                  :message-count (plist-get info :messageCount)
+                                  :session-name (plist-get info :name)
+                                  :cwd (plist-get info :cwd)))))
+            (puthash file (cons mtime meta) pi-coding-agent//session-cache)
+            meta)))
+    (error
+     (message "pi: cannot read session metadata for %s: %s"
+              (abbreviate-file-name file) (error-message-string err))
+     nil)))
 
 (defun pi-coding-agent//live-session-mappings ()
   "Return ((PERSP-NAME . SESSION-FILE) ...) for perspectives showing
@@ -3053,36 +3073,57 @@ perspective" name))
                                (pi-coding-agent//capture-buffer-specs persp)))
       (pi-coding-agent//registry-save))
     ;; Resolve the session file for the delete while the chat buffer
-    ;; is still alive (fresh entries may not have one yet).
+    ;; is still alive (fresh entries may not have one yet; sessions
+    ;; started outside the registry flow fall back to the chat
+    ;; buffer's loaded file).
     (let ((file-to-delete
-           (and delete entry
-                (pi-coding-agent//registry-fill-session-file
-                 name (cdr entry)))))
-      ;; Stop the pi process first (killing its chat buffer must not
-      ;; trigger a process query).
-      (when chat
-        (let* ((proc (buffer-local-value 'pi-coding-agent--process chat))
-               (stderr (and (processp proc)
-                            (process-get proc 'pi-coding-agent-stderr-buf))))
-          (when (processp proc)
-            ;; Suppress the package's own kill confirmation (the
-            ;; chat-buffer kill below would otherwise prompt).
-            (pi-coding-agent--skip-process-kill-confirmation proc)
-            (delete-process proc))
-          (when (and stderr (buffer-live-p stderr))
-            (kill-buffer stderr))))
-      ;; Kill the session's buffers (unsaved-change prompts preserved;
-      ;; the pi kill confirmation is suppressed — the user already
-      ;; confirmed the close).
-      (dolist (buf buffers)
-        (when (buffer-live-p buf)
-          (pi-coding-agent//skip-kill-confirmation-for buf)
-          (kill-buffer buf)))
+           (and delete
+                (or (and entry
+                         (pi-coding-agent//registry-fill-session-file
+                          name (cdr entry)))
+                    (and chat
+                         (let ((f (plist-get (buffer-local-value
+                                              'pi-coding-agent--state chat)
+                                             :session-file)))
+                           (and (stringp f) (not (string-empty-p f)) f)))))))
+      ;; Teardown, fail open: a session whose file or directory no
+      ;; longer exists must still be removed.  An unexpected error in
+      ;; one teardown step (e.g. a buffer hook) is reported and
+      ;; skipped so the remaining cleanup — file deletion, registry
+      ;; drop, perspective kill — still runs and the delete never
+      ;; strands a zombie perspective.
+      (condition-case err
+          (progn
+            ;; Stop the pi process first (killing its chat buffer must
+            ;; not trigger a process query).
+            (when chat
+              (let* ((proc (buffer-local-value 'pi-coding-agent--process chat))
+                     (stderr (and (processp proc)
+                                  (process-get proc
+                                               'pi-coding-agent-stderr-buf))))
+                (when (processp proc)
+                  ;; Suppress the package's own kill confirmation (the
+                  ;; chat-buffer kill below would otherwise prompt).
+                  (pi-coding-agent--skip-process-kill-confirmation proc)
+                  (delete-process proc))
+                (when (and stderr (buffer-live-p stderr))
+                  (kill-buffer stderr))))
+            ;; Kill the session's buffers (unsaved-change prompts
+            ;; preserved; the pi kill confirmation is suppressed — the
+            ;; user already confirmed the close).
+            (dolist (buf buffers)
+              (when (buffer-live-p buf)
+                (pi-coding-agent//skip-kill-confirmation-for buf)
+                (kill-buffer buf))))
+        (error
+         (message "pi: error tearing down session '%s': %s — continuing"
+                  name (error-message-string err))))
       ;; Delete: remove the file (trash first, unlink fallback) and
       ;; drop the registry entry before the perspective is killed, so
       ;; the before-kill hook does not re-capture it.  A missing file
-      ;; (a fresh session pi never wrote) is fine — nothing to
-      ;; delete, and nothing listable; a real delete failure is
+      ;; (a fresh session pi never wrote, or a session whose
+      ;; directory no longer exists) is fine — nothing to delete, and
+      ;; nothing listable; a real delete failure is
       ;; reported but must not abort the teardown (that would leave a
       ;; zombie perspective with a dead process and a stale registry
       ;; entry).
