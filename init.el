@@ -173,7 +173,7 @@ values."
    ;; quickly tweak the mode-line size to make separators look not too crappy.
    dotspacemacs-default-font `("FiraCode Nerd Font"
                                :size ,(if (and (eq system-type 'gnu/linux)
-                                                (null (getenv "WAYLAND_DISPLAY")))
+                                               (null (getenv "WAYLAND_DISPLAY")))
                                           26
                                         13)
                                :weight normal
@@ -543,6 +543,9 @@ This function is called at the very end of Spacemacs initialization."
                  web-completion-data web-mode wgrep which-key window-numbering
                  winum with-editor wolfram-mode ws-butler xterm-color yaml-mode
                  yapfify yasnippet))
+   '(pi-coding-agent/remote-executables
+     '(("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
+       ("tigerbox" "/home/tiger/.local/bin/pi" . "/bin/node")))
    '(purpose-default-layout-file "~/.emacs.d/private/layouts/2edit-panel.window-layout")
    '(purpose-layout-dirs '("~/.emacs.d/private/layouts/"))
    '(purpose-user-mode-purposes
