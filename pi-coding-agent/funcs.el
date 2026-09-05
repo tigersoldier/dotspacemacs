@@ -18,6 +18,7 @@
 (defvar tramp-process-connection-type)
 (defvar tramp-remote-path)
 (defvar pi-coding-agent-executable)
+(declare-function tramp-make-tramp-file-name "tramp")
 
 ;; Absolute path to this layer's directory (resolved from funcs.el's
 ;; path). Used for the window layout file and PATH setup.
@@ -3310,6 +3311,19 @@ when both trash and unlink fail."
              (abbreviate-file-name file))
     nil))
 
+(defun pi-coding-agent//remote-stderr-fifo (stderr)
+  "Return the remote fifo TRAMP created for stderr buffer STDERR, or nil.
+TRAMP's `make-process' with a stderr buffer creates a remote named
+pipe and a separate `cat' process reading it; the pipe's local name
+is the second element of that process's `remote-command'.  Returns
+nil for a local session (or when the stderr buffer/process is gone)."
+  (when (buffer-live-p stderr)
+    (when-let* ((stderr-proc (get-buffer-process stderr))
+                (vec (process-get stderr-proc 'tramp-vector))
+                (cmd (process-get stderr-proc 'remote-command))
+                (local (and (consp cmd) (stringp (nth 1 cmd)) (nth 1 cmd))))
+      (tramp-make-tramp-file-name vec local))))
+
 (defun pi-coding-agent//close-session-in-persp (name &optional delete)
   "Close the pi session of perspective NAME: process, buffers, persp.
 Confirms first.  Kills the pi process (when the perspective has its
@@ -3380,14 +3394,29 @@ perspective" name))
               (let* ((proc (buffer-local-value 'pi-coding-agent--process chat))
                      (stderr (and (processp proc)
                                   (process-get proc
-                                               'pi-coding-agent-stderr-buf))))
+                                               'pi-coding-agent-stderr-buf)))
+                     (remote-fifo (pi-coding-agent//remote-stderr-fifo stderr)))
                 (when (processp proc)
                   ;; Suppress the package's own kill confirmation (the
                   ;; chat-buffer kill below would otherwise prompt).
                   (pi-coding-agent--skip-process-kill-confirmation proc)
+                  ;; For a remote (TRAMP) process, `delete-process' runs
+                  ;; the process sentinel synchronously, and that sentinel
+                  ;; (including TRAMP's own :after cleanup) performs
+                  ;; synchronous TRAMP operations — deleting the stderr
+                  ;; fifo — which fail with "Forbidden reentrant call of
+                  ;; Tramp" when the connection is busy.  Detach the
+                  ;; sentinel so the kill stays a plain local process
+                  ;; kill, and remove the fifo here, outside the sentinel.
+                  (when (process-get proc 'tramp-vector)
+                    (set-process-sentinel proc #'ignore))
                   (delete-process proc))
                 (when (and stderr (buffer-live-p stderr))
-                  (kill-buffer stderr))))
+                  (kill-buffer stderr))
+                (when remote-fifo
+                  (ignore-errors
+                    (when (file-exists-p remote-fifo)
+                      (delete-file remote-fifo))))))
             ;; Kill the session's buffers (unsaved-change prompts
             ;; preserved; the pi kill confirmation is suppressed — the
             ;; user already confirmed the close).
