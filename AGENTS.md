@@ -55,6 +55,31 @@ undeclared variables silently does nothing.
 - Session identity flows through the registry
   (`pi-coding-agent//registry`) keyed by perspective name; the live/closed
   session lists derive from active chat buffers, not the registry.
+- **Command references**: the user writes layer commands as `a i <key>` —
+  the leader sequence `SPC a i <key>` defined in `keybindings.el`
+  (mirrored on `SPC m p <key>` inside pi chat/input buffers). When a
+  request says "`a i i` hangs" or "make `a i m` …", resolve the key
+  through that table:
+
+  | key | command |
+  |-----|---------|
+  | `a i p` | `pi-coding-agent` (start or focus session) |
+  | `a i i` | `pi-coding-agent/switch-session` (list sessions) |
+  | `a i I` | `pi-coding-agent/switch-session-in-dir` |
+  | `a i S` | `pi-coding-agent/open-named-session` |
+  | `a i w` / `a i W` | `…/new-worktree-session` / `…/new-workspace-session` |
+  | `a i n` / `a i N` | `…/start-new-session` / `pi-coding-agent-new-session` |
+  | `a i m` | `pi-coding-agent/start-remote-session` (TRAMP/ssh host) |
+  | `a i d` / `a i D` | `…/close-session` / `…/delete-session` |
+  | `a i r` | `pi-coding-agent-reload` (restart pi process) |
+  | `a i s` | `pi-coding-agent-open-session-file` |
+  | `a i t` | `pi-coding-agent/toggle` (show/hide windows) |
+  | `a i l` | `pi-coding-agent/layout` |
+  | `a i g` | `pi-coding-agent-install-grammars` |
+  | `a i ?` | `pi-coding-agent-menu` (transient menu) |
+
+  `keybindings.el` is the source of truth; keep it in sync when adding
+  commands.
 - **Remote (TRAMP) rule**: never start remote file I/O from a listing or
   picker unless the TRAMP connection is already established
   (`pi-coding-agent//tramp-connection-alive-p`). TRAMP's own timeouts do
