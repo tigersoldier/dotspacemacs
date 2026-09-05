@@ -373,6 +373,10 @@ you should place your code here."
   ;; Spacemacs sets `company-transformers' which messes up the candidate order
   ;; provided by LSP. Unset it.
   (setq company-transformers nil)
+  ;; Machine-local configuration, managed in the caibin-docs repo.
+  (let ((local-config "~/.spacemacs.d/local.el"))
+    (when (file-exists-p local-config)
+      (load-file local-config)))
   )
 
 ;; Do not write anything past this comment. This is where Emacs will
@@ -404,7 +408,8 @@ This function is called at the very end of Spacemacs initialization."
    '(auto-save-default nil)
    '(clang-format-style "Google")
    '(connection-local-criteria-alist
-     '(((:application tramp :protocol "kubernetes")
+     '(((:machine "pi-beelink") pi-beelink-vars)
+       ((:application tramp :protocol "kubernetes")
         tramp-kubernetes-connection-local-default-profile)
        ((:application tramp :machine "Cresta-MBP-M2D5V4X3D1")
         tramp-connection-local-darwin-ps-profile)
@@ -416,7 +421,8 @@ This function is called at the very end of Spacemacs initialization."
        ((:application tramp) tramp-connection-local-default-system-profile
         tramp-connection-local-default-shell-profile)))
    '(connection-local-profile-alist
-     '((tramp-kubernetes-connection-local-default-profile
+     '((pi-beelink-vars (company-gtags--executable-connection))
+       (tramp-kubernetes-connection-local-default-profile
         (tramp-config-check . tramp-kubernetes--current-context-data)
         (tramp-extra-expand-args 97
                                  (tramp-kubernetes--container
@@ -542,7 +548,10 @@ This function is called at the very end of Spacemacs initialization."
                  winum with-editor wolfram-mode ws-butler xterm-color yaml-mode
                  yapfify yasnippet))
    '(pi-coding-agent/remote-executables
-     '(("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
+     '(("dev-server"
+        "/home/caibin2/.local/share/pi-node/node-v22.23.2-linux-x64/bin/pi"
+        . "/home/caibin2/.local/share/pi-node/node-v22.23.2-linux-x64/bin/node")
+       ("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
        ("tigerbox" "/home/tiger/.local/bin/pi" . "/bin/node")))
    '(purpose-default-layout-file "~/.emacs.d/private/layouts/2edit-panel.window-layout")
    '(purpose-layout-dirs '("~/.emacs.d/private/layouts/"))

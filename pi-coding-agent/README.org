@@ -72,7 +72,12 @@ row.
   session is revived instead).  Sort orders are configurable:
   =pi-coding-agent/session-sort-opened= (default =dir-then-name=
   — directory, then title) and =pi-coding-agent/session-sort-closed=
-  (default =chrono= — newest first).
+  (default =chrono= — newest first).  Scope: a local context lists
+  local sessions only; used inside a remote (TRAMP) session, the list
+  adds that host's sessions (its live buffers plus its closed files,
+  scanned over the established connection).  A disconnected remote
+  host never blocks the listing — it is probed in the background and
+  its sessions reappear in a later listing once it answers.
 - =SPC a i I= (=pi-coding-agent/switch-session-in-dir=) — switch
   between the current directory's pi sessions, applying the pi window
   layout afterwards.  The directory is the session's own directory

@@ -485,6 +485,66 @@ run the ordinary new-session flow (D10) on that host.
   keeping the menu on =p= in the chat/input mode leaders.  Mirrored
   as =SPC m p m= in the chat/input mode leaders.
 
+** D15. Session-list scope and non-blocking remote listing (2026)
+
+=pi-coding-agent/switch-session= (SPC a i i) is scoped by the current
+session's host, and listing never blocks on an unreachable host.
+
+- Scope: a local context lists LOCAL sessions only — remote sessions
+  never appear in the list, and no remote file is ever touched, so a
+  dead remote host cannot hang the listing.  Used inside a remote
+  (TRAMP) session, the list adds that host's sessions: its live chat
+  buffers plus its closed session files, scanned on the remote host.
+- The scope is the current perspective's pi chat buffer's remote
+  prefix (=pi-coding-agent//current-session-remote-prefix=): no
+  session → local scope.  =pi-coding-agent//session-targets= takes a
+  tri-state REMOTE-SCOPE: nil (default — close/delete pickers stay
+  unscoped so a dead remote session can still be reached and closed),
+  =local= (drop every remote live buffer), or a TRAMP prefix string
+  (local sessions plus that host's, plus the host's closed files).
+- Connection gating: remote work in the listing path happens only
+  over an already-established TRAMP connection
+  (=pi-coding-agent//tramp-connection-alive-p= — an I/O-free check:
+  dissect the file name, look up the connection's ssh process via
+  =tramp-get-connection-process=, =process-live-p=).  A disconnected
+  host gets a background ssh probe
+  (=pi-coding-agent//remote-probe-async=, BatchMode + ConnectTimeout,
+  throttled per host) and contributes nothing to the list — the local
+  part shows immediately; the host's closed sessions reappear in a
+  later listing once the probe succeeds.  This is the listing-side
+  answer to the same TRAMP untimeoutable-wait failure D14 probes
+  around: TRAMP's own timeouts never fire while its wait loop holds
+  the input, so remote I/O must simply never start from a listing.
+- Fail-open metadata: =pi-coding-agent//session-metadata-cached= and
+  =pi-coding-agent//session-file-cwd= never touch a remote file whose
+  connection is not established — a stale cache entry is returned
+  without mtime validation when present, otherwise the entry is
+  dropped; =pi-coding-agent//sync-labels= skips disconnected remote
+  entries entirely (the stale-title fallback would rename the label
+  to title-only, undone by the next connected listing).  The session
+  cache eviction in =pi-coding-agent//session-entries= is scoped to
+  the scanned root, so local scans never wipe remote hosts' cached
+  metadata.
+- Opening a remote session whose connection is not established probes
+  the host with the bounded ssh deadline first
+  (=pi-coding-agent//ensure-remote-reachable= in
+  =pi-coding-agent//open-or-switch=): reachable/auth hosts fall
+  through (TRAMP prompts interactively), unreachable hosts fail with
+  a clear error instead of hanging.  The open also binds the host's
+  verified executable mapping
+  (=pi-coding-agent//remote-executable-for= from
+  =pi-coding-agent/remote-executables=), matching
+  =pi-coding-agent/start-remote-session='s spawn, so sessions picked
+  from the scoped list spawn the remote pi correctly.
+- Switch-in-dir follows the directory: a remote DIR's listing scans
+  that host's session root over the established connection
+  (=pi-coding-agent//remote-scan-root=), nothing remote when the host
+  is unreachable.
+- Drive-by: =pi-coding-agent//remote-locate-executables= now deletes
+  stale mapping entries with =assoc-delete-all= — the previous
+  =assq-delete-all= never matched string keys, so the saved custom
+  accumulated a duplicate per-host entry per re-verification.
+
 ** Implementation notes
 
 - Session-list scan caches per-file metadata keyed by mtime; only changed

@@ -527,9 +527,15 @@ Fail-open: any read/parse error yields an empty registry with a message."
     string))
 
 (defun pi-coding-agent//session-file-cwd (file)
-  "Return FILE's recorded cwd, or nil."
+  "Return FILE's recorded cwd, or nil.
+Remote (TRAMP) FILEs are only read over an already-established
+connection (`pi-coding-agent//tramp-connection-alive-p', an I/O-free
+check) — an unreachable host must never block a listing; nil is
+returned then."
   (condition-case nil
-      (pi-coding-agent--session-file-cwd-or-error file)
+      (and (or (not (pi-coding-agent--remote-prefix-for-path file))
+               (pi-coding-agent//tramp-connection-alive-p file))
+           (pi-coding-agent--session-file-cwd-or-error file))
     (error nil)))
 
 (defun pi-coding-agent//file-uuid-prefix (file)
@@ -619,7 +625,17 @@ Called from the session list and before switching."
       (pi-coding-agent//registry-fill-session-file name plist)
       (when (and (not (plist-get plist :label-locked))
                  (perspective-p (persp-get-by-name name))
-                 (plist-get plist :session-file))
+                 (plist-get plist :session-file)
+                 ;; Never rename from a remote file whose connection is
+                 ;; down: the metadata guard would fall back to a stale
+                 ;; title while `pi-coding-agent//make-persp-label'
+                 ;; loses the directory part (its cwd read is
+                 ;; connection-gated too), and the next connected
+                 ;; listing would rename the label right back.
+                 (or (not (pi-coding-agent--remote-prefix-for-path
+                           (plist-get plist :session-file)))
+                     (pi-coding-agent//tramp-connection-alive-p
+                      (plist-get plist :session-file))))
         (when-let* ((title (pi-coding-agent//desired-label-title
                             (plist-get plist :session-file)))
                     (new-name (pi-coding-agent//make-persp-label
@@ -771,13 +787,28 @@ the session-browser change; :modified-time comes from FILE's own mtime,
 matching the old function).  Fail-open: a vanished or unreadable FILE
 — e.g. one whose directory no longer exists — yields nil with a
 message instead of an error, so session listing and deletion never
-abort on stale or missing session files."
+abort on stale or missing session files.
+
+Remote (TRAMP) FILEs are only read over an already-established
+connection (`pi-coding-agent//tramp-connection-alive-p', an I/O-free
+check): an unreachable host must never block a listing.  A
+disconnected remote file falls back to its stale cache entry
+(unchecked mtime) and yields nil without one."
   (condition-case err
-      (let* ((attrs (file-attributes file))
+      (let* ((remote (pi-coding-agent--remote-prefix-for-path file))
+             (connected (or (not remote)
+                            (pi-coding-agent//tramp-connection-alive-p file)))
+             (attrs (and connected (file-attributes file)))
              (mtime (and attrs (file-attribute-modification-time attrs)))
              (cached (gethash file pi-coding-agent//session-cache)))
-        (if (and cached (equal (car cached) mtime))
-            (cdr cached)
+        (cond
+         ;; Normal path: cache hit with matching mtime.
+         ((and cached (equal (car cached) mtime)) (cdr cached))
+         ;; Disconnected remote: use the stale cache without mtime
+         ;; validation; without a cache entry, fail open (nil) — never
+         ;; touch the file.
+         ((and remote (not connected) cached) (cdr cached))
+         (connected
           (let* ((info (pi-coding-agent-jsonl-read-session-info file))
                  (meta (and info
                             (list :modified-time mtime
@@ -786,7 +817,7 @@ abort on stale or missing session files."
                                   :session-name (plist-get info :name)
                                   :cwd (plist-get info :cwd)))))
             (puthash file (cons mtime meta) pi-coding-agent//session-cache)
-            meta)))
+            meta))))
     (error
      (message "pi: cannot read session metadata for %s: %s"
               (abbreviate-file-name file) (error-message-string err))
@@ -844,6 +875,167 @@ closed."
                                   :session-file)
             when (and (stringp file) (not (string-empty-p file)))
             collect file)))
+
+;; ---------------------------------------------------------------------
+;; Remote-session scope and non-blocking remote access
+;;
+;; Session lists are scoped by the current session's host: a local
+;; context lists local sessions only, a remote (TRAMP) session adds its
+;; own host's sessions.  Remote files are never touched over a
+;; connection that is not already established — all checks are I/O-free
+;; — so an unreachable host can no longer hang the listing; it is
+;; probed in the background instead and its sessions reappear in a
+;; later listing once it answers.
+
+(defun pi-coding-agent//tramp-connection-alive-p (path)
+  "Return non-nil when TRAMP has an established connection for PATH.
+Checked without any I/O: `tramp-dissect-file-name' parses purely and
+`tramp-get-connection-process' only looks up the connection's ssh
+process, so callers can tell whether remote work would be fast (no
+reconnection) or would block on an unreachable host.  Non-remote
+PATHs return nil."
+  (and (pi-coding-agent--remote-prefix-for-path path)
+       (when-let* ((vec (ignore-errors (tramp-dissect-file-name path)))
+                   (proc (tramp-get-connection-process vec)))
+         (process-live-p proc))))
+
+(defun pi-coding-agent//buffer-remote-prefix (buf)
+  "Return the TRAMP remote prefix of BUF's session directory, or nil.
+nil means the buffer's session is local.  Purely syntactic — no
+connection is made."
+  (condition-case nil
+      (pi-coding-agent--remote-prefix-for-path
+       (with-current-buffer buf
+         (pi-coding-agent--chat-session-directory)))
+    (error nil)))
+
+(defun pi-coding-agent//current-session-remote-prefix ()
+  "Return the TRAMP remote prefix of the current session, or nil.
+The current session is the current perspective's pi chat buffer; nil
+when there is none (default perspective, no session) or it is local —
+the state in which session lists must not contain, or ever touch,
+remote sessions."
+  (when-let* ((persp (get-current-persp))
+              ((perspective-p persp))
+              (chat (pi-coding-agent//chat-buffer-in-persp persp)))
+    (pi-coding-agent//buffer-remote-prefix chat)))
+
+(defvar pi-coding-agent//remote-probes-in-flight
+  (make-hash-table :test 'equal)
+  "Hosts with a background reachability probe running.
+Guards `pi-coding-agent//remote-probe-async' against stacking probes
+when session lists are invoked repeatedly while a host is down.
+Entries are host name strings; they are removed by the probe's
+sentinel.")
+
+(defun pi-coding-agent//remote-probe-async (prefix)
+  "Probe PREFIX's remote host over ssh in the background; return nil.
+Listing sessions must not block on an unreachable host, so instead of
+connecting synchronously this fires a bounded `ssh' probe (BatchMode,
+ConnectTimeout — the same recipe as
+`pi-coding-agent//remote-host-probe') and reports the outcome in the
+echo area: reachable — the next session listing includes the host's
+remote sessions; exit 255 — the host answered but BatchMode
+authentication failed, TRAMP will prompt interactively when a remote
+session is opened; anything else — unreachable, its remote sessions
+stay out of the lists.  Probes are throttled per host
+(`pi-coding-agent//remote-probes-in-flight')."
+  (let ((host (file-remote-p prefix 'host))
+        (timeout (max 1 (or pi-coding-agent/remote-connect-timeout 20))))
+    (when (and host
+               (not (gethash host pi-coding-agent//remote-probes-in-flight)))
+      (puthash host t pi-coding-agent//remote-probes-in-flight)
+      (message "pi: %s is not connected — probing in the background; its remote sessions reappear in the session list once it answers"
+               host)
+      (condition-case err
+          (make-process
+           :name "pi-remote-probe-async"
+           :buffer (generate-new-buffer " *pi-remote-probe async*")
+           :command (list "ssh" "-o" "BatchMode=yes"
+                          "-o" (format "ConnectTimeout=%d" timeout)
+                          host "true")
+           :connection-type 'pipe
+           :noquery t
+           :sentinel
+           (lambda (proc _event)
+             (when (memq (process-status proc) '(exit signal))
+               (remhash host pi-coding-agent//remote-probes-in-flight)
+               (pcase (process-exit-status proc)
+                 (0 (message "pi: %s is reachable — re-run the session list to include its remote sessions"
+                             host))
+                 (255 (message "pi: %s answers but ssh authentication was refused: %s"
+                               host
+                               (string-trim
+                                (with-current-buffer (process-buffer proc)
+                                  (buffer-string)))))
+                 (_ (message "pi: %s is unreachable — its remote sessions stay out of the session lists"
+                             host)))
+               (ignore-errors
+                 (kill-buffer (process-buffer proc))))))
+        (file-error
+         (remhash host pi-coding-agent//remote-probes-in-flight)
+         (message "pi: background probe for %s failed: %s"
+                  host (error-message-string err))))
+    nil)))
+
+(defun pi-coding-agent//remote-scan-root (prefix)
+  "Return the session root to scan for remote PREFIX, or nil.
+Remote sessions of PREFIX's host are listed only over an
+already-established TRAMP connection, so an unreachable host never
+blocks a listing: with the connection down, a background probe is
+fired (`pi-coding-agent//remote-probe-async') and nil is returned —
+the host's closed sessions reappear in a later listing once it
+answers.  nil PREFIX (local context) returns nil: the local session
+root is scanned by default."
+  (cond
+   ((null prefix) nil)
+   ((pi-coding-agent//tramp-connection-alive-p prefix)
+    (concat prefix "~/.pi/agent/sessions/"))
+   (t
+    (pi-coding-agent//remote-probe-async prefix)
+    nil)))
+
+(defun pi-coding-agent//remote-executable-for (file)
+  "Return the verified remote pi executable for FILE's host, or nil.
+Reads the mapping `pi-coding-agent/remote-executables' that
+`pi-coding-agent/start-remote-session' fills in after locating and
+verifying the host's pi.  nil for local files and hosts without a
+mapping (the default executable is used, as before)."
+  (when-let* ((prefix (pi-coding-agent--remote-prefix-for-path file))
+              (host (file-remote-p prefix 'host))
+              (entry (alist-get host pi-coding-agent/remote-executables
+                                nil nil #'string-equal))
+              ((stringp (car entry))))
+    (car entry)))
+
+(defun pi-coding-agent//ensure-remote-reachable (file)
+  "Bound the connection cost of opening remote session FILE.
+Local files and already-established TRAMP connections return
+immediately.  Otherwise probe the host with the bounded ssh deadline
+(`pi-coding-agent//remote-host-probe'): reachable and auth results
+fall through to the open (TRAMP handles interactive authentication),
+while an unreachable host signals a clear `user-error' instead of
+leaving TRAMP waiting forever on a silent ssh — the same failure mode
+`pi-coding-agent/start-remote-session' guards against."
+  (when-let* ((prefix (pi-coding-agent--remote-prefix-for-path file))
+              ((not (pi-coding-agent//tramp-connection-alive-p file))))
+    (let* ((host (file-remote-p prefix 'host))
+           (timeout pi-coding-agent/remote-connect-timeout)
+           (probe (progn
+                    (message "pi: connecting to %s (ssh probe timeout %ds)..."
+                             host (or timeout 20))
+                    (pi-coding-agent//remote-host-probe host timeout))))
+      (pcase probe
+        (`(reachable . ,_) nil)
+        (`(auth . ,diag)
+         (message "%s is reachable; ssh authentication will be handled by TRAMP%s"
+                  host (if (string-empty-p diag) ""
+                         (format " (%s)" diag))))
+        (`(unreachable . ,diag)
+         (user-error "Cannot reach %s via ssh within %ds%s — remote session not opened"
+                     host (or timeout 20)
+                     (if (string-empty-p diag) ""
+                       (format ": %s" diag))))))))
 
 (defun pi-coding-agent//normalized-dir (dir)
   "Return DIR expanded (route-preserving) with a trailing slash.
@@ -923,10 +1115,24 @@ buffer — see `pi-coding-agent//opened-session-files')."
                     :modified (plist-get meta :modified-time)
                     :opened (pi-coding-agent//file-in-opened-p file opened))
               entries)))
-    ;; Drop cache entries for deleted files.
+    ;; Drop cache entries for deleted files — only within the scanned
+    ;; ROOT's scope: a local scan cannot see remote files (their
+    ;; sessions live on their hosts), so it must not evict their cached
+    ;; metadata, and a remote scan conversely must not evict local
+    ;; entries.  Without the scope check, every disconnected-host
+    ;; listing would wipe the remote cache (forcing a full re-read once
+    ;; the host answers again).
     (maphash (lambda (file _)
                (unless (member file files)
-                 (remhash file pi-coding-agent//session-cache)))
+                 (let ((file-remote
+                        (pi-coding-agent--remote-prefix-for-path file)))
+                   (when (if remote-p
+                             (and file-remote
+                                  (equal file-remote
+                                         (pi-coding-agent--remote-prefix-for-path
+                                          root)))
+                           (not file-remote))
+                     (remhash file pi-coding-agent//session-cache)))))
              pi-coding-agent//session-cache)
     (nreverse entries)))
 
@@ -957,7 +1163,7 @@ cwds."
     t))
 
 (defun pi-coding-agent//session-targets (&optional dir include-closed
-                                        exclude-current root)
+                                        exclude-current root remote-scope)
   "Return (LIVE . CLOSED) candidate alists for the session pickers.
 
 LIVE lists the active pi chat buffers — the ground truth for live
@@ -973,13 +1179,34 @@ EXCLUDE-CURRENT is non-nil, the current perspective's session is
 dropped: its live chat buffers from LIVE, its session file from
 CLOSED.
 
+REMOTE-SCOPE limits the listing to the current session's host (the
+`a i i' scope; nil keeps every live buffer listed, as the close and
+delete pickers want — they must reach a dead remote session):
+`local' drops every remote live session — a local context must not
+even touch remote state, so an unreachable host cannot block the
+list — while a TRAMP prefix string (the current remote session's
+host) keeps local sessions plus that host's, and appends the host's
+closed session files to CLOSED, scanned only over an
+already-established connection (`pi-coding-agent//remote-scan-root':
+a disconnected host gets a background probe and contributes nothing
+instead of blocking the listing).
+
 Each alist maps a candidate string to its target; duplicate labels
 (same title and directory) are disambiguated with a uuid suffix
 \(`pi-coding-agent//disambiguated-label').  LIVE always precedes
 CLOSED, and the pickers keep that order (see
 `pi-coding-agent//pick-session')."
-  (let* ((entries (if dir (pi-coding-agent//session-entries-in-dir dir root)
-                    (pi-coding-agent//session-entries root)))
+  (let* ((entries (append
+                   (if dir (pi-coding-agent//session-entries-in-dir dir root)
+                     (pi-coding-agent//session-entries root))
+                   ;; A REMOTE-SCOPE host adds its closed sessions,
+                   ;; scanned only over an established connection (nil
+                   ;; root -> no scan -> no blocking).
+                   (let ((remote-root (and (stringp remote-scope) (null dir)
+                                           (pi-coding-agent//remote-scan-root
+                                            remote-scope))))
+                     (and remote-root
+                          (pi-coding-agent//session-entries remote-root)))))
          (by-file (make-hash-table :test 'equal))
          (seen (make-hash-table :test 'equal))
          (current-persp (get-current-persp))
@@ -997,22 +1224,29 @@ CLOSED, and the pickers keep that order (see
     ;; started outside the registry flow, while the chat buffers always
     ;; reflect what is actually running.
     (dolist (buf (pi-coding-agent//active-chat-buffers))
-      (when (and (or (null dir) (pi-coding-agent//session-buffer-dir-p buf dir))
-                 (or (null current-buffers)
-                     (not (memq buf current-buffers))))
-        (let* ((file (plist-get (buffer-local-value
-                                 'pi-coding-agent--state buf)
-                                :session-file))
-               (file (and (stringp file) (not (string-empty-p file)) file))
-               (entry (and file (gethash file by-file)))
-               (label (pi-coding-agent//chat-buffer-label buf by-file))
-               (n (gethash label seen 0)))
-          (puthash label (1+ n) seen)
-          (push (cons (pi-coding-agent//disambiguated-label label n file)
-                      (append (list :buffer buf :label label :opened t)
-                              (and file (list :file file))
-                              (and entry (list :entry entry))))
-                live))))
+      (let ((buf-prefix (pi-coding-agent//buffer-remote-prefix buf)))
+        (when (and (or (null remote-scope)
+                       ;; Local sessions are always in scope; remote
+                       ;; ones only when the scope is that host.
+                       (null buf-prefix)
+                       (and (stringp remote-scope)
+                            (string-equal buf-prefix remote-scope)))
+                   (or (null dir) (pi-coding-agent//session-buffer-dir-p buf dir))
+                   (or (null current-buffers)
+                       (not (memq buf current-buffers))))
+          (let* ((file (plist-get (buffer-local-value
+                                   'pi-coding-agent--state buf)
+                                  :session-file))
+                 (file (and (stringp file) (not (string-empty-p file)) file))
+                 (entry (and file (gethash file by-file)))
+                 (label (pi-coding-agent//chat-buffer-label buf by-file))
+                 (n (gethash label seen 0)))
+            (puthash label (1+ n) seen)
+            (push (cons (pi-coding-agent//disambiguated-label label n file)
+                        (append (list :buffer buf :label label :opened t)
+                                (and file (list :file file))
+                                (and entry (list :entry entry))))
+                  live)))))
     ;; CLOSED: session files on disk not loaded by an active buffer
     ;; (the :opened flag of `pi-coding-agent//session-entries' is
     ;; derived from the active buffers).
@@ -1467,10 +1701,25 @@ Only real perspectives count; the default perspective has no session."
 A live perspective whose chat buffer has settled on the session's file
 counts as opened even when its registry entry is stale or absent (e.g.
 named sessions started via `pi-coding-agent/open-named-session' inside
-a registered perspective)."
+a registered perspective).
+
+Remote (TRAMP) session files are opened with the host's verified
+executable mapping (`pi-coding-agent//remote-executable-for'),
+matching `pi-coding-agent/start-remote-session's spawn, and an
+unestablished connection is probed with the bounded ssh deadline
+first (`pi-coding-agent//ensure-remote-reachable') — the open fails
+with a clear error instead of hanging inside TRAMP's untimeoutable
+connection wait."
   (let* ((file (plist-get entry :file))
+         (remote-exec (pi-coding-agent//remote-executable-for file))
+         ;; `pi-coding-agent-executable' is read deep inside the
+         ;; package's spawn path; binding it dynamically here makes a
+         ;; remote open use the host's verified pi binary.
+         (pi-coding-agent-executable
+          (if remote-exec (list remote-exec) pi-coding-agent-executable))
          (persp-name (or (pi-coding-agent//registry-persp-name-for-file file)
                          (car (rassoc file (pi-coding-agent//live-session-mappings))))))
+    (pi-coding-agent//ensure-remote-reachable file)
     (if persp-name
         (pi-coding-agent//switch-to-session persp-name file)
       (pi-coding-agent//open-session entry))))
@@ -1516,20 +1765,35 @@ sources under helm, header rows otherwise.  Both groups sort by title
 (configurable via `pi-coding-agent/session-sort-opened' and
 `pi-coding-agent/session-sort-closed').  Picking a live session
 switches to its perspective; picking a closed one opens it (reviving
-the perspective still registered for it)."
+the perspective still registered for it).
+
+Scope: a local context lists LOCAL sessions only — remote sessions
+never appear, and no remote file is ever touched, so an unreachable
+host cannot block the listing.  Used inside a remote (TRAMP) session,
+the list adds that host's sessions: its live chat buffers plus its
+closed session files, scanned over the established connection; when
+the connection is down, a background probe is fired and the host's
+closed sessions reappear in a later listing instead of blocking this
+one."
   (interactive)
   (require 'pi-coding-agent)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (pi-coding-agent//sync-labels)
-  (let* ((groups (pi-coding-agent//session-targets nil t t))
+  (let* ((remote-prefix (pi-coding-agent//current-session-remote-prefix))
+         (remote-scope (or remote-prefix 'local))
+         (groups (pi-coding-agent//session-targets nil t t nil remote-scope))
          (live (pi-coding-agent//sort-targets
                 (car groups) pi-coding-agent/session-sort-opened))
          (closed (pi-coding-agent//sort-targets
                   (cdr groups) pi-coding-agent/session-sort-closed)))
     (if (and (null live) (null closed))
-        (user-error "No other pi sessions found (looked in %s)"
-                    (expand-file-name pi-coding-agent/session-root))
+        (user-error "No other pi sessions found (looked in %s%s)"
+                    (expand-file-name pi-coding-agent/session-root)
+                    (if (stringp remote-scope)
+                        (format "; remote sessions on %s are not connected"
+                                (file-remote-p remote-scope 'host))
+                      ""))
       (let ((choice (pi-coding-agent//pick-session
                      live closed "Pi session: " nil t)))
         (when choice
@@ -1544,9 +1808,13 @@ buffers, the terminal's working directory in terminal buffers, and
 the visited file's directory (else `default-directory') elsewhere.
 Lists only that directory's sessions — live (●) first, then closed
 (○), with a section boundary between the groups, each sorted by
-title — excluding the current one.  Picking a live session switches
-to its perspective; picking a closed session opens it in a fresh
-perspective with its workspace restored.  Either way the pi window
+title — excluding the current one.  A remote directory's closed
+sessions are scanned on its host over the established connection
+(nothing remote is touched when the host is unreachable — a
+background probe re-establishes reachability for a later listing).
+Picking a live session switches to its perspective; picking a closed
+session opens it in a fresh perspective with its workspace restored.
+Either way the pi window
 layout (chat/input left, edit right) is applied afterwards."
   (interactive)
   (require 'pi-coding-agent)
@@ -1554,7 +1822,15 @@ layout (chat/input left, edit right) is applied afterwards."
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (pi-coding-agent//sync-labels)
   (let* ((dir (pi-coding-agent//context-directory))
-         (groups (pi-coding-agent//session-targets dir t t))
+         ;; A remote DIR's closed sessions live on its host: scan the
+         ;; host's session root — but only over an established
+         ;; connection (`pi-coding-agent//remote-scan-root' fires a
+         ;; background probe and returns nil otherwise, so an
+         ;; unreachable host never blocks the listing).
+         (groups (pi-coding-agent//session-targets
+                  dir t t
+                  (pi-coding-agent//remote-scan-root
+                   (pi-coding-agent--remote-prefix-for-path dir))))
          (live (pi-coding-agent//sort-targets
                 (car groups) pi-coding-agent/session-sort-opened))
          (closed (pi-coding-agent//sort-targets
@@ -2134,7 +2410,11 @@ needed through PATH."
     ;; 6. Persist the verified mapping for this host.
     (setq pi-coding-agent/remote-executables
           (cons (cons host (cons pi-path node-path))
-                (assq-delete-all host pi-coding-agent/remote-executables)))
+                ;; String keys: `assoc-delete-all', not assq — eq never
+                ;; matches strings, so an assq-based delete never
+                ;; removed the previous entry and the saved custom
+                ;; accumulated a duplicate per re-verification.
+                (assoc-delete-all host pi-coding-agent/remote-executables)))
     (customize-save-variable 'pi-coding-agent/remote-executables
                              pi-coding-agent/remote-executables)
     (message "pi on %s: %s%s" host pi-path
