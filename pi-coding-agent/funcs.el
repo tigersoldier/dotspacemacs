@@ -778,17 +778,51 @@ drift case handled by `pi-coding-agent//switch-to-session'."
 ;; ---------------------------------------------------------------------
 ;; Session scanning and the switch-session list
 
+(defun pi-coding-agent//session-scan-info (file)
+  "Return package-scanned session info for FILE, or nil.
+Delegates to the installed package's canonical session scanner and
+normalizes to (:first-message :message-count :session-name :cwd).
+The scanner moved between releases — `pi-coding-agent-jsonl-read-
+session-info' in intermediate versions, `pilish-jsonl-read-session-
+info' after the pilish rename, `pi-coding-agent--session-metadata'
+(whose plist already is the layer dialect) in older ones — so the
+name is resolved at runtime with `fboundp'; calling a missing name
+directly would make EVERY metadata read fail and silently empty the
+closed-session lists.  nil when no scanner exists or FILE is not a
+pi session (the scanners fail open internally)."
+  (cond
+   ((fboundp 'pi-coding-agent-jsonl-read-session-info)
+    (let ((info (pi-coding-agent-jsonl-read-session-info file)))
+      (and info
+           (list :first-message (plist-get info :firstMessage)
+                 :message-count (plist-get info :messageCount)
+                 :session-name (plist-get info :name)
+                 :cwd (plist-get info :cwd)))))
+   ((fboundp 'pilish-jsonl-read-session-info)
+    (let ((info (pilish-jsonl-read-session-info file)))
+      (and info
+           (list :first-message (plist-get info :firstMessage)
+                 :message-count (plist-get info :messageCount)
+                 :session-name (plist-get info :name)
+                 :cwd (plist-get info :cwd)))))
+   ((fboundp 'pi-coding-agent--session-metadata)
+    (let ((meta (pi-coding-agent--session-metadata file)))
+      (and meta
+           (list :first-message (plist-get meta :first-message)
+                 :message-count (plist-get meta :message-count)
+                 :session-name (plist-get meta :session-name)
+                 :cwd (plist-get meta :cwd)))))))
+
 (defun pi-coding-agent//session-metadata-cached (file)
   "Return cached metadata for session FILE, re-parsing when mtime changed.
 Metadata uses the layer's dialect — (:modified-time TIME :first-message
 TEXT :message-count COUNT :session-name NAME :cwd DIR) — parsed with
-the package's canonical `pi-coding-agent-jsonl-read-session-info'
-scanner (the package dropped `pi-coding-agent--session-metadata' in
-the session-browser change; :modified-time comes from FILE's own mtime,
-matching the old function).  Fail-open: a vanished or unreadable FILE
-— e.g. one whose directory no longer exists — yields nil with a
-message instead of an error, so session listing and deletion never
-abort on stale or missing session files.
+the package's canonical session scanner (see
+`pi-coding-agent//session-scan-info'; :modified-time comes from
+FILE's own mtime, matching the oldest scanner's behavior).  Fail-open:
+a vanished or unreadable FILE — e.g. one whose directory no longer
+exists — yields nil with a message instead of an error, so session
+listing and deletion never abort on stale or missing session files.
 
 Remote (TRAMP) FILEs are only read over an already-established
 connection (`pi-coding-agent//tramp-connection-alive-p', an I/O-free
@@ -810,13 +844,10 @@ disconnected remote file falls back to its stale cache entry
          ;; touch the file.
          ((and remote (not connected) cached) (cdr cached))
          (connected
-          (let* ((info (pi-coding-agent-jsonl-read-session-info file))
+          (let* ((info (pi-coding-agent//session-scan-info file))
                  (meta (and info
-                            (list :modified-time mtime
-                                  :first-message (plist-get info :firstMessage)
-                                  :message-count (plist-get info :messageCount)
-                                  :session-name (plist-get info :name)
-                                  :cwd (plist-get info :cwd)))))
+                            (plist-put (copy-sequence info)
+                                       :modified-time mtime))))
             (puthash file (cons mtime meta) pi-coding-agent//session-cache)
             meta))))
     (error
@@ -1163,6 +1194,34 @@ cwds."
                       (pi-coding-agent//normalized-dir dir))))
     t))
 
+(defun pi-coding-agent//remote-scope-entries (remote-scope dir)
+  "Return closed-session entries contributed by REMOTE-SCOPE's hosts.
+A TRAMP prefix string scopes to that one host; `t' (the close/delete
+scope) to every host with an active pi chat buffer plus the current
+session's host.  Each host's root is scanned only over an
+already-established connection (`pi-coding-agent//remote-scan-root':
+a disconnected host gets a background probe and contributes nothing
+instead of blocking).  nil when DIR is given — directory-scoped lists
+come from their own root — or when REMOTE-SCOPE admits no remote
+host (nil or `local`)."
+  (when (null dir)
+    (let ((prefixes
+           (cond
+            ((stringp remote-scope) (list remote-scope))
+            ((eq remote-scope t)
+             (delete-dups
+              (delq nil
+                    (cons (pi-coding-agent//current-session-remote-prefix)
+                          (mapcar #'pi-coding-agent//buffer-remote-prefix
+                                  (pi-coding-agent//active-chat-buffers)))))))))
+      (apply #'append
+             (delq nil
+                   (mapcar
+                    (lambda (prefix)
+                      (let ((root (pi-coding-agent//remote-scan-root prefix)))
+                        (and root (pi-coding-agent//session-entries root))))
+                    prefixes))))))
+
 (defun pi-coding-agent//session-targets (&optional dir include-closed
                                         exclude-current root remote-scope)
   "Return (LIVE . CLOSED) candidate alists for the session pickers.
@@ -1180,17 +1239,20 @@ EXCLUDE-CURRENT is non-nil, the current perspective's session is
 dropped: its live chat buffers from LIVE, its session file from
 CLOSED.
 
-REMOTE-SCOPE limits the listing to the current session's host (the
-`a i i' scope; nil keeps every live buffer listed, as the close and
-delete pickers want — they must reach a dead remote session):
-`local' drops every remote live session — a local context must not
-even touch remote state, so an unreachable host cannot block the
-list — while a TRAMP prefix string (the current remote session's
-host) keeps local sessions plus that host's, and appends the host's
-closed session files to CLOSED, scanned only over an
-already-established connection (`pi-coding-agent//remote-scan-root':
-a disconnected host gets a background probe and contributes nothing
-instead of blocking the listing).
+REMOTE-SCOPE decides which hosts' sessions are listed — the only
+remote axis, shared by every picker (`a i i' passes the current
+session's host or `local'; close/delete pass t to reach every host,
+including a dead remote one):
+- nil (no scoping) and `local' keep LOCAL sessions only — a local
+  context must not even touch remote state, so an unreachable host
+cannot block the list;
+- a TRAMP prefix string keeps local sessions plus that host's, and
+- t keeps local sessions plus every active remote host's.
+A scoped host contributes BOTH its live chat buffers and its closed
+session files, the files scanned only over an already-established
+connection (`pi-coding-agent//remote-scan-root': a disconnected host
+gets a background probe and contributes nothing instead of blocking
+the listing).
 
 Each alist maps a candidate string to its target; duplicate labels
 (same title and directory) are disambiguated with a uuid suffix
@@ -1200,14 +1262,11 @@ CLOSED, and the pickers keep that order (see
   (let* ((entries (append
                    (if dir (pi-coding-agent//session-entries-in-dir dir root)
                      (pi-coding-agent//session-entries root))
-                   ;; A REMOTE-SCOPE host adds its closed sessions,
-                   ;; scanned only over an established connection (nil
-                   ;; root -> no scan -> no blocking).
-                   (let ((remote-root (and (stringp remote-scope) (null dir)
-                                           (pi-coding-agent//remote-scan-root
-                                            remote-scope))))
-                     (and remote-root
-                          (pi-coding-agent//session-entries remote-root)))))
+                   ;; A scoped host adds its closed sessions, scanned
+                   ;; only over an established connection (nil root ->
+                   ;; no scan -> no blocking).
+                   (pi-coding-agent//remote-scope-entries remote-scope
+                                                          dir)))
          (by-file (make-hash-table :test 'equal))
          (seen (make-hash-table :test 'equal))
          (current-persp (get-current-persp))
@@ -1226,15 +1285,17 @@ CLOSED, and the pickers keep that order (see
     ;; reflect what is actually running.
     (dolist (buf (pi-coding-agent//active-chat-buffers))
       (let ((buf-prefix (pi-coding-agent//buffer-remote-prefix buf)))
-        (when (and (or (null remote-scope)
-                       ;; Local sessions are always in scope; remote
-                       ;; ones only when the scope is that host.
-                       (null buf-prefix)
-                       (and (stringp remote-scope)
-                            (string-equal buf-prefix remote-scope)))
-                   (or (null dir) (pi-coding-agent//session-buffer-dir-p buf dir))
-                   (or (null current-buffers)
-                       (not (memq buf current-buffers))))
+        (when (and
+               ;; Local sessions are always in scope; remote ones when
+               ;; the scope admits their host (t = every host, a
+               ;; prefix = that host, nil/'local = none).
+               (or (null buf-prefix)
+                   (eq remote-scope t)
+                   (and (stringp remote-scope)
+                        (string-equal buf-prefix remote-scope)))
+               (or (null dir) (pi-coding-agent//session-buffer-dir-p buf dir))
+               (or (null current-buffers)
+                   (not (memq buf current-buffers))))
           (let* ((file (plist-get (buffer-local-value
                                    'pi-coding-agent--state buf)
                                   :session-file))
@@ -1823,15 +1884,17 @@ layout (chat/input left, edit right) is applied afterwards."
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (pi-coding-agent//sync-labels)
   (let* ((dir (pi-coding-agent//context-directory))
-         ;; A remote DIR's closed sessions live on its host: scan the
-         ;; host's session root — but only over an established
-         ;; connection (`pi-coding-agent//remote-scan-root' fires a
-         ;; background probe and returns nil otherwise, so an
-         ;; unreachable host never blocks the listing).
+         ;; A remote DIR's sessions live on its host: that host's live
+         ;; buffers are admitted (REMOTE-SCOPE) and its closed sessions
+         ;; are scanned — but only over an established connection
+         ;; (`pi-coding-agent//remote-scan-root' fires a background
+         ;; probe and returns nil otherwise, so an unreachable host
+         ;; never blocks the listing).
+         (remote-prefix (pi-coding-agent--remote-prefix-for-path dir))
          (groups (pi-coding-agent//session-targets
                   dir t t
-                  (pi-coding-agent//remote-scan-root
-                   (pi-coding-agent--remote-prefix-for-path dir))))
+                  (pi-coding-agent//remote-scan-root remote-prefix)
+                  remote-prefix))
          (live (pi-coding-agent//sort-targets
                 (car groups) pi-coding-agent/session-sort-opened))
          (closed (pi-coding-agent//sort-targets
@@ -1923,7 +1986,13 @@ through the unified session picker — live (●) first, then closed
 title — plus the \"✚ New session\" candidate and free-form input
 (any non-matching name) both starting a fresh named session; an
 empty input starts an unnamed session."
-  (let* ((groups (pi-coding-agent//session-targets dir t nil root))
+  (let* ((groups (pi-coding-agent//session-targets
+                  dir t nil root
+                  ;; A remote DIR's live sessions live on its host:
+                  ;; admit that host's chat buffers (directory-scoped
+                  ;; lists get their closed entries from ROOT itself,
+                  ;; not from the scope).
+                  (pi-coding-agent--remote-prefix-for-path dir)))
          (live (pi-coding-agent//sort-targets
                 (car groups) pi-coding-agent/session-sort-opened))
          (closed (pi-coding-agent//sort-targets
@@ -3207,9 +3276,18 @@ session when there is no active buffer.  Live sessions are always
 offered before closed ones, with a section boundary between the
 groups (separate sources under helm, header rows otherwise).
 ACTION is the verb used in the prompt and error (default \"Close\").
-Returns (:buffer BUF), (:entry ENTRY), or (:persp NAME)."
+Returns (:buffer BUF), (:entry ENTRY), or (:persp NAME).
+
+The list is built by the same `pi-coding-agent//session-targets'
+logic as the switch pickers, scoped with REMOTE-SCOPE t: every
+host's sessions are offered (close/delete must reach a dead remote
+session), with remote closed files scanned only over established
+connections, exactly like the switch list does for its host.  The
+single listing difference besides that scope is that the current
+session is NOT excluded: it is the picker's default."
   (let* ((action (or action "Close"))
-         (groups (pi-coding-agent//session-targets nil include-closed))
+         (groups (pi-coding-agent//session-targets
+                  nil include-closed nil nil t))
          (live (car groups))
          (closed (cdr groups))
          (default (pi-coding-agent//default-close-candidate)))
@@ -3505,7 +3583,10 @@ session may still appear in the session list"
   "Delete a pi session: remove it from the session list.
 Always prompts — the current session is the default — offering both
 active sessions (live pi chat buffers; the perspective is resolved
-when deleting) and closed sessions (their file is deleted).  Under
+when deleting) and closed sessions (their file is deleted).  The
+list is the shared session-targets logic with remote scope t: every
+host's live and closed sessions are offered, remote closed files
+scanned only over established connections.  Under
 helm the two groups are separate sections, active first.  An active
 session is torn down like `pi-coding-agent/close-session', then its
 file is deleted — moved to the OS trash via the `trash' command when

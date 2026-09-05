@@ -134,7 +134,11 @@ row.
   and remove it from the session list.  Always prompts — the current
   session is the default — offering both live sessions (active pi
   chat buffers) and closed sessions, live first with a section
-  boundary (separate sources under helm).  An active session is
+  boundary (separate sources under helm).  The list is built by the
+  same logic as =SPC a i i=, scoped wider: every host's sessions are
+  offered (a dead remote session can be reached and deleted), with
+  remote closed files scanned only over established connections.  An
+  active session is
   closed like =SPC a i d=, then its file is deleted — moved to the OS
   trash via the =trash= command when available, otherwise deleted
   permanently, the same behavior as pi's own TUI delete (=ctrl+d= in

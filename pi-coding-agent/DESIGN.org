@@ -498,10 +498,28 @@ session's host, and listing never blocks on an unreachable host.
 - The scope is the current perspective's pi chat buffer's remote
   prefix (=pi-coding-agent//current-session-remote-prefix=): no
   session → local scope.  =pi-coding-agent//session-targets= takes a
-  tri-state REMOTE-SCOPE: nil (default — close/delete pickers stay
-  unscoped so a dead remote session can still be reached and closed),
-  =local= (drop every remote live buffer), or a TRAMP prefix string
-  (local sessions plus that host's, plus the host's closed files).
+  REMOTE-SCOPE: =local= (local sessions only), a TRAMP prefix string
+  (local sessions plus that host's live buffers and closed files), or
+  =t= (local sessions plus every active remote host's — the
+  close/delete scope, which must reach a dead remote session).
+  Every picker is built by this one function; the commands differ
+  only in the scope and in whether closed sessions are included
+  (both include them) and whether the current session is excluded
+  (switch excludes it, close/delete offer it as the default).
+  Rejected: leaving the close/delete pickers unscoped with a
+  half-remote list (live buffers of all hosts, closed files of none)
+  — the same session appeared in one picker but not the other, and a
+  closed remote session could never be deleted at all.
+- Session metadata is read through
+  =pi-coding-agent//session-scan-info=, which resolves the package's
+  scanner at runtime with =fboundp=: the scanner name moved between
+  package releases (=pi-coding-agent-jsonl-read-session-info= →
+  =pilish-jsonl-read-session-info=; older versions ship
+  =pi-coding-agent--session-metadata=).  Calling a missing name
+  directly made EVERY metadata read fail (the fail-open condition-case
+  swallowed the void-function error per file), which silently emptied
+  the closed-session lists — the scanner must be resolved, never
+  assumed.
 - Connection gating: remote work in the listing path happens only
   over an already-established TRAMP connection
   (=pi-coding-agent//tramp-connection-alive-p= — an I/O-free check:
