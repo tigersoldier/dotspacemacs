@@ -18,6 +18,11 @@
 (defvar tramp-process-connection-type)
 (defvar tramp-remote-path)
 (defvar pi-coding-agent-executable)
+;; Package variable read dynamically inside the package's spawn path
+;; (`pi-coding-agent--pi-command'); the remote flow let-binds it (and
+;; `pi-coding-agent--start-process' advice rebinds it) to drop local-only
+;; `-e' extensions.  Same lexical-binding caveat as above.
+(defvar pi-coding-agent-extra-args)
 (declare-function tramp-make-tramp-file-name "tramp")
 
 ;; Absolute path to this layer's directory (resolved from funcs.el's
@@ -431,9 +436,13 @@ filled in automatically by `pi-coding-agent/start-remote-session'
 once the executables have been located and verified working on the
 host (the user is asked to locate them when the search fails), and
 is consulted again on later sessions to skip the search.  Sessions
-started through `pi-coding-agent/start-remote-session' bind
-`pi-coding-agent-executable' to the mapped path, which makes the pi
-spawn independent of the remote PATH."
+started through `pi-coding-agent/start-remote-session' — and every
+remote spawn of `pi-coding-agent--start-process' (see
+`pi-coding-agent//remote-spawn-start-process') — bind
+`pi-coding-agent-executable' to a wrapper that exports NODE-PATH's
+directory into the spawn PATH, making the pi spawn independent of
+the remote PATH (both for finding pi and for resolving pi's
+`#!/usr/bin/env node' shebang)."
   :type '(alist :key-type (string :tag "host")
                 :value-type (cons (string :tag "pi executable")
                                   (choice (string :tag "node executable")
@@ -1041,8 +1050,8 @@ root is scanned by default."
     (pi-coding-agent//remote-probe-async prefix)
     nil)))
 
-(defun pi-coding-agent//remote-executable-for (file)
-  "Return the verified remote pi executable for FILE's host, or nil.
+(defun pi-coding-agent//remote-executable-entry-for (file)
+  "Return the verified (PI-PATH . NODE-PATH) mapping for FILE's host, or nil.
 Reads the mapping `pi-coding-agent/remote-executables' that
 `pi-coding-agent/start-remote-session' fills in after locating and
 verifying the host's pi.  nil for local files and hosts without a
@@ -1052,7 +1061,42 @@ mapping (the default executable is used, as before)."
               (entry (alist-get host pi-coding-agent/remote-executables
                                 nil nil #'string-equal))
               ((stringp (car entry))))
+    entry))
+
+(defun pi-coding-agent//remote-executable-for (file)
+  "Return the verified remote pi executable for FILE's host, or nil.
+The pi part of `pi-coding-agent//remote-executable-entry-for'."
+  (when-let* ((entry (pi-coding-agent//remote-executable-entry-for file)))
     (car entry)))
+
+(defun pi-coding-agent//remote-spawn-executable (entry)
+  "Return a `pi-coding-agent-executable' value that runs ENTRY's pi remotely.
+ENTRY is a (PI-PATH . NODE-PATH) mapping as recorded in
+`pi-coding-agent/remote-executables'.  With NODE-PATH, the value is a
+\"sh -c\" wrapper that exports node's bin directory into PATH before
+exec'ing pi: the TRAMP spawn shell is a non-interactive login shell
+whose rc files are skipped on purpose (see
+`pi-coding-agent/start-remote-session'), so `node' — typically
+installed under ~/.local/share/pi-node/… and only put on PATH by the
+interactive shell's rc file — is invisible to it, and pi's
+`#!/usr/bin/env node' shebang dies with exit 127 (\"env: node: No such
+file or directory\") right after the ready marker.  The wrapper gives
+the spawn the same treatment `pi-coding-agent//remote-verify-pi'
+gives its verification run, making the spawn independent of the
+remote PATH entirely.  It composes with the package's own remote
+wrapper (ready marker + `exec \"$0\" \"$@\"'): that wrapper's \"$0\" is
+our \"sh\".  Without NODE-PATH (node found through the remote PATH),
+the plain absolute pi path is returned."
+  (let ((pi-path (car entry))
+        (node-dir (and (cdr entry) (file-name-directory (cdr entry)))))
+    (if node-dir
+        (list "sh" "-c"
+              (concat "PATH="
+                      (shell-quote-argument
+                       (directory-file-name node-dir))
+                      ":$PATH; export PATH; exec \"$0\" \"$@\"")
+              pi-path)
+      (list pi-path))))
 
 (defun pi-coding-agent//ensure-remote-reachable (file)
   "Bound the connection cost of opening remote session FILE.
@@ -1780,19 +1824,26 @@ named sessions started via `pi-coding-agent/open-named-session' inside
 a registered perspective).
 
 Remote (TRAMP) session files are opened with the host's verified
-executable mapping (`pi-coding-agent//remote-executable-for'),
-matching `pi-coding-agent/start-remote-session's spawn, and an
+executable mapping (`pi-coding-agent//remote-executable-entry-for'),
+matching `pi-coding-agent/start-remote-session's spawn: the mapped
+node directory is exported into the spawn PATH so pi's
+`#!/usr/bin/env node' shebang resolves on the PATH-less TRAMP spawn
+shell, and local `-e' extensions are dropped (handled for every
+remote spawn by `pi-coding-agent//remote-spawn-start-process').  An
 unestablished connection is probed with the bounded ssh deadline
 first (`pi-coding-agent//ensure-remote-reachable') — the open fails
 with a clear error instead of hanging inside TRAMP's untimeoutable
 connection wait."
   (let* ((file (plist-get entry :file))
-         (remote-exec (pi-coding-agent//remote-executable-for file))
+         (remote-entry (pi-coding-agent//remote-executable-entry-for file))
          ;; `pi-coding-agent-executable' is read deep inside the
-         ;; package's spawn path; binding it dynamically here makes a
-         ;; remote open use the host's verified pi binary.
+         ;; package's spawn path (and the startup version check); binding
+         ;; it dynamically here makes a remote open spawn pi exactly
+         ;; like `pi-coding-agent/start-remote-session' does.
          (pi-coding-agent-executable
-          (if remote-exec (list remote-exec) pi-coding-agent-executable))
+          (if remote-entry
+              (pi-coding-agent//remote-spawn-executable remote-entry)
+            pi-coding-agent-executable))
          (persp-name (or (pi-coding-agent//registry-persp-name-for-file file)
                          (car (rassoc file (pi-coding-agent//live-session-mappings))))))
     (pi-coding-agent//ensure-remote-reachable file)
@@ -2665,8 +2716,12 @@ installed."
          ;; there even though it works in an ssh login session.  The
          ;; located paths are verified by actually running pi remotely,
          ;; recorded in `pi-coding-agent/remote-executables', and bound
-         ;; as the absolute executable path below — making the pi spawn
-         ;; independent of the remote PATH entirely.
+         ;; as the executable below — with the mapped node directory
+         ;; exported into the spawn PATH, since pi's
+         ;; `#!/usr/bin/env node' shebang would otherwise fail with
+         ;; exit 127 ("env: node: No such file or directory") on the
+         ;; PATH-less spawn shell — making the pi spawn independent of
+         ;; the remote PATH entirely.
          (executables (condition-case err
                           (pi-coding-agent//remote-locate-executables
                            host (file-remote-p home 'localname))
@@ -2681,22 +2736,25 @@ installed."
                              host (error-message-string err)))))
          (choice (pi-coding-agent//new-session-choice
                   dir (pi-coding-agent//remote-session-root dir))))
-    (let ((pi-coding-agent-executable (list (car executables)))
+    (let ((pi-coding-agent-executable
+           (pi-coding-agent//remote-spawn-executable executables))
           (pi-coding-agent-extra-args (pi-coding-agent//remote-extra-args host)))
       (pcase choice
         (`(existing . ,target)
          (pi-coding-agent//open-or-switch-target target)
          ;; Cover later re-spawns of the pi process (restart, session
-         ;; file re-open) with the verified absolute path.
+         ;; file re-open) with the verified PATH-independent spawn.
          (when (derived-mode-p 'pi-coding-agent-mode)
            (setq-local pi-coding-agent-executable
-                       (list (car executables)))))
+                       (pi-coding-agent//remote-spawn-executable
+                        executables))))
         (`(new . ,name)
          (let ((chat (pi-coding-agent//start-fresh-session dir name)))
            (when (buffer-live-p chat)
              (with-current-buffer chat
                (setq-local pi-coding-agent-executable
-                           (list (car executables)))))))))))
+                           (pi-coding-agent//remote-spawn-executable
+                            executables))))))))))
 
 ;; ---------------------------------------------------------------------
 ;; Worktree and workspace sessions
@@ -3837,6 +3895,38 @@ configured (emacsclient then falls back to default socket discovery)."
               process-environment)))
       (funcall orig-fn directory))))
 
+(defun pi-coding-agent//remote-spawn-start-process (orig-fn directory)
+  "Around-advice making every remote pi spawn independent of the remote PATH.
+
+The TRAMP spawn shell is a non-interactive login shell (rc files are
+skipped on purpose, see `pi-coding-agent/start-remote-session'), so a
+user-installed pi is invisible to it in two ways: even with the mapped
+absolute pi path, the `#!/usr/bin/env node' shebang resolves `node'
+through PATH and dies with exit 127 (\"env: node: No such file or
+directory\") right after the ready marker; and `-e' extension paths
+that exist only locally (the Emacs bridge) make the remote pi abort
+with \"Extension path does not exist\".
+
+When DIRECTORY is remote and its host has a verified executable
+mapping, rebind `pi-coding-agent-executable' to the PATH-independent
+spawn (`pi-coding-agent//remote-spawn-executable') and drop local-only
+`-e' pairs (`pi-coding-agent//remote-extra-args') — covering every
+entry point that spawns a remote pi (session list opens, `a i s',
+revivals) without each having to bind the values itself.  Local
+directories and hosts without a mapping spawn exactly as before
+(fail-open)."
+  (let* ((entry (pi-coding-agent//remote-executable-entry-for directory))
+         (pi-coding-agent-executable
+          (if entry
+              (pi-coding-agent//remote-spawn-executable entry)
+            pi-coding-agent-executable))
+         (pi-coding-agent-extra-args
+          (if entry
+              (pi-coding-agent//remote-extra-args
+               (file-remote-p directory 'host))
+            pi-coding-agent-extra-args)))
+    (funcall orig-fn directory)))
+
 (defun pi-coding-agent//install-package-advices ()
   "Install the layer's advices on package commands.
 
@@ -3860,7 +3950,14 @@ do not double-fire the advices."
   (advice-remove 'pi-coding-agent--start-process
                  #'pi-coding-agent//bridge-start-process)
   (advice-add 'pi-coding-agent--start-process
-              :around #'pi-coding-agent//bridge-start-process))
+              :around #'pi-coding-agent//bridge-start-process)
+  ;; Make every remote pi spawn PATH-independent (node shebang) and
+  ;; free of local-only `-e' extensions, whatever entry point
+  ;; triggered the spawn.
+  (advice-remove 'pi-coding-agent--start-process
+                 #'pi-coding-agent//remote-spawn-start-process)
+  (advice-add 'pi-coding-agent--start-process
+              :around #'pi-coding-agent//remote-spawn-start-process))
 
 (with-eval-after-load 'pi-coding-agent
   (pi-coding-agent//install-package-advices))

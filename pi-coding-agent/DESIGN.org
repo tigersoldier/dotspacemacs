@@ -480,6 +480,32 @@ run the ordinary new-session flow (D10) on that host.
   spelling, which keeps session identity (buffer names, the
   unnamed-session refusal, the live/closed lists) consistent; the
   chosen dir is canonicalized before entering the new-session flow.
+- The pi spawn is independent of the remote PATH — both for finding
+  pi and for resolving its shebang: the TRAMP spawn shell is a
+  non-interactive login shell (rc files skipped on purpose, above),
+  so a user-installed node (e.g. pi's managed
+  =~/.local/share/pi-node/<ver>/bin=, put on PATH only by an
+  interactive rc file) is invisible to it and pi's
+  =#!/usr/bin/env node= shebang dies with exit 127 ("env: node: No
+  such file or directory") right after the ready marker.  The
+  mapping's NODE-PATH is therefore not just recorded but USED:
+  =pi-coding-agent//remote-spawn-executable= wraps the spawn in
+  =sh -c 'PATH=<node-dir>:$PATH; export PATH; exec "$0" "$@"'= —
+  the same treatment =pi-coding-agent//remote-verify-pi= gives its
+  verification run — and composes with the package's own remote
+  wrapper (ready marker + =exec "$0" "$@"=, whose =$0= becomes our
+  =sh=).  Applied to every remote spawn via the
+  =pi-coding-agent//remote-spawn-start-process= advice on
+  =pi-coding-agent--start-process=, so opens from the session list
+  (SPC a i i / SPC a i S), =SPC a i s= and revivals get it without
+  binding anything themselves; hosts without a mapping spawn as
+  before (fail-open).  The same advice drops local-only =-e=
+  extension pairs (=pi-coding-agent//remote-extra-args=): the remote
+  pi aborts with "Extension path does not exist" otherwise.  Note
+  =pi-coding-agent-extra-args= needs its =defvar= declaration at the
+  top of funcs.el (lexical-binding pitfall, file header): the first
+  version of the start-remote-session filter was byte-compiled into
+  an ineffective lexical binding and never filtered anything.
 - Key choice: =m= (machine) for the remote-session flow; the
   transient menu moves from =m= to =?= (=SPC a i ?=) to free it,
   keeping the menu on =p= in the chat/input mode leaders.  Mirrored

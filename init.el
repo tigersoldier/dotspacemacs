@@ -548,10 +548,10 @@ This function is called at the very end of Spacemacs initialization."
                  winum with-editor wolfram-mode ws-butler xterm-color yaml-mode
                  yapfify yasnippet))
    '(pi-coding-agent/remote-executables
-     '(("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
-       ("dev-server"
+     '(("dev-server"
         "/home/caibin2/.local/share/pi-node/node-v22.23.2-linux-x64/bin/pi"
         . "/home/caibin2/.local/share/pi-node/node-v22.23.2-linux-x64/bin/node")
+       ("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
        ("tigerbox" "/home/tiger/.local/bin/pi" . "/bin/node")))
    '(purpose-default-layout-file "~/.emacs.d/private/layouts/2edit-panel.window-layout")
    '(purpose-layout-dirs '("~/.emacs.d/private/layouts/"))
