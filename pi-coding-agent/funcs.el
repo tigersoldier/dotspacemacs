@@ -307,7 +307,11 @@ SAVED-BUFFER is restored to the right (edit) pane when usable; when it
 is a pi buffer or dead, the most recently used non-pi buffer is shown
 instead — restricted to the current perspective when RESTRICT-TO-PERSP
 is non-nil (used when opening a session into a fresh perspective, so
-buffers from other workspaces never leak into the session)."
+buffers from other workspaces never leak into the session).  The chat
+and input panes are soft-dedicated to their buffers (the `side'
+window-dedicated value the package itself uses for the input window),
+so `display-buffer' never steals them; `switch-to-buffer' and `C-x o'
+keep working."
   ;; Recompile the purpose tables first: the layout's buffer routing
   ;; depends on them, and they can be stale (e.g. when layer files were
   ;; reloaded with `SPC f e R' after startup, the purpose-mode hook
@@ -326,9 +330,19 @@ buffers from other workspaces never leak into the session)."
                    (car (pi-coding-agent//non-dummy-buffers-with-purpose 'pi-input)))))
     (dolist (w (window-list (selected-frame) nil (frame-first-window (selected-frame))))
       (cond ((eq (purpose-window-purpose w) 'pi-chat)
-             (when chat (set-window-buffer w chat)))
+             (when chat
+               (set-window-buffer w chat)
+               ;; Soft-lock the pane to this session's chat buffer so
+               ;; `display-buffer' never targets it (help, magit,
+               ;; compilation, ...).  `side' is the soft form the package
+               ;; itself uses for the input window: `set-window-buffer'
+               ;; and `switch-to-buffer' still work, so re-applying the
+               ;; layout and `C-x o' are unaffected.
+               (set-window-dedicated-p w 'side)))
             ((eq (purpose-window-purpose w) 'pi-input)
-             (when input (set-window-buffer w input)))
+             (when input
+               (set-window-buffer w input)
+               (set-window-dedicated-p w 'side)))
             ;; Right (edit) pane: restore the buffer the user was
             ;; looking at before this command replaced it.  When that
             ;; buffer is unusable (dead or one of the pi buffers),
