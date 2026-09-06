@@ -3234,13 +3234,40 @@ session and `persp-contain-buffer-p' is always true for it."
                         (abbreviate-file-name (directory-file-name cwd)))))
       (if abbrev (format "%s · %s" title abbrev) title))))
 
+(defun pi-coding-agent//chat-buffer-dir (buf)
+  "Return the abbreviated session directory of chat buffer BUF, or nil.
+Used to annotate named-session labels, whose perspective name is the
+bare session name and carries no directory."
+  (when (buffer-live-p buf)
+    (let ((dir (condition-case nil
+                   (with-current-buffer buf
+                     (pi-coding-agent--chat-session-directory))
+                 (error nil))))
+      (when (and (stringp dir) (not (string-empty-p dir)))
+        (abbreviate-file-name (directory-file-name dir))))))
+
+(defun pi-coding-agent//registry-label-locked-p (persp-name)
+  "Return non-nil when perspective PERSP-NAME has a label-locked registry entry.
+Label-locked marks named sessions (their perspective name is the bare
+session name) and user-renamed perspectives — in both cases the
+perspective name alone does not carry the session's directory, so the
+session list appends it."
+  (when-let* ((entry (assoc persp-name pi-coding-agent//registry)))
+    (plist-get (cdr entry) :label-locked)))
+
 (defun pi-coding-agent//chat-buffer-label (buf by-file)
   "Display label for pi chat buffer BUF.
-The perspective's name when BUF belongs to one, else the session's
-\"title · path\" label, else the buffer name.  BY-FILE maps session
-files to metadata entries."
-  (or (when-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
-        (safe-persp-name persp))
+The perspective's name when BUF belongs to one — with the session's
+directory appended for named (label-locked) perspectives, whose name
+is the bare session name — else the session's \"title · path\" label,
+else the buffer name.  BY-FILE maps session files to metadata entries."
+  (or (when-let* ((persp (pi-coding-agent//persp-containing-buffer buf))
+                  (name (safe-persp-name persp)))
+        (if (pi-coding-agent//registry-label-locked-p name)
+            (if-let* ((dir (pi-coding-agent//chat-buffer-dir buf)))
+                (format "%s · %s" name dir)
+              name)
+          name))
       (pi-coding-agent//session-base-label
        (gethash (plist-get (buffer-local-value 'pi-coding-agent--state buf)
                            :session-file)
