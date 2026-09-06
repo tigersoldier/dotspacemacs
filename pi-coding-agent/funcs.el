@@ -1252,26 +1252,66 @@ cwds."
                       (pi-coding-agent//normalized-dir dir))))
     t))
 
+(defun pi-coding-agent//remote-scope-prefixes (remote-scope)
+  "Return the TRAMP prefixes REMOTE-SCOPE admits, or nil for none.
+REMOTE-SCOPE is the scope argument of `pi-coding-agent//session-targets':
+nil or `local' admit no remote host, a TRAMP prefix string admits that
+one host, `t' admits every host with an active pi chat buffer plus the
+current session's host, and a list of TRAMP prefixes admits exactly
+the hosts of those prefixes.  The result is deduplicated.  The
+enumeration is purely local — reachability of each admitted host is
+decided later, per host, without blocking
+\(`pi-coding-agent//remote-scan-root')."
+  (let (prefixes)
+    (dolist (prefix (cond
+                     ((stringp remote-scope) (list remote-scope))
+                     ((eq remote-scope t)
+                      (delq nil
+                            (cons (pi-coding-agent//current-session-remote-prefix)
+                                  (mapcar #'pi-coding-agent//buffer-remote-prefix
+                                          (pi-coding-agent//active-chat-buffers)))))
+                     ((listp remote-scope) remote-scope)
+                     (t nil)))
+      (when (and (stringp prefix)
+                 (not (member prefix prefixes)))
+        (push prefix prefixes)))
+    (nreverse prefixes)))
+
+(defun pi-coding-agent//known-remote-prefixes ()
+  "Return the TRAMP prefixes of every host this layer knows runs pi.
+Sources, unioned and deduplicated: hosts with verified executables in
+`pi-coding-agent/remote-executables' (persisted across Emacs runs —
+the machines `pi-coding-agent/start-remote-session' has located pi
+on), hosts of active pi chat buffers (their prefixes are kept
+verbatim), and the current session's host.  Purely local — no remote
+file is touched; each host's sessions are read later over an
+already-established connection only, so an unreachable host never
+blocks the listing that consults this (`pi-coding-agent//remote-scan-root';
+it is probed in the background instead)."
+  (let (prefixes)
+    (dolist (entry pi-coding-agent/remote-executables)
+      (when (stringp (car entry))
+        (push (format "/ssh:%s:" (car entry)) prefixes)))
+    (dolist (buf (pi-coding-agent//active-chat-buffers))
+      (when-let* ((prefix (pi-coding-agent//buffer-remote-prefix buf)))
+        (push prefix prefixes)))
+    (when-let* ((prefix (pi-coding-agent//current-session-remote-prefix)))
+      (push prefix prefixes))
+    (nreverse (delete-dups (delq nil prefixes)))))
+
 (defun pi-coding-agent//remote-scope-entries (remote-scope dir)
   "Return closed-session entries contributed by REMOTE-SCOPE's hosts.
-A TRAMP prefix string scopes to that one host; `t' (the close/delete
+REMOTE-SCOPE follows `pi-coding-agent//session-targets'' convention:
+a TRAMP prefix string scopes to that one host, `t' (the close/delete
 scope) to every host with an active pi chat buffer plus the current
-session's host.  Each host's root is scanned only over an
-already-established connection (`pi-coding-agent//remote-scan-root':
-a disconnected host gets a background probe and contributes nothing
-instead of blocking).  nil when DIR is given — directory-scoped lists
-come from their own root — or when REMOTE-SCOPE admits no remote
-host (nil or `local`)."
+session's host, and a list of TRAMP prefixes to exactly those hosts.
+Each host's root is scanned only over an already-established
+connection (`pi-coding-agent//remote-scan-root': a disconnected host
+gets a background probe and contributes nothing instead of blocking).
+nil when DIR is given — directory-scoped lists come from their own
+root — or when REMOTE-SCOPE admits no remote host (nil or `local`)."
   (when (null dir)
-    (let ((prefixes
-           (cond
-            ((stringp remote-scope) (list remote-scope))
-            ((eq remote-scope t)
-             (delete-dups
-              (delq nil
-                    (cons (pi-coding-agent//current-session-remote-prefix)
-                          (mapcar #'pi-coding-agent//buffer-remote-prefix
-                                  (pi-coding-agent//active-chat-buffers)))))))))
+    (let ((prefixes (pi-coding-agent//remote-scope-prefixes remote-scope)))
       (apply #'append
              (delq nil
                    (mapcar
@@ -1298,13 +1338,16 @@ dropped: its live chat buffers from LIVE, its session file from
 CLOSED.
 
 REMOTE-SCOPE decides which hosts' sessions are listed — the only
-remote axis, shared by every picker (`a i i' passes the current
-session's host or `local'; close/delete pass t to reach every host,
-including a dead remote one):
+remote axis, shared by every picker (`a i i' passes the known remote
+hosts or `local'; close/delete pass t to reach every host, including
+a dead remote one):
 - nil (no scoping) and `local' keep LOCAL sessions only — a local
   context must not even touch remote state, so an unreachable host
 cannot block the list;
-- a TRAMP prefix string keeps local sessions plus that host's, and
+- a TRAMP prefix string keeps local sessions plus that host's,
+- a list of TRAMP prefixes keeps local sessions plus exactly those
+  hosts' (the switch-session hub scope, see
+  `pi-coding-agent//known-remote-prefixes'), and
 - t keeps local sessions plus every active remote host's.
 A scoped host contributes BOTH its live chat buffers and its closed
 session files, the files scanned only over an already-established
@@ -1315,8 +1358,11 @@ the listing).
 Each alist maps a candidate string to its target; duplicate labels
 (same title and directory) are disambiguated with a uuid suffix
 \(`pi-coding-agent//disambiguated-label').  LIVE always precedes
-CLOSED, and the pickers keep that order (see
-`pi-coding-agent//pick-session')."
+CLOSED, and the pickers keep that order: the two-group picker
+renders them as \"Live sessions\" then \"Closed sessions\" (see
+`pi-coding-agent//pick-session'), while the switch hub keeps each
+group's order inside the per-host sections it rebuilds
+\(`pi-coding-agent//switch-session-sections')."
   (let* ((entries (append
                    (if dir (pi-coding-agent//session-entries-in-dir dir root)
                      (pi-coding-agent//session-entries root))
@@ -1325,6 +1371,9 @@ CLOSED, and the pickers keep that order (see
                    ;; no scan -> no blocking).
                    (pi-coding-agent//remote-scope-entries remote-scope
                                                           dir)))
+         (remote-prefixes
+          (and (not (null remote-scope))
+               (pi-coding-agent//remote-scope-prefixes remote-scope)))
          (by-file (make-hash-table :test 'equal))
          (seen (make-hash-table :test 'equal))
          (current-persp (get-current-persp))
@@ -1345,12 +1394,12 @@ CLOSED, and the pickers keep that order (see
       (let ((buf-prefix (pi-coding-agent//buffer-remote-prefix buf)))
         (when (and
                ;; Local sessions are always in scope; remote ones when
-               ;; the scope admits their host (t = every host, a
-               ;; prefix = that host, nil/'local = none).
+               ;; the scope admits their host (a prefix or list of
+               ;; prefixes = those hosts, t = every host, nil/'local =
+               ;; none).
                (or (null buf-prefix)
-                   (eq remote-scope t)
-                   (and (stringp remote-scope)
-                        (string-equal buf-prefix remote-scope)))
+                   (and remote-prefixes
+                        (member buf-prefix remote-prefixes)))
                (or (null dir) (pi-coding-agent//session-buffer-dir-p buf dir))
                (or (null current-buffers)
                    (not (memq buf current-buffers))))
@@ -1382,6 +1431,56 @@ CLOSED, and the pickers keep that order (see
                         (list :entry entry :label label :opened nil))
                   closed)))))
     (cons (nreverse live) (nreverse closed))))
+
+(defun pi-coding-agent//target-host (target)
+  "Host name of session TARGET, or nil for a local session.
+Read from the target's session file when it has one, else from its
+live chat buffer's session directory.  Purely syntactic — no remote
+connection is made — so grouping sessions by host never touches their
+machines.  Used by `pi-coding-agent//switch-session-sections' to
+regroup the scope's candidates into one section per remote host."
+  (or (when-let* ((file (plist-get (plist-get target :entry) :file)))
+        (and (stringp file) (file-remote-p file 'host)))
+      (when-let* ((buf (plist-get target :buffer))
+                  (prefix (pi-coding-agent//buffer-remote-prefix buf)))
+        (file-remote-p prefix 'host))))
+
+(defun pi-coding-agent//switch-session-sections (live closed)
+  "Ordered picker sections for the switch-session list from LIVE/CLOSED.
+LIVE and CLOSED are the scope's full sorted candidate alists — local
+and remote sessions mixed, as `pi-coding-agent//session-targets'
+returns them.  Local candidates form the leading \"Live sessions\"
+section and the trailing \"Closed sessions\" section; remote
+candidates are regrouped by their host (`pi-coding-agent//target-host')
+into one section per remote host — named after the host — placed
+between the two and ordered by host name.  Each host section lists
+its host's live candidates (●) before its closed ones (○), keeping
+their incoming sort order.  Sections with an empty candidate list are
+omitted, so a scope without remote sessions renders exactly the
+classic two sections."
+  (let ((live-by-host (make-hash-table :test 'equal))
+        (closed-by-host (make-hash-table :test 'equal))
+        (local-live '())
+        (local-closed '()))
+    (dolist (cand live)
+      (if-let* ((host (pi-coding-agent//target-host (cdr cand))))
+          (push cand (gethash host live-by-host))
+        (push cand local-live)))
+    (dolist (cand closed)
+      (if-let* ((host (pi-coding-agent//target-host (cdr cand))))
+          (push cand (gethash host closed-by-host))
+        (push cand local-closed)))
+    (let ((hosts (delete-dups
+                  (append (all-completions "" live-by-host)
+                          (all-completions "" closed-by-host)))))
+      (append
+       (and local-live (list (cons "Live sessions" (nreverse local-live))))
+       (cl-loop for host in (sort hosts #'string<)
+                for cands = (append (nreverse (gethash host live-by-host))
+                                    (nreverse (gethash host closed-by-host)))
+                when cands collect (cons host cands))
+       (and local-closed (list (cons "Closed sessions"
+                                     (nreverse local-closed))))))))
 
 (defun pi-coding-agent//collapse-whitespace (string)
   "Collapse whitespace runs in STRING to single spaces, ends trimmed.
@@ -1483,18 +1582,6 @@ directory."
   "Section header row \"──── TITLE ────\" marking a group boundary."
   (format "────── %s ──────" title))
 
-(defconst pi-coding-agent//live-sessions-header
-  (pi-coding-agent//session-header "Live sessions")
-  "Non-selectable boundary row preceding the live session candidates.
-Inserted by `pi-coding-agent//cr-pick-session-target' between the
-live and closed groups; selecting it re-prompts.")
-
-(defconst pi-coding-agent//closed-sessions-header
-  (pi-coding-agent//session-header "Closed sessions")
-  "Non-selectable boundary row preceding the closed session candidates.
-Inserted by `pi-coding-agent//cr-pick-session-target' after the live
-group; selecting it re-prompts.")
-
 (defun pi-coding-agent//annotated-session-candidate (cand target)
   "Annotated display string for session candidate CAND with TARGET.
 Separators and action items (nil target, e.g. \"✚ New session\")
@@ -1561,27 +1648,28 @@ pre-sorted candidate order."
                    (display-sort-function . identity)))
        (t nil)))))
 
-(defun pi-coding-agent//cr-pick-session-target (live closed prompt
+(defun pi-coding-agent//cr-pick-session-target (sections prompt
                                                 &optional default-label
                                                 must-match extra)
-  "completing-read over LIVE/CLOSED candidate alists; return the choice.
-Candidates keep the pre-sorted order (live before closed) with
-section-header rows (`pi-coding-agent//live-sessions-header' /
-`pi-coding-agent//closed-sessions-header') marking the boundary
-between the two groups, annotated with status glyph, message count,
-and age.  EXTRA (an alist, e.g. the \"✚ New session\" action) is
-appended after the closed group.  Selecting a header row re-prompts.
-Returns the chosen candidate string, or the typed input when
-MUST-MATCH is nil."
+  "completing-read over SECTIONS; return the choice.
+SECTIONS is an ordered list of (NAME . ALIST): each non-empty
+candidate ALIST renders as a non-selectable section-header row
+(`pi-coding-agent//session-header') followed by its candidates,
+annotated with status glyph, message count, and age and keeping
+their pre-sorted order.  Sections therefore appear in the minibuffer
+in SECTIONS' order with a visible boundary between them.  EXTRA (an
+alist, e.g. the \"✚ New session\" action) is appended after the last
+section.  Selecting a header row re-prompts.  Returns the chosen
+candidate string, or the typed input when MUST-MATCH is nil."
   (cl-loop
-   with alist = (append (list (cons pi-coding-agent//live-sessions-header
-                                    '(:separator t)))
-                        live
-                        (and closed
-                             (list (cons pi-coding-agent//closed-sessions-header
-                                         '(:separator t))))
-                        closed
-                        extra)
+   with alist = (append
+                 (cl-loop for (name . cands) in sections
+                          for rows = (and cands
+                                          (cons (cons (pi-coding-agent//session-header name)
+                                                      '(:separator t))
+                                                cands))
+                          append rows)
+                 extra)
    with collection = (pi-coding-agent//session-collection alist)
    for choice = (completing-read
                  prompt collection nil must-match default-label
@@ -1594,16 +1682,18 @@ MUST-MATCH is nil."
 ;; helm-source.el) is only available at runtime, once helm is loaded.
 (declare-function helm-make-source "helm-source.el")
 
-(defun pi-coding-agent//helm-pick-session-target (live closed prompt
+(defun pi-coding-agent//helm-pick-session-target (sections prompt
                                                  &optional default-label
                                                  must-match extra)
-  "Helm pick of a session from LIVE/CLOSED candidate alists.
-Live sessions are shown in their own \"Live sessions\" section,
-closed sessions in a \"Closed sessions\" one (when present) — the
-boundary between the groups; EXTRA is a list of (SOURCE-NAME . ALIST)
-sections appended after them (e.g. the \"✚ New session\" action).
-Candidates are annotated with status glyph, message count, and age;
-the returned string is the clean candidate (no annotation)."
+  "Helm pick of a session from SECTIONS.
+SECTIONS is an ordered list of (NAME . ALIST): each non-empty ALIST
+becomes a helm source named NAME — \"Live sessions\", a remote host
+name, \"Closed sessions\", ... — real section headers in helm's
+buffer, shown in SECTIONS' order.  EXTRA is a list of
+(SOURCE-NAME . ALIST) sections appended after them (e.g. the
+\"✚ New session\" action).  Candidates are annotated with status
+glyph, message count, and age; the returned string is the clean
+candidate (no annotation)."
   ;; Sources are built with `helm-make-source' (a function), not the
   ;; `helm-build-sync-source' macro: funcs.el is loaded/compiled before
   ;; helm is, so a macro call would never be expanded and would fail at
@@ -1612,17 +1702,13 @@ the returned string is the clean candidate (no annotation)."
   (require 'helm)
   (helm :sources
         (append
-         (list (helm-make-source
-                "Live sessions" 'helm-source-sync
-                :candidates (pi-coding-agent//helm-session-candidates live)
-                :must-match must-match
-                :action 'identity))
-         (and closed
-              (list (helm-make-source
-                     "Closed sessions" 'helm-source-sync
-                     :candidates (pi-coding-agent//helm-session-candidates closed)
-                     :must-match must-match
-                     :action 'identity)))
+         (cl-loop for (name . alist) in sections
+                  when alist
+                  collect (helm-make-source
+                           name 'helm-source-sync
+                           :candidates (pi-coding-agent//helm-session-candidates alist)
+                           :must-match must-match
+                           :action 'identity))
          (cl-loop for (name . alist) in extra
                   collect (helm-make-source
                            name 'helm-source-sync
@@ -1632,6 +1718,26 @@ the returned string is the clean candidate (no annotation)."
         :buffer "*helm pi session*"
         :prompt prompt
         :default default-label))
+
+(defun pi-coding-agent//pick-session-sections (sections prompt
+                                                &optional default-label
+                                                must-match extra)
+  "Unified session picker over SECTIONS; return the chosen candidate.
+SECTIONS is an ordered list of (NAME . ALIST): session candidate
+alists (as built by `pi-coding-agent//session-targets' and sorted by
+the caller) grouped under a section named NAME and rendered in
+order, with a section boundary between groups — separate helm
+sources named NAME, section-header rows under completing-read
+(vertico, ivy, plain minibuffer).  Sections with an empty candidate
+list are omitted.  EXTRA is a list of (NAME . ALIST) action sections
+(e.g. \"✚ New session\"), offered as their own sources under helm and
+appended after the last section otherwise.  Returns the chosen
+candidate string — or the typed input when MUST-MATCH is nil."
+  (if (featurep 'helm)
+      (pi-coding-agent//helm-pick-session-target
+       sections prompt default-label must-match extra)
+    (pi-coding-agent//cr-pick-session-target
+     sections prompt default-label must-match extra)))
 
 (defun pi-coding-agent//pick-session (live closed prompt
                                       &optional default-label must-match extra)
@@ -1643,12 +1749,13 @@ completing-read (vertico, ivy, plain minibuffer).  EXTRA is an
 action alist (e.g. \"✚ New session\"), offered as its own source
 under helm and appended after the closed group otherwise.  Returns
 the chosen candidate string — or the typed input when MUST-MATCH is
-nil."
-  (if (featurep 'helm)
-      (pi-coding-agent//helm-pick-session-target
-       live closed prompt default-label must-match extra)
-    (pi-coding-agent//cr-pick-session-target
-     live closed prompt default-label must-match extra)))
+nil.  This is the two-group entry point of
+`pi-coding-agent//pick-session-sections', which the switch list uses
+to place per-remote-host sections between the two groups."
+  (pi-coding-agent//pick-session-sections
+   (append (list (cons "Live sessions" live))
+           (and closed (list (cons "Closed sessions" closed))))
+   prompt default-label must-match extra))
 
 ;; ---------------------------------------------------------------------
 ;; Opening, switching, reviving
@@ -1884,48 +1991,58 @@ closed one (open it, switching to it when it is already opened)."
 
 (defun pi-coding-agent/switch-session ()
   "List all pi sessions; open the chosen one or switch to it if opened.
-The current session is excluded.  Live sessions — the active pi chat
-buffers (●) — are listed first, then closed sessions (○, files on
-disk not loaded by a live session), with a section boundary between
-the two groups: separate \"Live sessions\" / \"Closed sessions\"
-sources under helm, header rows otherwise.  Both groups sort by title
+The current session is excluded.  Sessions are grouped into sections,
+in order: the local machine's live sessions (●, active pi chat
+buffers) under \"Live sessions\", one section per remote host with
+sessions (named after the host, hosts sorted by name) between the two
+local groups, then the local closed sessions (○, files on disk not
+loaded by a live session) under \"Closed sessions\".  Sections render
+with a boundary between groups — separate sources under helm, header
+rows otherwise — and each section keeps its group's sort order
 (configurable via `pi-coding-agent/session-sort-opened' and
-`pi-coding-agent/session-sort-closed').  Picking a live session
-switches to its perspective; picking a closed one opens it (reviving
-the perspective still registered for it).
+`pi-coding-agent/session-sort-closed'; a remote host section lists
+its host's live sessions first, then its closed ones).  Picking a
+live session switches to its perspective; picking a closed one opens
+it (reviving the perspective still registered for it).
 
-Scope: a local context lists LOCAL sessions only — remote sessions
-never appear, and no remote file is ever touched, so an unreachable
-host cannot block the listing.  Used inside a remote (TRAMP) session,
-the list adds that host's sessions: its live chat buffers plus its
-closed session files, scanned over the established connection; when
-the connection is down, a background probe is fired and the host's
-closed sessions reappear in a later listing instead of blocking this
-one."
+Scope: local sessions are always listed.  A remote host is listed
+whenever the layer knows it runs pi sessions — hosts with verified
+executables in `pi-coding-agent/remote-executables', hosts of active
+pi chat buffers, and the host of the current session
+(`pi-coding-agent//known-remote-prefixes').  Listing a host's
+sessions is best effort and never blocks: its live chat buffers are
+read from local state, its closed session files are scanned only over
+an already-established TRAMP connection; a disconnected host is
+probed in the background (`pi-coding-agent//remote-probe-async') and
+contributes no section to this listing — its sessions reappear in a
+later listing once it answers."
   (interactive)
   (require 'pi-coding-agent)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (pi-coding-agent//sync-labels)
-  (let* ((remote-prefix (pi-coding-agent//current-session-remote-prefix))
-         (remote-scope (or remote-prefix 'local))
+  (let* ((remote-prefixes (pi-coding-agent//known-remote-prefixes))
+         (remote-scope (or remote-prefixes 'local))
          (groups (pi-coding-agent//session-targets nil t t nil remote-scope))
          (live (pi-coding-agent//sort-targets
                 (car groups) pi-coding-agent/session-sort-opened))
          (closed (pi-coding-agent//sort-targets
-                  (cdr groups) pi-coding-agent/session-sort-closed)))
-    (if (and (null live) (null closed))
+                  (cdr groups) pi-coding-agent/session-sort-closed))
+         (sections (pi-coding-agent//switch-session-sections live closed)))
+    (if (null sections)
         (user-error "No other pi sessions found (looked in %s%s)"
                     (expand-file-name pi-coding-agent/session-root)
-                    (if (stringp remote-scope)
-                        (format "; remote sessions on %s are not connected"
-                                (file-remote-p remote-scope 'host))
+                    (if remote-prefixes
+                        (format "; remote hosts %s are not connected or session-less (a background probe is running)"
+                                (mapconcat (lambda (prefix)
+                                             (file-remote-p prefix 'host))
+                                           remote-prefixes ", "))
                       ""))
-      (let ((choice (pi-coding-agent//pick-session
-                     live closed "Pi session: " nil t)))
+      (let ((choice (pi-coding-agent//pick-session-sections
+                     sections "Pi session: " nil t)))
         (when choice
           (pi-coding-agent//open-or-switch-target
-           (cdr (or (assoc choice live) (assoc choice closed)))))))))
+           (cdr (assoc choice (apply #'append (mapcar #'cdr sections))))))))))
 
 (defun pi-coding-agent/switch-session-in-dir ()
   "Switch to another pi session of the current directory, with its layout.

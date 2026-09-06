@@ -54,7 +54,11 @@ One list model shared by every session picker (=switch-session=,
 (2026 update: previously the switch list derived "opened" from the
 persp mapping and had no group boundary; the close/delete picker had
 helm sections but no completing-read boundary.  Both are now the
-shared model above.)
+shared model above.  Second 2026 update (D16): the switch list's
+sections are generalized from two hardcoded groups to an ordered
+(NAME . ALIST) list — a per-remote-host section slots in between the
+local live and closed groups; the other pickers still use the classic
+two groups.)
 
 *** D3. Session identity and perspective mapping
 
@@ -513,10 +517,14 @@ run the ordinary new-session flow (D10) on that host.
 
 ** D15. Session-list scope and non-blocking remote listing (2026)
 
-=pi-coding-agent/switch-session= (SPC a i i) is scoped by the current
-session's host, and listing never blocks on an unreachable host.
+The non-blocking remote-listing contract below is the durable part of
+these decisions and is carried forward by D16; the switch-session
+scope it describes (current session's host only) was widened into
+the per-host hub of D16, which supersedes it for =SPC a i i=.
 
-- Scope: a local context lists LOCAL sessions only — remote sessions
+- Scope (as of D16, =SPC a i i= lists every host in
+  =pi-coding-agent//known-remote-prefixes=): a local context with no
+  known remote hosts lists LOCAL sessions only — remote sessions
   never appear in the list, and no remote file is ever touched, so a
   dead remote host cannot hang the listing.  Used inside a remote
   (TRAMP) session, the list adds that host's sessions: its live chat
@@ -525,9 +533,11 @@ session's host, and listing never blocks on an unreachable host.
   prefix (=pi-coding-agent//current-session-remote-prefix=): no
   session → local scope.  =pi-coding-agent//session-targets= takes a
   REMOTE-SCOPE: =local= (local sessions only), a TRAMP prefix string
-  (local sessions plus that host's live buffers and closed files), or
-  =t= (local sessions plus every active remote host's — the
-  close/delete scope, which must reach a dead remote session).
+  (local sessions plus that host's live buffers and closed files), a
+  list of TRAMP prefixes (D16: the switch hub — local sessions plus
+  exactly those hosts), or =t= (local sessions plus every active
+  remote host's — the close/delete scope, which must reach a dead
+  remote session).
   Every picker is built by this one function; the commands differ
   only in the scope and in whether closed sessions are included
   (both include them) and whether the current session is excluded
@@ -588,6 +598,57 @@ session's host, and listing never blocks on an unreachable host.
   stale mapping entries with =assoc-delete-all= — the previous
   =assq-delete-all= never matched string keys, so the saved custom
   accumulated a duplicate per-host entry per re-verification.
+
+** D16. Switch-session hub: per-host remote sections (2026)
+
+=pi-coding-agent/switch-session= (SPC a i i) grows from "local, plus
+the current remote session's host" to a hub over every host the
+layer knows runs pi, and remote sessions are displayed grouped by
+host instead of mixed into the live/closed lists.
+
+- Scope: the hub lists local sessions plus the sessions of every
+  host in =pi-coding-agent//known-remote-prefixes= — hosts with
+  verified executables in =pi-coding-agent/remote-executables= (the
+  persisted machines =start-remote-session= has located pi on),
+  hosts of active pi chat buffers, and the current session's host.
+  The enumeration is purely local (a custom read plus buffer state),
+  so a dead host cannot cost anything up front.  With no such hosts
+  the scope is exactly D15's local-only behavior.  Rejected: reading
+  the ssh config for candidate hosts (noise — most ssh hosts never
+  run pi, and each would fire a background probe) and scanning the
+  session cache for remote keys (volatile per Emacs run, so hosts
+  would disappear after a restart until reconnected).
+- Remote-scope lists: =pi-coding-agent//session-targets= now admits a
+  list of TRAMP prefixes (exactly those hosts) besides the D15
+  string / =t= forms, via =pi-coding-agent//remote-scope-prefixes=;
+  close/delete still pass =t= and are unchanged.  Listing a scoped
+  host keeps D15's contract — live chat buffers from local state,
+  closed files scanned only over an already-established connection,
+  otherwise a background probe and no contribution — so a
+  disconnected host is best-effort and never blocks Emacs.
+- Rendering: the switch list becomes ordered sections: local live
+  sessions under "Live sessions", one section per remote host
+  (named after the host, hosts sorted by name) between the two local
+  groups, then local closed sessions under "Closed sessions".  Each
+  host section lists its host's live candidates (●) before its
+  closed ones (○), each keeping its group's sort order
+  (=session-sort-opened= / =session-sort-closed=).  Sections with no
+  candidates are omitted, so the classic two-group layout renders
+  unchanged when nothing remote is in scope.
+- Picker generalization: =pi-coding-agent//pick-session-sections=
+  renders an ordered list of (NAME . ALIST) sections — one helm
+  source or completing-read header row per section, boundaries
+  between groups, empty sections skipped; the old live/closed
+  picker is now the two-section wrapper around it, so
+  new-session/close/delete keep their exact previous layout.
+  Section headers were previously two hardcoded boundary constants;
+  the generic =session-header= row is derived from the section name,
+  which is what lets a host name become a section.
+- Rejected: splitting a remote host's section into its own nested
+  live/closed sub-groups.  The status glyphs (●/○) already carry
+  that distinction, and helm/vertico render one flat row set per
+  section; nested headers would add a third layer of boundaries to
+  a list that is already host-grouped.
 
 ** Implementation notes
 

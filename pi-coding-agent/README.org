@@ -62,9 +62,14 @@ collapse newlines to single spaces so every session is exactly one
 row.
 
 - =SPC a i i= (=pi-coding-agent/switch-session=) — list all pi
-  sessions (the current one is excluded): live sessions (●) first,
-  then closed (○).  Live sessions sort by directory, then by title;
-  closed sessions by recency, newest first (descending).  Selecting a
+  sessions (the current one is excluded) grouped into sections: the
+  local machine's live sessions (●) under =Live sessions=, one
+  section per remote host with sessions — named after the host, the
+  hosts sorted by name — between the two local groups, then the local
+  closed sessions (○) under =Closed sessions=.  Within each section
+  live sessions sort by directory, then by title; closed sessions by
+  recency, newest first (descending) (a remote host section lists its
+  host's live sessions first, then its closed ones).  Selecting a
   live session switches to its perspective; selecting a closed session
   opens it: a new perspective is created, the pi process is started,
   the session file is resumed, and the previously remembered workspace
@@ -72,12 +77,16 @@ row.
   session is revived instead).  Sort orders are configurable:
   =pi-coding-agent/session-sort-opened= (default =dir-then-name=
   — directory, then title) and =pi-coding-agent/session-sort-closed=
-  (default =chrono= — newest first).  Scope: a local context lists
-  local sessions only; used inside a remote (TRAMP) session, the list
-  adds that host's sessions (its live buffers plus its closed files,
-  scanned over the established connection).  A disconnected remote
-  host never blocks the listing — it is probed in the background and
-  its sessions reappear in a later listing once it answers.
+  (default =chrono= — newest first).  Scope: local sessions are always
+  listed; a remote host joins the listing whenever the layer knows it
+  runs pi sessions — hosts with verified executables in
+  =pi-coding-agent/remote-executables=, hosts of active pi chat
+  buffers, and the current session's host.  Listing a remote host is
+  best effort and never blocks: its live chat buffers come from local
+  state and its closed files are scanned only over an
+  already-established TRAMP connection; a disconnected host is probed
+  in the background and contributes no section to this listing — its
+  sessions reappear in a later listing once it answers.
 - =SPC a i I= (=pi-coding-agent/switch-session-in-dir=) — switch
   between the current directory's pi sessions, applying the pi window
   layout afterwards.  The directory is the session's own directory
@@ -235,8 +244,8 @@ inside session perspectives.
 
 ** Usage
 
-- =SPC a i i= — list all sessions (live first, then closed): open the
-  chosen one or switch to it
+- =SPC a i i= — list all sessions (local live, one section per remote
+  host, then local closed): open the chosen one or switch to it
 - =SPC a i I= — switch between the current directory's sessions (with layout)
 - =SPC a i p= — start or focus the pi session for the current project
 - =SPC a i n= — start a new session (asks for the directory)
@@ -363,7 +372,7 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 
 | Key        | Command                              | Description                    |
 |------------+--------------------------------------+--------------------------------|
-| =i=        | =pi-coding-agent/switch-session=     | List sessions (live first, then closed); open or switch |
+| =i=        | =pi-coding-agent/switch-session=     | List sessions (local live, per-host remote, then closed) |
 | =I=        | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =p=        | =pi-coding-agent=                    | Start or focus session         |
 | =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
@@ -385,7 +394,7 @@ buffer =t= is already =pi-coding-agent-toggle=, so templates live on
 
 | Key | Command                              | Description                                    |
 |-----+--------------------------------------+------------------------------------------------|
-| =i= | =pi-coding-agent/switch-session=     | List sessions (live first, then closed); open or switch |
+| =i= | =pi-coding-agent/switch-session=     | List sessions (local live, per-host remote, then closed) |
 | =I= | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =c= | =pi-coding-agent-run-command=        | Run a pi slash command by name (+ args)        |
 | =s= | =pi-coding-agent-skills-menu=        | Skills: letter runs, Shift+letter edits source |
