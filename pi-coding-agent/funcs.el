@@ -484,9 +484,39 @@ Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
 (defvar pi-coding-agent-session-history nil
   "History of sessions selected by the pi session pickers.")
 
+(defun pi-coding-agent//plain-string (string)
+  "Return STRING without text properties, or nil for nil.
+Picker candidates (helm) hand back strings carrying e.g. `helm-ff'
+properties, and those strings end up as perspective names and
+registry session files.  `equal' compares text properties, so such a
+string never matches the plain string the rest of the layer computes:
+`registry-remove' would keep the entry of a just-deleted session
+(still pointing at the now-deleted file) and every registry lookup
+by name or file would miss.  Stripping at the registry boundary
+keeps the bookkeeping property-blind; nil-safe so plist getters can
+be passed through directly."
+  (and string (substring-no-properties string)))
+
+(defun pi-coding-agent//registry-entry (persp-name)
+  "Return the registry entry of perspective PERSP-NAME, or nil.
+Names are compared property-stripped (see
+`pi-coding-agent//plain-string'), so an entry whose key was stored
+with completion properties still matches the plain perspective name
+and vice versa."
+  (and persp-name
+       (cl-find-if
+        (lambda (e)
+          (equal (pi-coding-agent//plain-string (car e))
+                 (pi-coding-agent//plain-string persp-name)))
+        pi-coding-agent//registry)))
+
 (defun pi-coding-agent//registry-load ()
   "Load the session registry from `pi-coding-agent//registry-file'.
-Fail-open: any read/parse error yields an empty registry with a message."
+Fail-open: any read/parse error yields an empty registry with a
+message.  Keys and session files are property-stripped on load —
+earlier releases persisted helm-pickup properties into both, and a
+property-laden `:session-file' is exactly what made deleting such a
+session resolve a path no `equal' lookup could match again."
   (setq pi-coding-agent//registry
         (condition-case err
             (let ((data (and (file-exists-p pi-coding-agent//registry-file)
@@ -500,7 +530,17 @@ Fail-open: any read/parse error yields an empty registry with a message."
                                       (and (consp e) (stringp (car e))
                                            (listp (cdr e))))
                                     entries))
-                     entries
+                     (mapcar (lambda (e)
+                               (cons (pi-coding-agent//plain-string (car e))
+                                     (let ((file (plist-get (cdr e)
+                                                            :session-file)))
+                                       (if file
+                                           (plist-put (copy-sequence (cdr e))
+                                                      :session-file
+                                                      (pi-coding-agent//plain-string
+                                                       file))
+                                         (cdr e)))))
+                             entries)
                    (message "pi: registry file ignored (unexpected format)")
                    nil))
                 (_ nil)))
@@ -523,23 +563,44 @@ Fail-open: any read/parse error yields an empty registry with a message."
               (error-message-string err)))))
 
 (defun pi-coding-agent//registry-put (persp-name &rest plist)
-  "Add or update the registry entry for PERSP-NAME with PLIST."
-  (let ((entry (assoc persp-name pi-coding-agent//registry)))
+  "Add or update the registry entry for PERSP-NAME with PLIST.
+The name and the `:session-file' slot are stored property-stripped
+(see `pi-coding-agent//plain-string')."
+  (let ((plist (if (plist-member plist :session-file)
+                   (plist-put plist :session-file
+                              (pi-coding-agent//plain-string
+                               (plist-get plist :session-file)))
+                 plist))
+        (entry (pi-coding-agent//registry-entry persp-name)))
     (if entry
         (setcdr entry plist)
-      (push (cons persp-name plist) pi-coding-agent//registry))))
+      (push (cons (pi-coding-agent//plain-string persp-name) plist)
+            pi-coding-agent//registry))))
 
 (defun pi-coding-agent//registry-remove (persp-name)
-  "Remove the registry entry for PERSP-NAME."
+  "Remove the registry entry for PERSP-NAME.
+The comparison is property-stripped (see
+`pi-coding-agent//plain-string'): an entry keyed by a
+completion-property-laden name must still be removed when the
+session is deleted, or it lingers pointing at the deleted file."
   (setq pi-coding-agent//registry
-        (cl-delete-if (lambda (e) (equal (car e) persp-name))
-                      pi-coding-agent//registry)))
+        (cl-delete-if
+         (lambda (e)
+           (equal (pi-coding-agent//plain-string (car e))
+                  (pi-coding-agent//plain-string persp-name)))
+         pi-coding-agent//registry)))
 
 (defun pi-coding-agent//registry-persp-name-for-file (file)
-  "Return the perspective name registered for session FILE, or nil."
-  (car (cl-find-if (lambda (e)
-                     (equal (plist-get (cdr e) :session-file) file))
-                   pi-coding-agent//registry)))
+  "Return the perspective name registered for session FILE, or nil.
+Files are compared property-stripped (see
+`pi-coding-agent//plain-string')."
+  (setq file (pi-coding-agent//plain-string file))
+  (car (cl-find-if
+        (lambda (e)
+          (equal (pi-coding-agent//plain-string
+                  (plist-get (cdr e) :session-file))
+                 file))
+        pi-coding-agent//registry)))
 
 ;; ---------------------------------------------------------------------
 ;; Perspective naming and label sync
@@ -597,7 +658,7 @@ returned then."
   "Keep the registry key in sync when a pi perspective is renamed.
 A rename not done by this layer (i.e. the user via SPC l r) locks the
 label so the session title no longer auto-syncs to it."
-  (when-let* ((entry (assoc old-name pi-coding-agent//registry)))
+  (when-let* ((entry (pi-coding-agent//registry-entry old-name)))
     (unless pi-coding-agent//renaming-self
       (setcdr entry (plist-put (cdr entry) :label-locked t)))
     (setcar entry new-name)
@@ -623,7 +684,9 @@ Fresh sessions register with :session-file nil because pi creates the
 JSONL file only on the first assistant response; once the perspective's
 pi chat buffer settles on a file, it is recorded in the registry entry
 and persisted, so the session can be listed as opened and switched to
-instead of re-opened.  Returns nil while still unresolvable."
+instead of re-opened.  The file is stored property-stripped (see
+`pi-coding-agent//plain-string').  Returns nil while still
+unresolvable."
   (or (plist-get plist :session-file)
       (when-let* ((persp (persp-get-by-name persp-name))
                   ((perspective-p persp))
@@ -632,9 +695,10 @@ instead of re-opened.  Returns nil while still unresolvable."
                                 :session-file))
                   ((stringp f))
                   ((not (string-empty-p f))))
-        (setcdr (assoc persp-name pi-coding-agent//registry)
-                (plist-put plist :session-file f))
-        (pi-coding-agent//registry-save)
+        (when-let* ((entry (pi-coding-agent//registry-entry persp-name)))
+          (setcdr entry (plist-put plist :session-file
+                                   (pi-coding-agent//plain-string f)))
+          (pi-coding-agent//registry-save))
         f)))
 
 (defun pi-coding-agent//sync-labels ()
@@ -676,7 +740,7 @@ renames done via the /name slash command)."
                (not (string-empty-p (string-trim name)))
                (bound-and-true-p persp-mode))
       (let* ((persp-name (safe-persp-name (get-current-persp)))
-             (entry (assoc persp-name pi-coding-agent//registry)))
+             (entry (pi-coding-agent//registry-entry persp-name)))
         (when (and entry (not (plist-get (cdr entry) :label-locked))
                    (pi-coding-agent//registry-fill-session-file
                     (car entry) (cdr entry)))
@@ -702,7 +766,15 @@ renames done via the /name slash command)."
 ;;   to the chosen file;
 ;; - `pi-coding-agent-compact' (menu "c", /compact): compact RPC —
 ;;   pi rewrites the same file today, but if a future pi changes the
-;;   file this keeps the registry honest; otherwise it is a no-op.
+;;   file this keeps the registry honest; otherwise it is a no-op;
+;; - `pi-coding-agent' itself: the main entry starts a NAMED session
+;;   when given a name (`pi-coding-agent/open-named-session', SPC
+;;   a i S, calls it with the name), moving the live session to a new
+;;   file in the same directory.  Without the sync the registry entry
+;;   keeps pointing at the old file — the delete then resolved that
+;;   stale path ("no session file to delete", or the wrong file
+;;   deleted) and the lists showed the old session as opened.  Focus
+;;   reuse (no name, same file) makes the sync a no-op.
 ;;
 ;; Without the advice below the registry keeps pointing at the OLD
 ;; session file after any of these.  That staleness would:
@@ -746,9 +818,11 @@ return nil.  The strict `perspective-p' predicate excludes it."
   "Re-sync the registry + label after a package session switch.
 
 Runs as :after advice on the package commands that switch the live pi
-session to another session file (`pi-coding-agent-new-session',
-`pi-coding-agent-resume-session', `pi-coding-agent--execute-fork',
-`pi-coding-agent-open-session-file', `pi-coding-agent-compact').
+session to another session file (`pi-coding-agent' — also the named-
+session entry via `pi-coding-agent/open-named-session',
+`pi-coding-agent-new-session', `pi-coding-agent-resume-session',
+`pi-coding-agent--execute-fork', `pi-coding-agent-open-session-file',
+`pi-coding-agent-compact').
 
 Resolves the owning perspective from the session's chat buffer (not
 the current one — an async switch can move the user elsewhere before
@@ -780,7 +854,7 @@ drift case handled by `pi-coding-agent//switch-to-session'."
                     (let* ((persp (or source (get-current-persp)))
                            (name (and (perspective-p persp)
                                       (safe-persp-name persp)))
-                           (entry (assoc name pi-coding-agent//registry)))
+                           (entry (pi-coding-agent//registry-entry name)))
                       (when (and entry
                                  (not (equal
                                        (plist-get (cdr entry) :session-file)
@@ -900,7 +974,7 @@ LISTS determine liveness from the active pi chat buffers instead (see
       (dolist (name (persp-names))
         (when-let* ((persp (persp-get-by-name name))
                     ((persp-p persp)))
-          (when-let* ((entry (assoc name pi-coding-agent//registry))
+          (when-let* ((entry (pi-coding-agent//registry-entry name))
                       (f (pi-coding-agent//registry-fill-session-file
                           name (cdr entry))))
             (push (cons name f) pairs))
@@ -1875,7 +1949,7 @@ Only real perspectives count; the default perspective has no session."
   (when (bound-and-true-p persp-mode)
     (let* ((persp (get-current-persp))
            (name (safe-persp-name persp))
-           (entry (assoc name pi-coding-agent//registry)))
+           (entry (pi-coding-agent//registry-entry name)))
       (or (and entry (pi-coding-agent//registry-fill-session-file
                       name (cdr entry)))
           (when (and persp (perspective-p persp))
@@ -1900,7 +1974,7 @@ Only real perspectives count; the default perspective has no session."
                (input (and chat (buffer-local-value
                                  'pi-coding-agent--input-buffer chat))))
           (pi-coding-agent//restore-registry-buffers
-           (assoc persp-name pi-coding-agent//registry))
+           (pi-coding-agent//registry-entry persp-name))
           ;; Pass the session's own chat/input buffers explicitly: the
           ;; layout fallback otherwise fills the pi panes with whatever
           ;; pi-chat buffer the purpose system considers most recent,
@@ -3334,7 +3408,7 @@ Pi chat/input buffers are excluded: the open path re-creates them."
 
 (defun pi-coding-agent//update-entry-buffers (persp-name persp)
   "Refresh the registry entry's captured buffer specs for PERSP."
-  (when-let* ((entry (assoc persp-name pi-coding-agent//registry)))
+  (when-let* ((entry (pi-coding-agent//registry-entry persp-name)))
     (setcdr entry (plist-put (cdr entry) :buffers
                              (pi-coding-agent//capture-buffer-specs persp)))
     (pi-coding-agent//registry-save)))
@@ -3344,13 +3418,13 @@ Pi chat/input buffers are excluded: the open path re-creates them."
   (when (bound-and-true-p persp-mode)
     (let* ((persp (get-current-persp))
            (name (safe-persp-name persp)))
-      (when (assoc name pi-coding-agent//registry)
+      (when (pi-coding-agent//registry-entry name)
         (pi-coding-agent//update-entry-buffers name persp)))))
 
 (defun pi-coding-agent//on-before-kill (persp)
   "Capture a perspective's buffers before it is killed externally."
   (let ((name (safe-persp-name persp)))
-    (when (assoc name pi-coding-agent//registry)
+    (when (pi-coding-agent//registry-entry name)
       (pi-coding-agent//update-entry-buffers name persp))))
 
 (defun pi-coding-agent//on-kill-emacs ()
@@ -3368,7 +3442,7 @@ Counts a registry entry (the session mapping, resolved lazily for
 fresh sessions) or a pi chat buffer in the perspective (sessions
 started outside the registry flow, e.g. `pi-coding-agent/
 open-named-session')."
-  (or (assoc name pi-coding-agent//registry)
+  (or (pi-coding-agent//registry-entry name)
       (when-let* ((persp (persp-get-by-name name))
                   ((perspective-p persp)))
         (pi-coding-agent//chat-buffer-in-persp persp))))
@@ -3427,7 +3501,7 @@ Label-locked marks named sessions (their perspective name is the bare
 session name) and user-renamed perspectives — in both cases the
 perspective name alone does not carry the session's directory, so the
 session list appends it."
-  (when-let* ((entry (assoc persp-name pi-coding-agent//registry)))
+  (when-let* ((entry (pi-coding-agent//registry-entry persp-name)))
     (plist-get (cdr entry) :label-locked)))
 
 (defun pi-coding-agent//chat-buffer-label (buf by-file)
@@ -3574,9 +3648,21 @@ recoverable from the trash on systems with the `trash' CLI.  Returns
 non-nil on success.  Returns nil (with a message) when FILE does not
 exist on disk — a fresh session whose JSONL pi never wrote; there is
 nothing to delete and the session is not listable anyway.  Signals
-when both trash and unlink fail."
+when both trash and unlink fail.
+
+Trash must run on FILE's own host: `process-file' executes PROGRAM
+on `default-directory's host, so both the trash lookup and the spawn
+run with `default-directory' bound to FILE's directory.  A remote
+file's `trash' is only consulted over an already-established
+connection (the I/O-free check; a disconnected host must never be
+reached from a delete), and without a trash on that host — or for a
+local system without the CLI — the permanent unlink remains."
   (if (file-exists-p file)
-      (let* ((trash (executable-find "trash"))
+      (let* ((default-directory (file-name-directory file))
+             (trash (if (pi-coding-agent--remote-prefix-for-path file)
+                        (and (pi-coding-agent//tramp-connection-alive-p file)
+                             (executable-find "trash" t))
+                      (executable-find "trash")))
              (status (and trash
                           (apply #'process-file trash nil nil nil
                                  (if (string-prefix-p "-" file)
@@ -3635,7 +3721,7 @@ Otherwise the registry entry (mapping and captured buffer specs)
 persists, so reopening the session from the list restores its
 workspace."
   (let* ((persp (persp-get-by-name name))
-         (entry (assoc name pi-coding-agent//registry))
+         (entry (pi-coding-agent//registry-entry name))
          (buffers (and (perspective-p persp)
                        (pi-coding-agent//exclusive-buffers persp)))
          (chat (cl-find-if (lambda (buf)
@@ -3661,19 +3747,27 @@ perspective" name))
                                (pi-coding-agent//capture-buffer-specs persp)))
       (pi-coding-agent//registry-save))
     ;; Resolve the session file for the delete while the chat buffer
-    ;; is still alive (fresh entries may not have one yet; sessions
-    ;; started outside the registry flow fall back to the chat
-    ;; buffer's loaded file).
+    ;; is still alive.  The chat buffer's settled file is the ground
+    ;; truth: a named session started inside the perspective
+    ;; (`pi-coding-agent/open-named-session' -> the package's
+    ;; `pi-coding-agent') moves the live file without a registry
+    ;; update, so the registry entry can point at an older session's
+    ;; file — resolving it first made the delete report "no session
+    ;; file to delete" when that old file was already gone (or
+    ;; silently delete the wrong session's file when it was not).
+    ;; The registry file is only the fallback for perspectives whose
+    ;; chat buffer never settled (fresh entries may not have a state
+    ;; file yet; sessions started outside the registry flow).
     (let ((file-to-delete
            (and delete
-                (or (and entry
+                (or (and chat
+                         (pi-coding-agent//plain-string
+                          (plist-get (buffer-local-value
+                                      'pi-coding-agent--state chat)
+                                     :session-file)))
+                    (and entry
                          (pi-coding-agent//registry-fill-session-file
-                          name (cdr entry)))
-                    (and chat
-                         (let ((f (plist-get (buffer-local-value
-                                              'pi-coding-agent--state chat)
-                                             :session-file)))
-                           (and (stringp f) (not (string-empty-p f)) f)))))))
+                          name (cdr entry)))))))
       ;; Teardown, fail open: a session whose file or directory no
       ;; longer exists must still be removed.  An unexpected error in
       ;; one teardown step (e.g. a buffer hook) is reported and
@@ -3772,7 +3866,7 @@ registered for the session, it is torn down like an active session
 via `pi-coding-agent//close-session-in-persp' (single confirmation,
 buffers included).  Returns the perspective name that was closed, or
 nil."
-  (let* ((file (plist-get entry :file))
+  (let* ((file (pi-coding-agent//plain-string (plist-get entry :file)))
          (persp-name (and file (pi-coding-agent//registry-persp-name-for-file file)))
          (persp (and persp-name (persp-get-by-name persp-name))))
     (if (perspective-p persp)
@@ -4056,7 +4150,8 @@ do not double-fire the advices."
               :after #'pi-coding-agent//after-set-session-name)
   ;; Keep the registry mapping + perspective label in sync when a
   ;; package command switches the live session to another session file.
-  (dolist (cmd '(pi-coding-agent-new-session
+  (dolist (cmd '(pi-coding-agent
+                 pi-coding-agent-new-session
                  pi-coding-agent-resume-session
                  pi-coding-agent--execute-fork
                  pi-coding-agent-open-session-file

@@ -218,6 +218,41 @@ in-persp=): =pi-coding-agent/close-session= (SPC a i d) and
    refused while its chat buffer is shared with another perspective
    (the file would move out from under a live process).
 
+** D9a. Which file a delete removes; registry hygiene (2026)
+
+The delete resolves the session file CHAT BUFFER FIRST, registry
+second.  The chat buffer's settled =:session-file= is the ground
+truth: a named session started inside the perspective (=a i S= → the
+package's =pi-coding-agent= command) moves the live file without a
+registry update (the sync advice below now covers it, but the
+registry can still be stale from before the first sync returns, and
+process death before the get_state response leaves it stale for
+good).  Resolving registry-first made =a i D= report "no session
+file to delete" for remote sessions whose registry file was already
+gone — or silently delete the WRONG session's file when it was not —
+while the live file survived on disk.  The registry file is only the
+fallback for perspectives whose chat buffer never settled (fresh
+entries have no state file yet).  When the resolved file does not
+exist on disk the delete still fails open with a message (a fresh
+session pi never wrote): nothing to remove, nothing listable.
+
+The trash step runs on the file's OWN host: =process-file= executes
+its program on =default-directory='s host, so the trash lookup and
+spawn bind =default-directory= to the file's directory.  A remote
+file's =trash= is consulted only over an already-established
+connection (I/O-free check — a delete must never open one); without
+a remote trash, or for a local system without the CLI, the permanent
+unlink remains.
+
+Registry keys and =:session-file= values are stored and compared
+property-stripped (=pi-coding-agent//plain-string=): completion
+pickers (helm) hand back strings carrying e.g. =helm-ff= properties,
+and =equal=/=assoc= compare text properties — a property-laden entry
+never matched again, so =registry-remove= kept deleted sessions
+registered (pointing at deleted files), and lookups by name or file
+missed.  =registry-load= strips on read, healing registries written
+by older releases.
+
 *** D10. New-session flow
 
 =pi-coding-agent/start-new-session=:
