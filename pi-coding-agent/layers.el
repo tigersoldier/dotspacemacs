@@ -1,4 +1,4 @@
-;;; layers.el --- pi-coding-agent layer layer dependencies for Spacemacs.
+;;; layers.el --- pi-coding-agent layer layer dependencies for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;;; License: GPLv3
 

@@ -38,6 +38,11 @@ Each layer directory follows the standard split:
 - `funcs.el` — all command/helper functions
 - `keybindings.el` — spacemacs leader/mode-leader bindings
 
+Every `.el` file — including new ones — must set lexical binding on its
+first line: `;;; <name>.el --- <description>. -*- lexical-binding: t; -*-`
+(or `;; -*- lexical-binding: t; -*-` for `init.el`). This is what makes
+byte-compilation and dynamic `defvar` rebinding behave correctly.
+
 Style: `lexical-binding: t`, one-sentence first docstring line, and comments
 that explain **why** (several files carry long rationale records, e.g. why a
 TRAMP workaround exists — preserve them when refactoring). Declared-but-

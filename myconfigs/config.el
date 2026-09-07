@@ -1,3 +1,5 @@
+;;; config.el --- myconfigs layer configuration for Spacemacs. -*- lexical-binding: t; -*-
+;;
 (setq-default
  indent-tabs-mode nil)
 (setq tab-width 2

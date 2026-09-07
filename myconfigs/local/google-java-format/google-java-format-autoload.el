@@ -1,4 +1,4 @@
-;;; google-java-format-autoload.el --- automatically extracted autoloads
+;;; google-java-format-autoload.el --- automatically extracted autoloads -*- lexical-binding: t; -*-
 ;;
 ;;; Code:
 

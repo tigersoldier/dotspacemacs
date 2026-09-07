@@ -1,3 +1,5 @@
+;;; packages.el --- bazel layer packages file for Spacemacs. -*- lexical-binding: t; -*-
+;;
 (defconst bazel-packages
   '(
     bazel

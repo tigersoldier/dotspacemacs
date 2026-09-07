@@ -1,4 +1,4 @@
-;;; funcs.el --- markdown-it layer functions for Spacemacs.
+;;; funcs.el --- markdown-it layer functions for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Functions that wire `markdown-mode' to the Node `markdown-it' engine
 ;; (the same one VS Code uses). The renderer script lives next to this file

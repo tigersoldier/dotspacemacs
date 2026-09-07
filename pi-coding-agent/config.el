@@ -1,4 +1,4 @@
-;;; config.el --- pi-coding-agent layer configuration for Spacemacs.
+;;; config.el --- pi-coding-agent layer configuration for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Layer-level configuration for the `pi-coding-agent' Emacs frontend.
 ;; Package options (`pi-coding-agent-evil-integration',

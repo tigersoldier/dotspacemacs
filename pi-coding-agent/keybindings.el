@@ -1,4 +1,4 @@
-;;; keybindings.el --- pi-coding-agent layer keybindings for Spacemacs.
+;;; keybindings.el --- pi-coding-agent layer keybindings for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Leader-key access to the pi coding agent. Global bindings live
 ;; under `SPC a i' (applications -> ai/pi); within the package's own

@@ -1,4 +1,4 @@
-;;; config.el --- markdown-it layer configuration for Spacemacs.
+;;; config.el --- markdown-it layer configuration for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Styles the markdown preview with Water.css, following the system color
 ;; scheme (light/dark) automatically via `prefers-color-scheme` media queries.

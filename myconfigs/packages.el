@@ -1,4 +1,4 @@
-;;; packages.el --- myconfigs layer packages file for Spacemacs.
+;;; packages.el --- myconfigs layer packages file for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Copyright (c) 2012-2016 Sylvain Benner & Contributors
 ;;

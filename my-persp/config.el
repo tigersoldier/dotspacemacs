@@ -1,4 +1,4 @@
-;;; config.el --- my-persp layer configuration for Spacemacs.
+;;; config.el --- my-persp layer configuration for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Layer-level options for the generic persp-mode enhancements.  All
 ;; behavior is registered in funcs.el once persp-mode is loaded.

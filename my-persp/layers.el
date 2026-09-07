@@ -1,4 +1,4 @@
-;;; layers.el --- my-persp layer layer dependencies for Spacemacs.
+;;; layers.el --- my-persp layer layer dependencies for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;;; License: GPLv3
 

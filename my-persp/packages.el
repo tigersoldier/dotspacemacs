@@ -1,4 +1,4 @@
-;;; packages.el --- my-persp layer packages file for Spacemacs.
+;;; packages.el --- my-persp layer packages file for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Optional generic enhancements for the spacemacs-layouts (persp-mode)
 ;; layer: common-buffer injection and terminal buffer save/restore.

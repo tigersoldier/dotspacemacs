@@ -1,4 +1,4 @@
-;;; funcs.el --- my-persp layer functions for Spacemacs.
+;;; funcs.el --- my-persp layer functions for Spacemacs. -*- lexical-binding: t; -*-
 ;;
 ;; Generic persp-mode enhancements that work for every perspective, pi
 ;; session or not:
