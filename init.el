@@ -91,6 +91,10 @@ values."
    '(
      format-all
      lsp-pyright
+     ;; Homebrew Emacs is built without built-in SQLite; this package's C
+     ;; module (compiled to sqlite3-api.so on first load) gives emacsql
+     ;; a working backend. See its Makefile and emacsql-sqlite.el.
+     sqlite3
      )
    ;; A list of packages that cannot be updated.
    dotspacemacs-frozen-packages '()
