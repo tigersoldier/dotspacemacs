@@ -359,6 +359,8 @@ time, so changing it takes effect on the next =SPC a i l=.
 
 Inside a pi buffer:
 
+- =C-<return>= — send prompt (Ctrl+Enter, like other coding agents; =RET=
+  in insert state stays a literal newline for multi-line prompts)
 - =C-c C-c= — send prompt (queues as follow-up if busy)
 - =C-c C-s= — queue steering (interrupts after current tool)
 - =C-c C-p= — open the transient menu

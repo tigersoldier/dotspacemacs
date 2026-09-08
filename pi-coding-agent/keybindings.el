@@ -14,6 +14,11 @@
 
 ;;; Code:
 
+;; Referenced from the C-<return> binding below; defined by the package
+;; at load time (see the with-eval-after-load block).
+(defvar pi-coding-agent-input-mode-map)
+(declare-function pi-coding-agent-send "pi-coding-agent-input")
+
 (spacemacs/declare-prefix "ai" "pi-coding-agent")
 (spacemacs/set-leader-keys
   "aip" 'pi-coding-agent                    ; start or focus session
@@ -62,5 +67,15 @@
   "s" 'pi-coding-agent-skills-menu
   "t" 'pi-coding-agent-templates-menu
   "e" 'pi-coding-agent-extensions-menu)
+
+;; C-<return> submits the prompt, matching Ctrl+Enter in other coding
+;; agents.  The package's own send binding (C-c C-c) and the Evil
+;; normal-state RET keep working; RET in Evil insert state (the
+;; default input state) stays a literal newline so multi-line prompts
+;; remain possible.  The input mode map is defined by the package at
+;; load time, so the binding is installed after pi-coding-agent loads.
+(with-eval-after-load 'pi-coding-agent
+  (define-key pi-coding-agent-input-mode-map
+              (kbd "C-<return>") #'pi-coding-agent-send))
 
 ;;; keybindings.el ends here
