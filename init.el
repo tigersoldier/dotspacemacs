@@ -507,12 +507,12 @@ This function is called at the very end of Spacemacs initialization."
                  aggressive-indent anaconda-mode anzu arduino-mode async
                  auto-compile auto-complete auto-dictionary auto-highlight-symbol
                  auto-yasnippet avy bind-key bind-map clang-format
-                 clean-aindent-mode cmake-mode code-review coffee-mode
-                 column-enforce-mode company company-anaconda company-c-headers
-                 company-emacs-eclim company-go company-statistics company-tern
-                 company-web company-ycmd counsel counsel-projectile csv-mode
-                 cython-mode dash dash-functional define-word diff-hl diminish
-                 disaster dumb-jump eclim elisp-slime-nav emmet-mode epl esh-help
+                 clean-aindent-mode cmake-mode coffee-mode column-enforce-mode
+                 company company-anaconda company-c-headers company-emacs-eclim
+                 company-go company-statistics company-tern company-web
+                 company-ycmd counsel counsel-projectile cython-mode dash
+                 dash-functional define-word diff-hl diminish disaster dumb-jump
+                 eclim elisp-slime-nav emmet-mode epl esh-help
                  eshell-prompt-extras eshell-z eval-sexp-fu evil evil-anzu
                  evil-args evil-ediff evil-escape evil-exchange evil-iedit-state
                  evil-indent-plus evil-lisp-state evil-magit evil-matchit evil-mc
@@ -539,14 +539,14 @@ This function is called at the very end of Spacemacs initialization."
                  markdown-toc matlab-mode mmm-mode move-text multi-term
                  multiple-cursors neotree open-junk-file org org-bullets
                  org-plus-contrib orgit packed paradox parent-mode pcre2el
-                 persp-mode pi-coding-agent pip-requirements pkg-info
-                 pkgbuild-mode popup popwin pos-tip powerline projectile
-                 protobuf-mode pug-mode py-isort pyenv-mode pytest pythonic pyvenv
-                 qml-mode quelpa rainbow-delimiters realgud request restart-emacs
-                 s sass-mode scad-mode scss-mode shell-pop simple-httpd
-                 skewer-mode slim-mode smartparens smeargle smex spaceline
-                 spacemacs-theme spinner stan-mode swiper tagedit tern test-simple
-                 thrift tide toc-org typescript-mode undo-tree use-package uuidgen
+                 persp-mode pip-requirements pkg-info pkgbuild-mode popup popwin
+                 pos-tip powerline projectile protobuf-mode pug-mode py-isort
+                 pyenv-mode pytest pythonic pyvenv qml-mode quelpa
+                 rainbow-delimiters realgud request restart-emacs s sass-mode
+                 scad-mode scss-mode shell-pop simple-httpd skewer-mode slim-mode
+                 smartparens smeargle smex spaceline spacemacs-theme spinner
+                 sqlite3 stan-mode swiper tagedit tern test-simple thrift tide
+                 toc-org typescript-mode undo-tree use-package uuidgen
                  vi-tilde-fringe volatile-highlights web-beautify
                  web-completion-data web-mode wgrep which-key window-numbering
                  winum with-editor wolfram-mode ws-butler xterm-color yaml-mode
