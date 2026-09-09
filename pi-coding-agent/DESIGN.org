@@ -106,8 +106,10 @@ two groups.)
 
 Closed -> open (selecting a closed session):
 1. Create the perspective (named per D4) and switch to it.
-2. =pi-coding-agent-open-session-file= machinery: setup chat/input buffers,
-   start the process, resume the exact session file.
+2. =pi-coding-agent//open-session-file-with-name= (the layer's mirror of
+   =pi-coding-agent-open-session-file=): setup chat/input buffers, start
+   the process, resume the exact session file — under a launch name that
+   guarantees fresh buffers (see same-dir collision below).
 3. Replay the registry's captured buffer specs through persp's load
    dispatch (see D7).
 4. Apply the pi window layout, passing the session's own chat/input
@@ -119,8 +121,9 @@ Live -> switch (selecting a live session):
 1. =pi-coding-agent//switch-to-live-buffer=: =persp-switch= to the
    perspective owning the active chat buffer (Spacemacs restores its
    window configuration).  A live buffer outside any perspective falls
-   back to opening its file (which reuses the directory's canonical
-   chat buffer).
+   back to =pi-coding-agent//adopt-live-buffer=, which registers the
+   existing buffers/process into a fresh perspective — no second
+   process is spawned.
 
 Closed -> switch (reviving a registered perspective): picking a
 closed session still routes through =pi-coding-agent//open-or-switch=,
@@ -140,10 +143,14 @@ perspective exists but its process died.  =switch-to-session= then:
    (drifted in through the layout's most-recent-buffer fallback), re-assert
    the pi layout with the correct chat/input buffers.
 
-Same-dir collision behavior: opening a session whose directory already has a
-live unnamed chat buffer (the package allows one unnamed session per
-directory) switches the existing session to the chosen file without asking —
-=pi-coding-agent-open-session-file= reuses the dir's canonical chat buffer.
+Same-dir collision behavior: reopening a closed session never reuses the
+directory's live unnamed chat buffer/process.  Named sessions reopen under
+their recorded name; unnamed sessions open as the directory's canonical
+session when no live unnamed session exists, and otherwise under a generated
+name (title + session-file uuid prefix) so the reopened session runs
+side-by-side with its own buffers and process.  The package still allows one
+*unnamed* chat buffer per directory; the generated name makes the reopened
+session a named one.
 
 =pi-coding-agent/switch-session= excludes the session of the current
 perspective (you are already in it).

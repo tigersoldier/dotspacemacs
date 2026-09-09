@@ -74,7 +74,11 @@ row.
   opens it: a new perspective is created, the pi process is started,
   the session file is resumed, and the previously remembered workspace
   buffers are restored (a dead perspective still registered for the
-  session is revived instead).  Sort orders are configurable:
+  session is revived instead).  Reopening always gets its own
+  chat/input buffers and process — even when the directory already
+  runs another session, the reopened one is opened side-by-side under
+  its recorded name (or a generated name for an unnamed session) rather
+  than reusing the live session's buffers.  Sort orders are configurable:
   =pi-coding-agent/session-sort-opened= (default =dir-then-name=
   — directory, then title) and =pi-coding-agent/session-sort-closed=
   (default =chrono= — newest first).  Scope: local sessions are always

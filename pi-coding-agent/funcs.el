@@ -1845,12 +1845,37 @@ to place per-remote-host sections between the two groups."
   "Return the first pi chat buffer of PERSP, or nil."
   (car (pi-coding-agent//chat-buffers-in-persp persp)))
 
+(defun pi-coding-agent//revive-collision-name (dir file)
+  "Return a generated launch name when DIR runs a different live unnamed session.
+
+When DIR's canonical unnamed chat buffer is live with a different
+session file loaded (or with no file settled yet), reviving FILE under
+the unnamed launch name would hijack that live session's buffers and
+process.  In that case return a stable generated name (title +
+session-file uuid prefix); otherwise nil, so the directory's canonical
+unnamed buffer is used as before."
+  (when-let* ((live (pi-coding-agent--find-session dir)))
+    (let ((live-file (plist-get (buffer-local-value
+                                 'pi-coding-agent--state live)
+                                :session-file)))
+      (unless (equal live-file file)
+        (let ((meta (pi-coding-agent//session-metadata-cached file)))
+          (pi-coding-agent//derived-session-name
+           (append (list :file file)
+                   (and meta
+                        (list :name (plist-get meta :session-name)
+                              :first-message (plist-get meta :first-message))))))))))
+
 (defun pi-coding-agent//revive-session (chat file &optional launch)
   "Ensure a live pi process for the session of FILE and resume FILE.
 CHAT is an existing chat buffer to reuse; its launch name is used when
-LAUNCH is nil.  Returns the chat buffer."
+LAUNCH is nil.  An unnamed revive whose directory already runs a live
+unnamed session of a different file is opened under a generated name
+instead, so it never hijacks that live session's buffers/process.
+Returns the chat buffer."
   (let* ((dir (pi-coding-agent--session-file-cwd-or-error file))
-         (launch (or launch (and chat (pi-coding-agent--chat-session-name chat)))))
+         (launch (or launch (and chat (pi-coding-agent--chat-session-name chat))
+                     (pi-coding-agent//revive-collision-name dir file))))
     (condition-case err
         (let* ((chat (pi-coding-agent--setup-session dir launch))
                (proc (buffer-local-value 'pi-coding-agent--process chat)))
@@ -1862,6 +1887,26 @@ LAUNCH is nil.  Returns the chat buffer."
        (message "pi: failed to revive session %s: %s" file
                 (error-message-string err))
        nil))))
+
+(defun pi-coding-agent//registry-launch-name (persp-name file)
+  "Return the saved launch name for FILE in perspective PERSP-NAME.
+
+Reads the captured chat buffer spec (D7) of the registry entry, whose
+launch slot records the session's buffer identity (its named-session
+suffix, or nil for unnamed).  Used when reviving a perspective whose
+chat buffers were killed, so a named/generated session is revived under
+its original buffer name instead of falling back to the directory's
+canonical unnamed one."
+  (when-let* ((entry (pi-coding-agent//registry-entry persp-name))
+              (specs (plist-get (cdr entry) :buffers)))
+    (cl-some
+     (lambda (spec)
+       (when (and (consp spec)
+                  (eq (car spec) 'def-buffer-pi-chat)
+                  (equal (nth 4 spec) file))
+         (let ((launch (nth 3 spec)))
+           (and (stringp launch) (not (string-empty-p launch)) launch))))
+     specs)))
 
 (defun pi-coding-agent//switch-to-session (persp-name file)
   "Switch to opened session PERSP-NAME, reviving a dead pi process.
@@ -1909,7 +1954,16 @@ re-resume a different session into the wrong process."
                        (not (equal (plist-get state :session-file)
                                    file)))))))
       (when (or (null chat) wrong-buffer stale-process)
-        (let ((new-chat (pi-coding-agent//revive-session chat file)))
+        (let ((new-chat (pi-coding-agent//revive-session
+                         chat file
+                         ;; Buffers were killed (or belong to another
+                         ;; directory): revive under the registry's saved
+                         ;; launch name when there is one, so a
+                         ;; named/generated session keeps its buffer
+                         ;; identity.
+                         (and (or (null chat) wrong-buffer)
+                              (pi-coding-agent//registry-launch-name
+                               persp-name file)))))
           (when (and new-chat (not (eq new-chat chat)))
             ;; The perspective was displaying another directory's session
             ;; buffer (drifted in through the layout fallback): pin the
@@ -1957,8 +2011,69 @@ Only real perspectives count; the default perspective has no session."
               (plist-get (buffer-local-value 'pi-coding-agent--state chat)
                          :session-file)))))))
 
+(defun pi-coding-agent//open-session-launch-name (entry)
+  "Return the launch name to open closed session ENTRY, or nil.
+
+Named sessions reopen under their recorded :name (the session file's
+metadata), so their buffer identity survives the close/reopen cycle.
+An unnamed session returns nil when its directory has no live unnamed
+chat buffer — `pi-coding-agent--setup-session' then creates the
+directory's canonical buffers fresh — and a generated disambiguating
+name when it does, so reopening never reuses (and thereby hijacks) the
+directory's live unnamed chat buffer and process."
+  (let* ((file (plist-get entry :file))
+         (name (pi-coding-agent//collapse-whitespace (plist-get entry :name))))
+    (cond
+     ((and (stringp name) (not (string-empty-p name))) name)
+     ((and (stringp file)
+           (not (string-empty-p file))
+           (condition-case nil
+               (pi-coding-agent--find-session
+                (pi-coding-agent--session-file-cwd-or-error file))
+             (error nil)))
+      (pi-coding-agent//derived-session-name entry))
+     (t nil))))
+
+(defun pi-coding-agent//derived-session-name (entry)
+  "Return a stable launch name for unnamed closed session ENTRY.
+
+Used when ENTRY's directory already runs a live unnamed session, so
+reopening must not reuse the directory's canonical buffers.  The name
+joins the entry's display title with its session file's uuid prefix;
+the uuid keeps same-titled sessions of one directory distinct."
+  (let* ((title (pi-coding-agent//collapse-whitespace
+                 (pi-coding-agent//entry-title entry)))
+         (uuid (pi-coding-agent//file-uuid-prefix (plist-get entry :file))))
+    (if (and title uuid (not (string-empty-p title)))
+        (format "%s · %s" title uuid)
+      (or title uuid (format-time-string "%H:%M:%S")))))
+
+(defun pi-coding-agent//open-session-file-with-name (file launch)
+  "Open session FILE with launch name LAUNCH as a live session.
+
+Mirrors the package's `pi-coding-agent-open-session-file' — setup,
+show buffers, resume — but passes LAUNCH (the session's recorded name
+or a generated disambiguator) to `pi-coding-agent--setup-session' so
+the reopened session gets its own chat/input buffers and pi process
+instead of reusing the directory's canonical unnamed ones.  Returns
+the chat buffer."
+  (let* ((dir (pi-coding-agent--session-file-cwd-or-error file))
+         (chat (pi-coding-agent--setup-session dir launch))
+         (input (buffer-local-value 'pi-coding-agent--input-buffer chat))
+         (proc (buffer-local-value 'pi-coding-agent--process chat)))
+    (pi-coding-agent--show-session-buffers chat input)
+    (when (pi-coding-agent--session-transition-ready-p chat "open")
+      (pi-coding-agent--resume-selected-session proc chat file))
+    chat))
+
 (defun pi-coding-agent//open-session (entry)
-  "Open closed session ENTRY: new perspective, pi session, buffers, layout."
+  "Open closed session ENTRY: new perspective, pi session, buffers, layout.
+
+The reopened session always gets fresh chat/input buffers (and a fresh
+pi process): named sessions reopen under their recorded name and
+unnamed ones open as the directory's canonical session unless that
+would collide with a live unnamed session of the same directory, in
+which case the session is opened under a generated unique name."
   (let* ((file (plist-get entry :file))
          (title (pi-coding-agent//entry-title entry))
          (label (pi-coding-agent//make-persp-label title file))
@@ -1970,7 +2085,8 @@ Only real perspectives count; the default perspective has no session."
                                    :buffers nil)
     (pi-coding-agent//registry-save)
     (condition-case err
-        (let* ((chat (pi-coding-agent-open-session-file file))
+        (let* ((launch (pi-coding-agent//open-session-launch-name entry))
+               (chat (pi-coding-agent//open-session-file-with-name file launch))
                (input (and chat (buffer-local-value
                                  'pi-coding-agent--input-buffer chat))))
           (pi-coding-agent//restore-registry-buffers
@@ -2032,12 +2148,42 @@ connection wait."
         (pi-coding-agent//switch-to-session persp-name file)
       (pi-coding-agent//open-session entry))))
 
+(defun pi-coding-agent//adopt-live-buffer (buf file)
+  "Adopt live chat buffer BUF (no perspective) into a fresh perspective.
+
+BUF is a session started outside the persp flow: it is live and FILE
+has settled.  The existing chat/input buffers and their pi process are
+kept — no second process is spawned — and are registered into a new
+perspective with the pi window layout applied.  Returns BUF."
+  (let* ((title (pi-coding-agent//entry-title (list :file file)))
+         (label (pi-coding-agent//make-persp-label title file))
+         (persp-name (pi-coding-agent//unique-persp-name label file))
+         (input (buffer-local-value 'pi-coding-agent--input-buffer buf)))
+    (persp-switch persp-name)
+    (when (and (buffer-live-p buf) (buffer-live-p input))
+      (persp-add-buffer (list buf input) (get-current-persp) nil))
+    (pi-coding-agent//registry-put persp-name
+                                   :session-file file
+                                   :label-locked nil
+                                   :buffers nil)
+    (pi-coding-agent//registry-save)
+    (condition-case err
+        (pi-coding-agent//apply-pi-layout buf input nil t)
+      (error
+       (when (perspective-p (persp-get-by-name persp-name))
+         (persp-kill (list persp-name) t))
+       (pi-coding-agent//registry-remove persp-name)
+       (pi-coding-agent//registry-save)
+       (user-error "pi: failed to adopt session: %s"
+                   (error-message-string err))))
+    buf))
+
 (defun pi-coding-agent//switch-to-live-buffer (buf)
   "Switch to the perspective owning live pi chat buffer BUF.
 When BUF belongs to no perspective (a session started outside the
-persp flow), its session file is opened into a fresh perspective
-instead — which reuses the directory's canonical chat buffer — or,
-for a fresh session without a file yet, BUF is displayed directly."
+persp flow), the existing buffers and process are adopted into a fresh
+perspective; for a fresh session without a file yet, BUF is displayed
+directly."
   (if-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
       (let ((name (safe-persp-name persp)))
         (if (perspective-p (persp-get-by-name name))
@@ -2048,7 +2194,7 @@ for a fresh session without a file yet, BUF is displayed directly."
                                :session-file))
               ((stringp file))
               ((not (string-empty-p file))))
-        (pi-coding-agent//open-or-switch (list :file file))
+        (pi-coding-agent//adopt-live-buffer buf file)
       (switch-to-buffer buf))))
 
 (defun pi-coding-agent//open-or-switch-target (target)
