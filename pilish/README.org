@@ -129,7 +129,10 @@ row.
   (or picking the =✚ New session= candidate and entering one) starts a
   fresh named session, and an empty name starts an unnamed session —
   refused when the directory already runs a live unnamed session (then
-  a name is required for the parallel session).  With no existing
+  a name is required for the parallel session).  A typed name wins
+  over a merely similar candidate (a fuzzy/substring match must not
+  silently open the wrong session); only an exact name match opens the
+  existing session.  With no existing
   sessions a fresh unnamed session starts directly.
 - =SPC a i m= (=pilish/start-remote-session=) — start a new
   session on a remote host, the same flow as =SPC a i n= but with the

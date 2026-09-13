@@ -201,7 +201,11 @@ in-persp=): =pilish/close-session= (SPC a i d) and
    session, resolved from its active chat buffer; when there is no
    active buffer it falls back to the registered session (registry
    entry or chat buffer), so the default still resolves for
-   dead-process perspectives.
+   dead-process perspectives.  Under helm the default must be passed
+   as =:preselect= (a quoted regexp), not =:default=: =:default= only
+   fills the minibuffer for =next-history-element= and left the
+   cursor on the first candidate, so the delete picker never opened
+   on the current session.
 2. Capture buffer specs (D7) — close only.
 3. Kill the pi process (only when the perspective owns its chat
    buffer; a shared same-directory chat buffer is spared), then the
@@ -272,7 +276,18 @@ by older releases.
   newest first: picking one opens/switches to it (with its layout),
   typing a fresh name (or picking the
   =✚ New session= candidate and entering one) starts a named session,
-  an empty name starts an unnamed session.
+  an empty name starts an unnamed session.  Free-form input is
+  authoritative: with =must-match= nil the helm action returns
+  `helm-pattern` whenever the typed text is not exactly the selected
+  candidate, and a dummy source offers the typed text as a candidate.
+  Without it helm's substring/fuzzy matching hands back a merely
+  similar existing session and RET opens it — the "type a new name,
+  get the first item" bug.  Only an exact name match opens the existing
+  session; the switch flow (=must-match= t) keeps plain candidate
+  selection (no free input to prefer).  Rejected: disabling fuzzy
+  matching for the picker (Spacemacs enables it globally, and plain
+  substring matching already reopened a similar session), and reading
+  the input back after helm exits (helm resets `helm-pattern`).
 - Refuses an unnamed session when the directory already has a live unnamed
   session (package allows one unnamed chat buffer per dir); a name is then
   required for parallelism.  With no session files at all a fresh unnamed

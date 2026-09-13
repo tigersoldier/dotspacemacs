@@ -1756,6 +1756,40 @@ candidate string, or the typed input when MUST-MATCH is nil."
 ;; helm-source.el) is only available at runtime, once helm is loaded.
 (declare-function helm-make-source "helm-source.el")
 
+(defvar pilish//helm-session-free-input nil
+  "Dynamically non-nil while the session picker accepts free input.
+The new-session flow binds it; the switch flow does not.")
+
+(defun pilish//helm-session-action (cand)
+  "Helm action for a session candidate, returning CAND or the input typed.
+When free input is allowed (`pilish//helm-session-free-input') and the
+user typed something that is not exactly CAND, the typed text wins.
+Helm's substring/fuzzy matching otherwise hands back a merely similar
+existing session and silently opens it instead of starting the
+session the user named — the reported bug behind \"type a new name,
+get the first item\".  A candidate selected without typing (empty
+`helm-pattern') is still returned as-is."
+  (if (and pilish//helm-session-free-input
+           (not (string-empty-p helm-pattern))
+           (not (string= helm-pattern cand)))
+      helm-pattern
+    cand))
+
+(defun pilish//helm-session-unknown-source ()
+  "Helm source offering the typed input as a new session name.
+Mirrors the \"Unknown candidate\" source of `helm-comp-read`: the current
+`helm-pattern' becomes a candidate when free input is allowed, so RET
+on a fresh name (no matching session) returns that name instead of an
+empty selection — which the caller would otherwise read as \"start an
+unnamed session\"."
+  (helm-make-source "New session name" 'helm-source-dummy
+    :filtered-candidate-transformer
+    (lambda (_candidates _source)
+      (unless (string-empty-p helm-pattern)
+        (list (cons (format "✚ New session: %s" helm-pattern)
+                    helm-pattern))))
+    :action 'pilish//helm-session-action))
+
 (defun pilish//helm-pick-session-target (sections prompt
                                                  &optional default-label
                                                  must-match extra)
@@ -1767,31 +1801,50 @@ buffer, shown in SECTIONS' order.  EXTRA is a list of
 (SOURCE-NAME . ALIST) sections appended after them (e.g. the
 \"✚ New session\" action).  Candidates are annotated with status
 glyph, message count, and age; the returned string is the clean
-candidate (no annotation)."
+candidate (no annotation).  When MUST-MATCH is nil the typed input is
+a valid result: it is preferred over a merely similar candidate and a
+source offers it as a new session name (see
+`pilish//helm-session-unknown-source').  DEFAULT-LABEL, when non-nil,
+is additionally pre-selected (helm's `:preselect'): helm's `:default'
+slot only fills the minibuffer for `next-history-element', it does
+not move the cursor, so the picker opened on the first candidate
+instead of the caller's default (the delete picker's current
+session)."
   ;; Sources are built with `helm-make-source' (a function), not the
   ;; `helm-build-sync-source' macro: funcs.el is loaded/compiled before
   ;; helm is, so a macro call would never be expanded and would fail at
   ;; runtime with "Invalid function".  `helm-make-source' lives in
   ;; helm-core's helm-source.el, which helm.el requires at load time.
   (require 'helm)
-  (helm :sources
-        (append
-         (cl-loop for (name . alist) in sections
-                  when alist
-                  collect (helm-make-source
-                           name 'helm-source-sync
-                           :candidates (pilish//helm-session-candidates alist)
-                           :must-match must-match
-                           :action 'identity))
-         (cl-loop for (name . alist) in extra
-                  collect (helm-make-source
-                           name 'helm-source-sync
-                           :candidates (pilish//helm-session-candidates alist)
-                           :must-match nil
-                           :action 'identity)))
-        :buffer "*helm pi session*"
-        :prompt prompt
-        :default default-label))
+  (let ((pilish//helm-session-free-input (null must-match)))
+    (helm :sources
+          (append
+           (cl-loop for (name . alist) in sections
+                    when alist
+                    collect (helm-make-source
+                             name 'helm-source-sync
+                             :candidates (pilish//helm-session-candidates alist)
+                             :must-match must-match
+                             :action 'pilish//helm-session-action))
+           (cl-loop for (name . alist) in extra
+                    collect (helm-make-source
+                             name 'helm-source-sync
+                             :candidates (pilish//helm-session-candidates alist)
+                             :must-match nil
+                             :action 'pilish//helm-session-action))
+           (when (null must-match)
+             (list (pilish//helm-session-unknown-source))))
+          :buffer "*helm pi session*"
+          :prompt prompt
+          :default default-label
+          ;; `:default' is not enough: helm only uses it for
+          ;; `next-history-element' (or as input when a source opts
+          ;; into `helm-sources-using-default-as-input'), so without
+          ;; this the cursor stayed on the first candidate and the
+          ;; delete picker did not open on the current session.
+          ;; `:preselect' takes a regexp; quote the label so titles
+          ;; containing regexp metacharacters still match.
+          :preselect (and default-label (regexp-quote default-label)))))
 
 (defun pilish//pick-session-sections (sections prompt
                                                 &optional default-label
@@ -3720,20 +3773,28 @@ host's sessions are offered (close/delete must reach a dead remote
 session), with remote closed files scanned only over established
 connections, exactly like the switch list does for its host.  The
 single listing difference besides that scope is that the current
-session is NOT excluded: it is the picker's default."
+session is NOT excluded: it is the picker's default, moved to the
+front of the live group so every picker opens on it."
   (let* ((action (or action "Close"))
          (groups (pilish//session-targets
                   nil include-closed nil nil t))
          (live (car groups))
          (closed (cdr groups))
          (default (pilish//default-close-candidate)))
-    (when (and default (not (assoc (car default) live)))
-      ;; Default without an active buffer: replace any same-labelled
-      ;; closed candidate (the same session) and offer it in the
-      ;; live list.
-      (when (assoc (car default) closed)
-        (setq closed (cl-remove (car default) closed :key #'car :test #'equal)))
-      (push default live))
+    (when default
+      ;; Make the default the first live candidate: the picker opens
+      ;; on it under every framework (helm's `:preselect' regexp
+      ;; cannot then match an earlier candidate whose label merely
+      ;; shares the default's prefix, and the completing-read path
+      ;; lists it first).  A same-labelled entry — a stale live
+      ;; target or the closed candidate of a perspective without an
+      ;; active buffer (the same session) — is dropped so the
+      ;; default's own target wins.
+      (setq live (cons default
+                       (cl-remove (car default) live
+                                  :key #'car :test #'equal)))
+      (setq closed (cl-remove (car default) closed
+                              :key #'car :test #'equal)))
     (if (and (null live) (null closed))
         (user-error "No open pi sessions to %s" (downcase action))
       (let ((choice (pilish//pick-session
