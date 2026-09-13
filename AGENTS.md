@@ -30,8 +30,7 @@ git; push straight to `origin/master` (no PR flow, no CI).
   `render.cjs`), `myconfigs/`, `bazel/`, `templates/` (yasnippet),
   `layouts/` (window-purpose layouts), `snippets/`.
 - Installed packages live in `~/.emacs.d/elpa/develop/<pkg>-<version>/` —
-  **outside this repo**; never add package sources here. The `javacomp`
-  entries in `.gitmodules` are stale (layer removed).  `pilish` is the
+  **outside this repo**; never add package sources here.  `pilish` is the
   exception: it comes from the local checkout symlink, not from an ELPA
   directory.
 
