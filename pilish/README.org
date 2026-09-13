@@ -6,11 +6,19 @@ for the [[https://pi.dev][pi coding agent]]. It provides a two-window
 interface for AI-assisted coding: a chat buffer with rendered markdown and a
 separate prompt composition buffer, backed by a =pi --mode rpc= subprocess.
 
-Without a local checkout symlinked into =pilish/local/pilish=, the package
-is installed with quelpa from this config's fork
+By default the package is installed with quelpa from this config's fork
 ([[https://github.com/tigersoldier/pi-coding-agent][tigersoldier/pi-coding-agent]],
-branch =downstream=), which carries fixes not yet released upstream; the
-local checkout wins when present (see =pilish/packages.el=).
+branch =downstream=), which carries fixes not yet released upstream.  On a
+development device, create the gitignored =pilish/local/config.el= with
+
+#+begin_src emacs-lisp
+(setq pilish/use-local-checkout t)
+#+end_src
+
+and symlink the checkout to =pilish/local/pilish=; the layer then loads that
+checkout (=:location local=) instead of installing the package.  The flag is
+a layer defcustom, but it lives in the local file because =packages.el=
+reads it before the layer's =config.el= is loaded.
 
 ** Prerequisites
 
@@ -33,8 +41,8 @@ session start (or manually via =pilish-install-grammars=).
 
 - Declares the =pilish= package (its dependencies =transient=,
   =md-ts-mode= and =markdown-table-wrap= are pulled in by package.el);
-  without a local checkout the package itself comes from the fork's
-  =downstream= branch via quelpa.
+  the package itself comes from the fork's =downstream= branch via
+  quelpa unless =pilish/use-local-checkout= selects a local checkout.
 - Keeps the package's own behavior: sessions are per-project (one
   process per directory, optionally named for parallel sessions),
   Evil keybindings load automatically when Evil is present, and the

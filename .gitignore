@@ -1,4 +1,4 @@
 *.elc
 
-# Local package checkouts symlinked per device (see pilish/packages.el).
+# Local package checkouts and per-device settings (see pilish/packages.el).
 pilish/local/

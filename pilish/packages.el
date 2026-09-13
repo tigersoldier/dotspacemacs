@@ -18,13 +18,14 @@
 ;; separate prompt composition buffer, backed by a `pi --mode rpc'
 ;; subprocess.
 ;;
-;; The package is loaded from a local checkout when one is symlinked
-;; into `local/pilish' (see `pilish-packages' below); otherwise it is
-;; installed with `quelpa' from this config's fork
+;; The package is installed with `quelpa' from this config's fork
 ;; (https://github.com/tigersoldier/pi-coding-agent, branch
-;; `downstream'), which carries fixes not yet released upstream.
-;; Because local packages do not get generated autoloads,
-;; `pilish/init-pilish' explicitly requires the package.
+;; `downstream'), which carries fixes not yet released upstream.  A
+;; device can opt into a local checkout instead by setting
+;; `pilish/use-local-checkout' in the gitignored `local/config.el' (see
+;; `pilish-packages' below).  Because local packages do not get
+;; generated autoloads, `pilish/init-pilish' explicitly requires the
+;; package.
 ;;
 ;; The package is self-contained: it auto-loads its Evil integration
 ;; when Evil is present, checks for the `pi' binary and tree-sitter
@@ -43,15 +44,24 @@
   (file-name-directory (or load-file-name buffer-file-name default-directory))
   "Directory containing this layer's `packages.el'.")
 
-(defun pilish//local-checkout-directory ()
-  "Return the local pilish checkout symlinked into `local/pilish', or nil.
-The symlink is gitignored and created per device.  This is the single
-place that decides whether Emacs runs the in-tree checkout: when the
-checkout is present the layer loads it with `:location local', otherwise
-it installs `pilish--source-recipe'."
-  (let ((dir (expand-file-name "local/pilish" pilish--packages-layer-dir)))
-    (when (file-exists-p (expand-file-name "pilish.el" dir))
-      dir)))
+(defconst pilish--local-config-file
+  (expand-file-name "local/config.el" pilish--packages-layer-dir)
+  "Path of this layer's gitignored per-device config file.
+Unlike the tracked dotfile it can differ on every machine; packages.el
+loads it to pick up `pilish/use-local-checkout'.")
+
+(defconst pilish--local-checkout-directory
+  (expand-file-name "local/pilish" pilish--packages-layer-dir)
+  "Path of the optional local pilish checkout, symlinked per device.")
+
+;; `pilish/use-local-checkout' is defined with `defcustom' in config.el,
+;; but packages.el runs first.  Declare it here so this file can read it,
+;; and load the local config before doing so — a flag set there could not
+;; influence the declaration below otherwise.
+(defvar pilish/use-local-checkout)
+
+(when (file-exists-p pilish--local-config-file)
+  (load pilish--local-config-file nil 'nomessage))
 
 (defconst pilish--source-recipe
   '(recipe :fetcher github
@@ -63,27 +73,35 @@ it installs `pilish--source-recipe'."
   "Quelpa recipe for the pilish fork this config tracks.
 The fork (https://github.com/tigersoldier/pi-coding-agent) carries
 fixes that are not released on MELPA yet; its `downstream' branch is
-the integration branch of those fixes.  Used only when no local
-checkout is symlinked into `local/pilish'.")
+the integration branch of those fixes.  Used unless
+`pilish/use-local-checkout' selects the local checkout.")
+
+(defun pilish//local-checkout-p ()
+  "Return non-nil when the local pilish checkout should be used.
+Both `pilish/use-local-checkout' (set in the gitignored `local/config.el')
+and an actual checkout at `local/pilish' are required."
+  (and (bound-and-true-p pilish/use-local-checkout)
+       (file-exists-p (expand-file-name "pilish.el"
+                                        pilish--local-checkout-directory))))
+
+(when (and (bound-and-true-p pilish/use-local-checkout)
+           (not (pilish//local-checkout-p)))
+  (display-warning
+   'pilish
+   (format (concat "pilish/use-local-checkout is set but no checkout "
+                   "exists at %s; installing %s (branch %s) instead")
+           pilish--local-checkout-directory
+           (plist-get (cdr pilish--source-recipe) :repo)
+           (plist-get (cdr pilish--source-recipe) :branch))
+   :warning))
 
 (defconst pilish-packages
   (append
-   (if (pilish//local-checkout-directory)
+   (if (pilish//local-checkout-p)
        ;; Development setup: load the checkout symlinked into `local/pilish'.
        '((pilish :location local))
-     ;; Fallback for devices without a checkout: install the fork's
-     ;; `downstream' branch via quelpa.  Warn rather than silently
-     ;; running a different pilish than the one being edited.
-     (progn
-       (display-warning
-        'pilish
-        (format (concat "No local pilish checkout at %s; "
-                        "installing pilish from %s (branch %s)")
-                (expand-file-name "local/pilish" pilish--packages-layer-dir)
-                (plist-get (cdr pilish--source-recipe) :repo)
-                (plist-get (cdr pilish--source-recipe) :branch))
-        :warning)
-       `((pilish :location ,pilish--source-recipe))))
+     ;; Default: install the fork's `downstream' branch via quelpa.
+     `((pilish :location ,pilish--source-recipe)))
    ;; Hard dependencies the package requires, whether it comes from the
    ;; local checkout or the recipe above.  A local checkout is not
    ;; installed through package.el, so its `Package-Requires' do not
@@ -93,11 +111,9 @@ checkout is symlinked into `local/pilish'.")
    ;; declaring them keeps both sources equivalent.
    '(md-ts-mode markdown-table-wrap))
   "Packages declared by the pilish layer.
-The checkout symlinked into `local/pilish' wins (see
-`pilish//local-checkout-directory'); otherwise `pilish--source-recipe'
-installs the fork's `downstream' branch and a warning is emitted, so
-the config keeps working on devices where the checkout does not exist
-without silently losing the local one.")
+When `pilish/use-local-checkout' is set (gitignored `local/config.el')
+and `local/pilish' is a checkout, that checkout is loaded; otherwise
+`pilish--source-recipe' installs the fork's `downstream' branch.")
 
 (defun pilish/init-md-ts-mode ()
   "Keep md-ts-mode activated as a pilish dependency.

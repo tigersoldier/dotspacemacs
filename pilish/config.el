@@ -10,6 +10,21 @@
 
 ;;; Code:
 
+;; Read by `packages.el' while it declares the package, before this file
+;; is loaded; the gitignored `local/config.el' is what actually sets it.
+(defcustom pilish/use-local-checkout nil
+  "Whether to load pilish from the local checkout in `local/pilish'.
+When non-nil the checkout symlinked there must contain `pilish.el';
+the layer then loads it with `:location local' and installs no
+package.  Otherwise `packages.el' installs the fork's `downstream'
+branch with quelpa.
+
+Set this in the gitignored `local/config.el', not in the tracked
+dotfile: `packages.el' reads the flag while declaring packages, which
+happens before this file (and the rest of the layer) is loaded."
+  :type 'boolean
+  :group 'pilish)
+
 (defcustom pilish/layout-width-ratio 0.5
   "Fraction of the frame width taken by the pi left column (chat + input).
 Used by `pilish/layout' when applying the window layout; the
