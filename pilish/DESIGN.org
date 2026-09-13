@@ -303,6 +303,12 @@ by older releases.
   buffers, terminal cwd in terminals, visited file's dir elsewhere),
   same live-first ordering and section boundary (D2), current session
   excluded; switching re-applies the pi window layout.
+- =pilish/new-worktree-session= names the worktree after the repo:
+  the directory is =«root»/«repo-dir»-«suffix»= (a suffix already
+  starting with the repo name is used as-is, avoiding a doubled
+  prefix), so the owning repo stays visible and two repos sharing a
+  suffix cannot collide.  The session is named after the combined
+  directory.
 
 *** D12. Pi-extension → Emacs bridge (tools that drive the hosting Emacs)
 

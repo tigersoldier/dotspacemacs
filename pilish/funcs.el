@@ -3155,7 +3155,7 @@ installed."
 ;; in it:
 ;;
 ;; - `pilish/new-worktree-session' (SPC a i w): one repo ->
-;;   one worktree at ROOT/SUFFIX, session named SUFFIX;
+;;   one worktree at ROOT/REPO-SUFFIX, session named REPO-SUFFIX;
 ;; - `pilish/new-workspace-session' (SPC a i W): one or more
 ;;   repos -> ROOT/NAME/repos/<repo> worktrees, session named NAME at
 ;;   ROOT/NAME.
@@ -3419,23 +3419,40 @@ directories, deduplicated, in selection order."
 (defvar pilish-workspace-name-history nil
   "History of workspace names entered by the user.")
 
-(defun pilish//read-worktree-suffix (root)
-  "Prompt for the worktree directory name under ROOT.
-Re-prompts while the input is empty or a file/directory of that name
-already exists under ROOT.  Returns the suffix, trimmed of
-surrounding whitespace and slashes."
+(defun pilish//worktree-name (repo suffix)
+  "Return the worktree directory name for REPO and SUFFIX.
+The repository's directory name prefixes the result, so worktrees
+of different repos sharing a suffix stay distinguishable: repo
+foo with suffix fix becomes foo-fix.  A SUFFIX that already starts
+with the repo name (the user typed the full name, or the repo name
+itself) is used as-is, so foo-fix stays foo-fix and foo stays foo
+instead of becoming foo-foo."
+  (let ((base (file-name-nondirectory (directory-file-name repo))))
+    (if (string-prefix-p base suffix)
+        suffix
+      (concat base "-" suffix))))
+
+(defun pilish//read-worktree-name (root repo)
+  "Prompt for a worktree directory name under ROOT for REPO.
+The typed suffix is combined with REPO's directory name (see
+`pilish//worktree-name'); re-prompts while the input is empty or
+the resulting name already exists under ROOT.  Returns the combined
+name, with the suffix trimmed of surrounding whitespace and
+slashes."
   (cl-loop
    for input = (read-string "Worktree suffix: " nil
                             'pilish-worktree-suffix-history)
    for suffix = (string-trim input "/ \t\n")
-   until (and (not (string-empty-p suffix))
-              (not (file-exists-p (expand-file-name suffix root))))
+   for name = (and (not (string-empty-p suffix))
+                   (pilish//worktree-name repo suffix))
+   until (and name
+              (not (file-exists-p (expand-file-name name root))))
    do (cond ((string-empty-p suffix)
              (message "Worktree suffix must not be empty"))
             (t
              (message "A file or directory named %s already exists in %s — pick another suffix"
-                      suffix (abbreviate-file-name (directory-file-name root)))))
-   finally return suffix))
+                      name (abbreviate-file-name (directory-file-name root)))))
+   finally return name))
 
 (defun pilish//create-worktree (repo target branch)
   "Create a git worktree at TARGET from BRANCH of REPO.
@@ -3464,21 +3481,21 @@ message when the worktree cannot be created."
             name (format "%s-%d" base n)))
     name))
 
-(defun pilish//worktree-session (repo suffix)
-  "Create a worktree of REPO at ROOT/SUFFIX and start a pi session in it.
+(defun pilish//worktree-session (repo name)
+  "Create a worktree of REPO at ROOT/NAME and start a pi session in it.
 The repo's mainline branch (see `pilish//git-default-branch')
 is fetched best-effort and checked out — detached at the
 remote-tracking tip when the branch comes from origin, attached when
-it is a free local branch.  Then a fresh pi session named SUFFIX
+it is a free local branch.  Then a fresh pi session named NAME
 starts in the worktree: own perspective, pi window layout."
   (let* ((root (pilish//workspace-root))
          (branch (or (pilish//git-default-branch repo)
                      (user-error "No mainline branch (origin/main, origin/master, main, master) found in %s"
                                  (abbreviate-file-name repo))))
-         (target (expand-file-name suffix root)))
+         (target (expand-file-name name root)))
     (pilish//git-fetch-branch repo branch)
     (pilish//create-worktree repo target branch)
-    (pilish//start-fresh-session target suffix)))
+    (pilish//start-fresh-session target name)))
 
 (defun pilish/new-worktree-session ()
   "Create a fresh git worktree and start a new pi session in it.
@@ -3486,12 +3503,15 @@ starts in the worktree: own perspective, pi window layout."
 Prompts for a git repository — re-prompting until the chosen
 directory is inside one — then for a suffix naming the worktree
 directory under `pilish/workspace-root' (default ~/work).
+The worktree directory combines the repository's directory name with
+the suffix (see `pilish//worktree-name'), so the owning repo stays
+visible (repo foo, suffix fix => ~/work/foo-fix).
 The repo's mainline branch (origin/main, else origin/master, else
 the local main/master) is fetched best-effort and checked out in the
 worktree — detached at the remote-tracking tip when the branch comes
 from origin, attached when it is a free local branch.  The new pi
-session (own perspective, pi window layout) is named after the
-suffix."
+session (own perspective, pi window layout) is named after that
+combined directory name."
   (interactive)
   (require 'pilish)
   (unless (bound-and-true-p persp-mode)
@@ -3499,9 +3519,9 @@ suffix."
   (let* ((repo (pilish//read-git-repo
                 "Git repository for the worktree: "
                 (pilish//context-directory)))
-         (suffix (pilish//read-worktree-suffix
-                  (pilish//workspace-root))))
-    (pilish//worktree-session repo suffix)))
+         (name (pilish//read-worktree-name
+                (pilish//workspace-root) repo)))
+    (pilish//worktree-session repo name)))
 
 (defun pilish//workspace-session (repos name)
   "Create workspace ROOT/NAME with worktrees of REPOS, then a pi session.
