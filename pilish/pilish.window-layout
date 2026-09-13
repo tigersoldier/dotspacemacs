@@ -1,19 +1,19 @@
 ;; -*- mode: emacs-lisp; -*-
-;; pi-coding-agent.window-layout
+;; pilish.window-layout
 ;;
 ;; Static default of the pi coding agent window layout (also loadable
-;; via `M-x purpose-load-window-layout').  `pi-coding-agent/layout'
+;; via `M-x purpose-load-window-layout').  `pilish/layout'
 ;; (SPC a i l) generates this layout from
-;; `pi-coding-agent/layout-width-ratio' instead of loading this file;
+;; `pilish/layout-width-ratio' instead of loading this file;
 ;; keep the values here in sync with that variable's default (0.5).
 ;;
 ;; 3-pane layout:
 ;;
 ;;   +-------------------------+-------------------------+
-;;   | pi-coding-agent-chat    |                         |
+;;   | pilish-chat    |                         |
 ;;   | (70% height)            | any                     |
 ;;   +-------------------------+ buffer                 |
-;;   | pi-coding-agent-input   |                         |
+;;   | pilish-input   |                         |
 ;;   | (30% height)            |                         |
 ;;   +-------------------------+-------------------------+
 ;;

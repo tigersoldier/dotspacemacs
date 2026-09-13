@@ -1,13 +1,13 @@
-* pi-coding-agent: session management design
+* pilish: session management design
 
-Design decisions for extending the =pi-coding-agent= layer with Emacs <-> pi
+Design decisions for extending the =pilish= layer with Emacs <-> pi
 session management.  Recorded during a grilling session on 2026-08-09.  This
 document captures the agreed design; the layer README describes implemented
 behavior.
 
 ** Context
 
-The layer currently wraps the MELPA =pi-coding-agent= frontend (RPC-backed
+The layer currently wraps the MELPA =pilish= frontend (RPC-backed
 chat/input buffers) and adds a purpose window layout, launch-directory
 resolution, and leader keybindings.  The package itself already provides
 per-project sessions, named parallel sessions, a transient menu (new/resume/
@@ -32,13 +32,13 @@ One list model shared by every session picker (=switch-session=,
 =switch-session-in-dir=, =start-new-session=, =close-session=,
 =delete-session=):
 
-1. A single builder (=pi-coding-agent//session-targets=) returns
+1. A single builder (=pilish//session-targets=) returns
    (LIVE . CLOSED) candidate alists.  LIVE = active pi chat buffers
    (the ground truth, see D3), most recently used first; CLOSED =
    files on disk not loaded by an active buffer.  Each candidate maps
    to a target plist the caller dispatches on (:buffer for live,
    :entry for closed).
-2. Rendering is one shared picker (=pi-coding-agent//pick-session=):
+2. Rendering is one shared picker (=pilish//pick-session=):
    under helm the groups are separate sources ("Live sessions" /
    "Closed sessions" — real section headers); otherwise
    completing-read with non-selectable header rows
@@ -67,7 +67,7 @@ two groups.)
   perspective create/rename/destroy, saved on Emacs exit (atomic writes:
   temp file + rename).
 - =live= <-> an active pi chat buffer exists (mode
-  =pi-coding-agent-chat-mode= with a live process).  Liveness is
+  =pilish-chat-mode= with a live process).  Liveness is
   always read from the chat buffers (=active-chat-buffers=), never
   from the registry or the perspective mapping — those can be stale
   (a killed perspective still registered) or miss sessions started
@@ -84,7 +84,7 @@ two groups.)
   -> =New session= placeholder (before the first prompt).
 - Exact collisions (same title + same dir) get a short-uuid suffix.
 - Sync policy: auto-sync the title part when the session is renamed — advice
-  on =pi-coding-agent-set-session-name= (immediate) plus lazy compare-and-
+  on =pilish-set-session-name= (immediate) plus lazy compare-and-
   rename on the next session-list scan (=/name= slash command path).  A
   perspective renamed by the user (=persp-rename=, SPC l r) sets
   =label-locked= and stops auto-sync.
@@ -106,8 +106,8 @@ two groups.)
 
 Closed -> open (selecting a closed session):
 1. Create the perspective (named per D4) and switch to it.
-2. =pi-coding-agent//open-session-file-with-name= (the layer's mirror of
-   =pi-coding-agent-open-session-file=): setup chat/input buffers, start
+2. =pilish//open-session-file-with-name= (the layer's mirror of
+   =pilish-open-session-file=): setup chat/input buffers, start
    the process, resume the exact session file — under a launch name that
    guarantees fresh buffers (see same-dir collision below).
 3. Replay the registry's captured buffer specs through persp's load
@@ -118,15 +118,15 @@ Closed -> open (selecting a closed session):
    perspective.)
 
 Live -> switch (selecting a live session):
-1. =pi-coding-agent//switch-to-live-buffer=: =persp-switch= to the
+1. =pilish//switch-to-live-buffer=: =persp-switch= to the
    perspective owning the active chat buffer (Spacemacs restores its
    window configuration).  A live buffer outside any perspective falls
-   back to =pi-coding-agent//adopt-live-buffer=, which registers the
+   back to =pilish//adopt-live-buffer=, which registers the
    existing buffers/process into a fresh perspective — no second
    process is spawned.
 
 Closed -> switch (reviving a registered perspective): picking a
-closed session still routes through =pi-coding-agent//open-or-switch=,
+closed session still routes through =pilish//open-or-switch=,
 which prefers the perspective the registry (or
 =live-session-mappings=) still maps for the file — the session's
 perspective exists but its process died.  =switch-to-session= then:
@@ -152,7 +152,7 @@ side-by-side with its own buffers and process.  The package still allows one
 *unnamed* chat buffer per directory; the generated name makes the reopened
 session a named one.
 
-=pi-coding-agent/switch-session= excludes the session of the current
+=pilish/switch-session= excludes the session of the current
 perspective (you are already in it).
 
 *** D7. Buffer save/restore: persp's public dispatch, no duplication
@@ -162,8 +162,8 @@ perspective (you are already in it).
   - =persp-save-buffer-functions=: chat/input buffers ->
     =(def-buffer-pi-chat name dir launch-name session-file)= (dir/launch-name
     from the buffer's session identity, session-file from
-    =pi-coding-agent--state=); nil for everything else.
-  - =persp-load-buffer-functions=: restore = =pi-coding-agent--setup-session=
+    =pilish--state=); nil for everything else.
+  - =persp-load-buffer-functions=: restore = =pilish--setup-session=
     + resume (open-session-file minus window display).
 - Registry buffer specs are captured by running persp's save dispatch over
   the perspective's buffers (each owner classifies its own: files/dired by
@@ -186,9 +186,9 @@ perspective (you are already in it).
 
 *** D9. Close/delete session
 
-Two commands sharing one teardown core (=pi-coding-agent//close-session-
-in-persp=): =pi-coding-agent/close-session= (SPC a i d) and
-=pi-coding-agent/delete-session= (SPC a i D):
+Two commands sharing one teardown core (=pilish//close-session-
+in-persp=): =pilish/close-session= (SPC a i d) and
+=pilish/delete-session= (SPC a i D):
 
 1. Target selection: the pickers list LIVE pi chat buffers (active
    processes) — the perspective containing the chosen buffer is
@@ -230,7 +230,7 @@ in-persp=): =pi-coding-agent/close-session= (SPC a i d) and
 The delete resolves the session file CHAT BUFFER FIRST, registry
 second.  The chat buffer's settled =:session-file= is the ground
 truth: a named session started inside the perspective (=a i S= → the
-package's =pi-coding-agent= command) moves the live file without a
+package's =pilish= command) moves the live file without a
 registry update (the sync advice below now covers it, but the
 registry can still be stale from before the first sync returns, and
 process death before the get_state response leaves it stale for
@@ -252,7 +252,7 @@ a remote trash, or for a local system without the CLI, the permanent
 unlink remains.
 
 Registry keys and =:session-file= values are stored and compared
-property-stripped (=pi-coding-agent//plain-string=): completion
+property-stripped (=pilish//plain-string=): completion
 pickers (helm) hand back strings carrying e.g. =helm-ff= properties,
 and =equal=/=assoc= compare text properties — a property-laden entry
 never matched again, so =registry-remove= kept deleted sessions
@@ -262,8 +262,8 @@ by older releases.
 
 *** D10. New-session flow
 
-=pi-coding-agent/start-new-session=:
-- Always prompts for the directory; the default follows =pi-coding-agent/
+=pilish/start-new-session=:
+- Always prompts for the directory; the default follows =pilish/
   layout= logic (terminal cwd in terminals, recorded dir in pi buffers,
   buffer dir elsewhere).
 - With existing sessions in the chosen directory, offers them through
@@ -277,13 +277,13 @@ by older releases.
   session (package allows one unnamed chat buffer per dir); a name is then
   required for parallelism.  With no session files at all a fresh unnamed
   session starts directly.
-- Fresh-session creation is one helper (=pi-coding-agent//start-fresh-
+- Fresh-session creation is one helper (=pilish//start-fresh-
   session=), shared with the bridge tool and the interactive command:
   create the perspective (placeholder label or the name, label-locked),
-  =pi-coding-agent--setup-session= (fresh, no resume), applies the layout,
+  =pilish--setup-session= (fresh, no resume), applies the layout,
   focuses input, registers the registry entry (session-file resolved
   lazily from chat state).
-- =pi-coding-agent/switch-session-in-dir= (SPC a i I) is the scoped
+- =pilish/switch-session-in-dir= (SPC a i I) is the scoped
   switch: only the current directory's sessions (recorded dir in pi
   buffers, terminal cwd in terminals, visited file's dir elsewhere),
   same live-first ordering and section boundary (D2), current session
@@ -298,7 +298,7 @@ its perspective and switching to it.
 
 Channel decision: the pi extension shells out to =emacsclient -e=
 with a base64-encoded JSON request; Emacs evaluates the layer's
-bridge entry (=pi-coding-agent/open-session-at-directory-bridge=) and
+bridge entry (=pilish/open-session-at-directory-bridge=) and
 returns a JSON string.  emacsclient -e is packet-based, synchronous,
 request/response, and needs zero new infrastructure (an Emacs server
 is the standard IPC).  Rejected alternatives:
@@ -314,20 +314,20 @@ is the standard IPC).  Rejected alternatives:
   a local Emacs host that already owns the process.
 
 Activation decision: the extension lives in the layer directory
-(=pi-bridge-extension.ts=) and is wired via =pi-coding-agent-extra-args=
+(=pi-bridge-extension.ts=) and is wired via =pilish-extra-args=
 =(-e <path>)= in =packages.el=, so exactly the sessions started by
 this Emacs frontend get the tools — no global =~/.pi/agent/
 extensions= pollution, no =INSIDE_EMACS= sniffing (Emacs does not set
 that variable for subprocesses on this setup, verified).
 
-Instance pinning: an around-advice on =pi-coding-agent--start-process=
+Instance pinning: an around-advice on =pilish--start-process=
 exports the Emacs server file to the pi process as =PI_EMACS_SERVER=;
 the extension passes it to =emacsclient -s=, so the tool drives
 exactly the Emacs instance that owns the session (correct with
 daemons or several Emacs running).
 
 Server guarantee: the channel needs a running server.  The layer
-defcustom =pi-coding-agent/enable-bridge= (default t) starts one at
+defcustom =pilish/enable-bridge= (default t) starts one at
 layer load when none is running (skips batch and daemon — daemons
 always serve).  Independent of =dotspacemacs-enable-server=.
 
@@ -337,7 +337,7 @@ completing-read, no y-or-n-p).  All failure paths return a JSON error
 object instead of signalling.  The bridge entry binds the grammar
 prompt state for the duration of the eval: essential grammars degrade
 to ='warn= (deferred to an interactive open or M-x
-pi-coding-agent-install-grammars) and the optional-grammar question is
+pilish-install-grammars) and the optional-grammar question is
 skipped — so a bridge call can never block on a minibuffer question.
 Interactive session opens keep their normal prompting.  The extension
 retries the emacsclient call once (3s backoff) to ride over slow first
@@ -346,7 +346,7 @@ setups or a transiently unresponsive server.
 Tool: =emacs_new_session= {=directory=, =name=?}.  Mirrors the
 =start-new-session= flow non-interactively: create+switch perspective
 («New session · path» or the name, label-locked when named), fresh
-=pi-coding-agent--setup-session= (no resume), registry entry, pi
+=pilish--setup-session= (no resume), registry entry, pi
 window layout.  Refuses a second unnamed session for a directory that
 already runs one (name opens a parallel named session).  Returns
 ={"ok": true, "persp": ..., "directory": ...}= or
@@ -363,18 +363,18 @@ file.
 
 | Key       | Command                                | Note                              |
 |-----------+----------------------------------------+-----------------------------------|
-| SPC a i i | pi-coding-agent/switch-session         | manager list (hub)                |
-| SPC a i I | pi-coding-agent/switch-session-in-dir  | switch current dir's sessions     |
-| SPC a i n | pi-coding-agent/start-new-session      | new with directory prompt         |
-| SPC a i m | pi-coding-agent/start-remote-session   | new on an ssh-config host (TRAMP) |
-| SPC a i ? | pi-coding-agent-menu                  | full transient menu               |
-| SPC a i d | pi-coding-agent/close-session          | close current session             |
-| SPC a i N | pi-coding-agent-new-session            | reset current (was on =n=)        |
-| SPC m p i | pi-coding-agent/switch-session         | mirror in chat/input mode leaders |
-| SPC m p I | pi-coding-agent/switch-session-in-dir  | mirror in chat/input mode leaders |
-| SPC m p m | pi-coding-agent/start-remote-session   | mirror in chat/input mode leaders |
+| SPC a i i | pilish/switch-session         | manager list (hub)                |
+| SPC a i I | pilish/switch-session-in-dir  | switch current dir's sessions     |
+| SPC a i n | pilish/start-new-session      | new with directory prompt         |
+| SPC a i m | pilish/start-remote-session   | new on an ssh-config host (TRAMP) |
+| SPC a i ? | pilish-menu                  | full transient menu               |
+| SPC a i d | pilish/close-session          | close current session             |
+| SPC a i N | pilish-new-session            | reset current (was on =n=)        |
+| SPC m p i | pilish/switch-session         | mirror in chat/input mode leaders |
+| SPC m p I | pilish/switch-session-in-dir  | mirror in chat/input mode leaders |
+| SPC m p m | pilish/start-remote-session   | mirror in chat/input mode leaders |
 
-=pi-coding-agent-new-session= (package, reset current) moves from =n= to =N=.
+=pilish-new-session= (package, reset current) moves from =n= to =N=.
 
 Reset is an in-place package operation: the perspective is kept, the chat
 buffer is cleared, and the pi process switches to a new JSONL session
@@ -383,14 +383,14 @@ file.  Other package commands switch the session file too: =resume=
 =open-session-file= (SPC a i s, switch_session), and =compact= (insurance;
 pi rewrites the same file today).  The package never tells the layer
 about any of these, so every such command carries =:after= advice
-(=pi-coding-agent//sync-registry-after-session-change=, installed by
-=pi-coding-agent//install-package-advices=) that issues its own
+(=pilish//sync-registry-after-session-change=, installed by
+=pilish//install-package-advices=) that issues its own
 =get_state= and re-syncs the registry's =:session-file= (preserving
 =:label-locked= / =:buffers=) plus the perspective label once the
 process has settled on the new file.  RPC ordering guarantees the
 =advice= get_state observes the switch (the session-changing RPC is
 written first, pi processes RPCs in order); the fork path is advised at
-=pi-coding-agent--execute-fork= because the public =fork= command only
+=pilish--execute-fork= because the public =fork= command only
 sends =get_fork_messages= and the =fork= RPC arrives later, after the
 user picks a message.  Without this the stale registry would keep
 listing the old file as opened, re-resume it on switch (undoing the
@@ -399,17 +399,17 @@ paths (completing-read cancelled, transition not ready, the layer's own
 open flow) and no-registry-entry paths are no-ops.  Commands that do not
 change the file need no sync: =reload= re-resumes the same cached file,
 =set-session-name= is name-only (label advice), =quit= kills the process
-only, and =pi-coding-agent= / =open-named-session= stay registry-less by
+only, and =pilish= / =open-named-session= stay registry-less by
 design (the session list falls back to scanning perspective buffers).
 
 ** Architecture
 
-- =pi-coding-agent= layer (self-contained): registry + orchestration
+- =pilish= layer (self-contained): registry + orchestration
   (capture/replay through persp's dispatch) + chat/input persp handlers +
   manager UI + close/new commands.  No dependency on my-persp.
 - =my-persp= private layer (optional, generic, zero coupling): common-buffer
   injection + terminal save/load for the auto-resume domain.  Listed before
-  =pi-coding-agent= in =dotspacemacs-configuration-layers=.
+  =pilish= in =dotspacemacs-configuration-layers=.
 - Registry file: cache directory (runtime state, not versioned dotfiles).
 
 ** Fail-open contract
@@ -439,18 +439,18 @@ All session-listing commands (=switch-session=, =switch-session-in-dir=,
 (D2):
 
 - Live sessions are always listed by their active pi chat buffers
-  (=pi-coding-agent//active-chat-buffers=), most recently used first.
+  (=pilish//active-chat-buffers=), most recently used first.
   The old persp-mapping-based =opened= flag could mark a session live
   whose perspective had been killed (stale registry) or whose process
   had died, and could miss sessions started outside the registry
   flow; the buffer scan cannot lie.  A dead-process perspective's
   session now lists as closed; picking it still revives the
   perspective (the registry maps it).
-- The builder =pi-coding-agent//session-targets= (dir filter,
+- The builder =pilish//session-targets= (dir filter,
   include-closed, exclude-current) feeds every picker; dispatch is
-  =pi-coding-agent//open-or-switch-target= (live :buffer ->
-  =pi-coding-agent//switch-to-live-buffer=, closed :entry ->
-  =pi-coding-agent//open-or-switch=).
+  =pilish//open-or-switch-target= (live :buffer ->
+  =pilish//switch-to-live-buffer=, closed :entry ->
+  =pilish//open-or-switch=).
 - Boundary: separate helm sources, header rows under completing-read
   (re-prompting when a header is selected).  Live always precedes
   closed; within a group the switch list sorts by
@@ -463,19 +463,19 @@ All session-listing commands (=switch-session=, =switch-session-in-dir=,
 
 ** D14. Remote (TRAMP) sessions via ssh-config hosts (2026)
 
-=pi-coding-agent/start-remote-session= (SPC a i m) gives the remote
+=pilish/start-remote-session= (SPC a i m) gives the remote
 flow a friendly entry point: pick a host from the ssh config, then
 run the ordinary new-session flow (D10) on that host.
 
 - The pi process itself runs on the remote host: the package's
-  =pi-coding-agent--start-process= already detects a TRAMP prefix in
+  =pilish--start-process= already detects a TRAMP prefix in
   the session directory and starts pi over ssh
   (=make-process= with =:file-handler= plus a ready-marker protocol
   that queues RPC stdin until the remote process prints its marker),
   and checks dependencies against the remote PATH.  No layer code
   needed for the transport; the layer only supplies the host
   discovery.
-- Hosts come from =pi-coding-agent/ssh-config-file= (default
+- Hosts come from =pilish/ssh-config-file= (default
   =~/.ssh/config=): plain (non-wildcard) =Host= patterns in config
   order, =Include= directives followed recursively (depth-capped,
   globs expanded, relative paths per ssh_config(5) against =~/.ssh=
@@ -499,7 +499,7 @@ run the ordinary new-session flow (D10) on that host.
   explicit pre-flight step with a =Connecting to HOST ...= message
   and a clear error naming the host, instead of inside
   =read-file-name='s default expansion where a hang is opaque.  An
-  ssh =ConnectTimeout= (=pi-coding-agent/remote-connect-timeout=,
+  ssh =ConnectTimeout= (=pilish/remote-connect-timeout=,
   default 20s) is injected via the =login-args= connection property
   — which REPLACES the method's args, so the full ssh arg list is
   rebuilt with =%h/=/%u/=/%p/=/%c= intact — because TRAMP's own
@@ -511,7 +511,7 @@ run the ordinary new-session flow (D10) on that host.
   route-preserving path helpers keep the TRAMP prefix byte-for-byte
   intact through the whole flow.
 - Closed-session scan on the remote host: the picker's scan
-  (=pi-coding-agent//session-entries=) takes an optional ROOT, and
+  (=pilish//session-entries=) takes an optional ROOT, and
   the remote flow scans =<prefix>~/.pi/agent/sessions/= — the remote
   pi's default agent dir; the local =PI_AGENT_DIR= override is not
   forwarded by TRAMP, so it is deliberately not applied remotely.
@@ -519,8 +519,8 @@ run the ordinary new-session flow (D10) on that host.
   closed list instead of blocking the picker.
 - Remote path canonicalization: session headers record the
   process-local cwd, so remote entries' =:cwd= is anchored to the
-  file's TRAMP prefix (=pi-coding-agent//entry-cwd=), and
-  =pi-coding-agent//normalized-dir= canonicalizes remote dirs through
+  file's TRAMP prefix (=pilish//entry-cwd=), and
+  =pilish//normalized-dir= canonicalizes remote dirs through
   TRAMP (=expand-file-name= expands the =~= home component).  One
   remote directory therefore compares equal regardless of =~=
   spelling, which keeps session identity (buffer names, the
@@ -535,20 +535,20 @@ run the ordinary new-session flow (D10) on that host.
   =#!/usr/bin/env node= shebang dies with exit 127 ("env: node: No
   such file or directory") right after the ready marker.  The
   mapping's NODE-PATH is therefore not just recorded but USED:
-  =pi-coding-agent//remote-spawn-executable= wraps the spawn in
+  =pilish//remote-spawn-executable= wraps the spawn in
   =sh -c 'PATH=<node-dir>:$PATH; export PATH; exec "$0" "$@"'= —
-  the same treatment =pi-coding-agent//remote-verify-pi= gives its
+  the same treatment =pilish//remote-verify-pi= gives its
   verification run — and composes with the package's own remote
   wrapper (ready marker + =exec "$0" "$@"=, whose =$0= becomes our
   =sh=).  Applied to every remote spawn via the
-  =pi-coding-agent//remote-spawn-start-process= advice on
-  =pi-coding-agent--start-process=, so opens from the session list
+  =pilish//remote-spawn-start-process= advice on
+  =pilish--start-process=, so opens from the session list
   (SPC a i i / SPC a i S), =SPC a i s= and revivals get it without
   binding anything themselves; hosts without a mapping spawn as
   before (fail-open).  The same advice drops local-only =-e=
-  extension pairs (=pi-coding-agent//remote-extra-args=): the remote
+  extension pairs (=pilish//remote-extra-args=): the remote
   pi aborts with "Extension path does not exist" otherwise.  Note
-  =pi-coding-agent-extra-args= needs its =defvar= declaration at the
+  =pilish-extra-args= needs its =defvar= declaration at the
   top of funcs.el (lexical-binding pitfall, file header): the first
   version of the start-remote-session filter was byte-compiled into
   an ineffective lexical binding and never filtered anything.
@@ -565,15 +565,15 @@ scope it describes (current session's host only) was widened into
 the per-host hub of D16, which supersedes it for =SPC a i i=.
 
 - Scope (as of D16, =SPC a i i= lists every host in
-  =pi-coding-agent//known-remote-prefixes=): a local context with no
+  =pilish//known-remote-prefixes=): a local context with no
   known remote hosts lists LOCAL sessions only — remote sessions
   never appear in the list, and no remote file is ever touched, so a
   dead remote host cannot hang the listing.  Used inside a remote
   (TRAMP) session, the list adds that host's sessions: its live chat
   buffers plus its closed session files, scanned on the remote host.
 - The scope is the current perspective's pi chat buffer's remote
-  prefix (=pi-coding-agent//current-session-remote-prefix=): no
-  session → local scope.  =pi-coding-agent//session-targets= takes a
+  prefix (=pilish//current-session-remote-prefix=): no
+  session → local scope.  =pilish//session-targets= takes a
   REMOTE-SCOPE: =local= (local sessions only), a TRAMP prefix string
   (local sessions plus that host's live buffers and closed files), a
   list of TRAMP prefixes (D16: the switch hub — local sessions plus
@@ -589,68 +589,68 @@ the per-host hub of D16, which supersedes it for =SPC a i i=.
   — the same session appeared in one picker but not the other, and a
   closed remote session could never be deleted at all.
 - Session metadata is read through
-  =pi-coding-agent//session-scan-info=, which resolves the package's
+  =pilish//session-scan-info=, which resolves the package's
   scanner at runtime with =fboundp=: the scanner name moved between
-  package releases (=pi-coding-agent-jsonl-read-session-info= →
+  package releases (=pilish-jsonl-read-session-info= →
   =pilish-jsonl-read-session-info=; older versions ship
-  =pi-coding-agent--session-metadata=).  Calling a missing name
+  =pilish--session-metadata=).  Calling a missing name
   directly made EVERY metadata read fail (the fail-open condition-case
   swallowed the void-function error per file), which silently emptied
   the closed-session lists — the scanner must be resolved, never
   assumed.
 - Connection gating: remote work in the listing path happens only
   over an already-established TRAMP connection
-  (=pi-coding-agent//tramp-connection-alive-p= — an I/O-free check:
+  (=pilish//tramp-connection-alive-p= — an I/O-free check:
   dissect the file name, look up the connection's ssh process via
   =tramp-get-connection-process=, =process-live-p=).  A disconnected
   host gets a background ssh probe
-  (=pi-coding-agent//remote-probe-async=, BatchMode + ConnectTimeout,
+  (=pilish//remote-probe-async=, BatchMode + ConnectTimeout,
   throttled per host) and contributes nothing to the list — the local
   part shows immediately; the host's closed sessions reappear in a
   later listing once the probe succeeds.  This is the listing-side
   answer to the same TRAMP untimeoutable-wait failure D14 probes
   around: TRAMP's own timeouts never fire while its wait loop holds
   the input, so remote I/O must simply never start from a listing.
-- Fail-open metadata: =pi-coding-agent//session-metadata-cached= and
-  =pi-coding-agent//session-file-cwd= never touch a remote file whose
+- Fail-open metadata: =pilish//session-metadata-cached= and
+  =pilish//session-file-cwd= never touch a remote file whose
   connection is not established — a stale cache entry is returned
   without mtime validation when present, otherwise the entry is
-  dropped; =pi-coding-agent//sync-labels= skips disconnected remote
+  dropped; =pilish//sync-labels= skips disconnected remote
   entries entirely (the stale-title fallback would rename the label
   to title-only, undone by the next connected listing).  The session
-  cache eviction in =pi-coding-agent//session-entries= is scoped to
+  cache eviction in =pilish//session-entries= is scoped to
   the scanned root, so local scans never wipe remote hosts' cached
   metadata.
 - Opening a remote session whose connection is not established probes
   the host with the bounded ssh deadline first
-  (=pi-coding-agent//ensure-remote-reachable= in
-  =pi-coding-agent//open-or-switch=): reachable/auth hosts fall
+  (=pilish//ensure-remote-reachable= in
+  =pilish//open-or-switch=): reachable/auth hosts fall
   through (TRAMP prompts interactively), unreachable hosts fail with
   a clear error instead of hanging.  The open also binds the host's
   verified executable mapping
-  (=pi-coding-agent//remote-executable-for= from
-  =pi-coding-agent/remote-executables=), matching
-  =pi-coding-agent/start-remote-session='s spawn, so sessions picked
+  (=pilish//remote-executable-for= from
+  =pilish/remote-executables=), matching
+  =pilish/start-remote-session='s spawn, so sessions picked
   from the scoped list spawn the remote pi correctly.
 - Switch-in-dir follows the directory: a remote DIR's listing scans
   that host's session root over the established connection
-  (=pi-coding-agent//remote-scan-root=), nothing remote when the host
+  (=pilish//remote-scan-root=), nothing remote when the host
   is unreachable.
-- Drive-by: =pi-coding-agent//remote-locate-executables= now deletes
+- Drive-by: =pilish//remote-locate-executables= now deletes
   stale mapping entries with =assoc-delete-all= — the previous
   =assq-delete-all= never matched string keys, so the saved custom
   accumulated a duplicate per-host entry per re-verification.
 
 ** D16. Switch-session hub: per-host remote sections (2026)
 
-=pi-coding-agent/switch-session= (SPC a i i) grows from "local, plus
+=pilish/switch-session= (SPC a i i) grows from "local, plus
 the current remote session's host" to a hub over every host the
 layer knows runs pi, and remote sessions are displayed grouped by
 host instead of mixed into the live/closed lists.
 
 - Scope: the hub lists local sessions plus the sessions of every
-  host in =pi-coding-agent//known-remote-prefixes= — hosts with
-  verified executables in =pi-coding-agent/remote-executables= (the
+  host in =pilish//known-remote-prefixes= — hosts with
+  verified executables in =pilish/remote-executables= (the
   persisted machines =start-remote-session= has located pi on),
   hosts of active pi chat buffers, and the current session's host.
   The enumeration is purely local (a custom read plus buffer state),
@@ -660,9 +660,9 @@ host instead of mixed into the live/closed lists.
   run pi, and each would fire a background probe) and scanning the
   session cache for remote keys (volatile per Emacs run, so hosts
   would disappear after a restart until reconnected).
-- Remote-scope lists: =pi-coding-agent//session-targets= now admits a
+- Remote-scope lists: =pilish//session-targets= now admits a
   list of TRAMP prefixes (exactly those hosts) besides the D15
-  string / =t= forms, via =pi-coding-agent//remote-scope-prefixes=;
+  string / =t= forms, via =pilish//remote-scope-prefixes=;
   close/delete still pass =t= and are unchanged.  Listing a scoped
   host keeps D15's contract — live chat buffers from local state,
   closed files scanned only over an already-established connection,
@@ -677,7 +677,7 @@ host instead of mixed into the live/closed lists.
   (=session-sort-opened= / =session-sort-closed=).  Sections with no
   candidates are omitted, so the classic two-group layout renders
   unchanged when nothing remote is in scope.
-- Picker generalization: =pi-coding-agent//pick-session-sections=
+- Picker generalization: =pilish//pick-session-sections=
   renders an ordered list of (NAME . ALIST) sections — one helm
   source or completing-read header row per section, boundaries
   between groups, empty sections skipped; the old live/closed

@@ -4,7 +4,7 @@
 ;; layer: common-buffer injection and terminal buffer save/restore.
 ;;
 ;; This layer declares no packages; it only configures persp-mode.  It is
-;; an optional dependency-free enhancement: the pi-coding-agent layer works
+;; an optional dependency-free enhancement: the pilish layer works
 ;; without it, and nothing imports it.
 ;;
 ;;; License: GPLv3

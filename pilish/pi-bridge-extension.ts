@@ -1,5 +1,5 @@
 // pi bridge extension: lets pi sessions started by the Emacs
-// pi-coding-agent frontend (pi --mode rpc subprocesses) drive the
+// pilish frontend (pi --mode rpc subprocesses) drive the
 // hosting Emacs.
 //
 // Tool: emacs_new_session — ask Emacs to open a brand-new pi session
@@ -10,7 +10,7 @@
 //
 // Channel: the extension shells out to `emacsclient -e` with a
 // base64-encoded JSON request.  The hosting Emacs evaluates
-// `pi-coding-agent/open-session-at-directory-bridge' (defined in the
+// `pilish/open-session-at-directory-bridge' (defined in the
 // layer's funcs.el) and returns a JSON string.  The layer ensures an
 // Emacs server is running and passes the server socket path to pi in
 // the PI_EMACS_SERVER environment variable, so emacsclient targets
@@ -26,7 +26,7 @@ export default function (pi: ExtensionAPI) {
     name: "emacs_new_session",
     label: "Open New Session in Emacs",
     description:
-      "Ask the hosting Emacs (pi-coding-agent frontend) to open a brand-new pi " +
+      "Ask the hosting Emacs (pilish frontend) to open a brand-new pi " +
       "session in DIRECTORY: Emacs creates a new perspective (workspace) for it, " +
       "starts the pi session there, applies the pi window layout, and switches to it. " +
       "An optional PROMPT is delivered to the fresh session as its first user message. " +
@@ -61,7 +61,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params, signal, _onUpdate) {
       if (!process.env[SERVER_ENV]) {
         throw new Error(
-          "This pi session is not hosted by the Emacs pi-coding-agent frontend (no " +
+          "This pi session is not hosted by the Emacs pilish frontend (no " +
             SERVER_ENV +
             " env var) — emacs_new_session only works for sessions started from Emacs.",
         );
@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI) {
         prompt: params.prompt ?? null,
       });
       const b64 = Buffer.from(payload, "utf8").toString("base64");
-      const lisp = `(pi-coding-agent/open-session-at-directory-bridge "${b64}")`;
+      const lisp = `(pilish/open-session-at-directory-bridge "${b64}")`;
 
       const args = ["-q", "--timeout=20"];
       if (process.env[SERVER_ENV]) {

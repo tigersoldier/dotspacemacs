@@ -1,6 +1,6 @@
-;;; funcs.el --- pi-coding-agent layer functions for Spacemacs. -*- lexical-binding: t; -*-
+;;; funcs.el --- pilish layer functions for Spacemacs. -*- lexical-binding: t; -*-
 ;;
-;; Small helpers that wire the `pi-coding-agent' Emacs frontend into
+;; Small helpers that wire the `pilish' Emacs frontend into
 ;; this Spacemacs setup. The heavy lifting (RPC process, rendering,
 ;; Evil keybindings, grammars) is all handled by the package itself.
 ;;
@@ -8,7 +8,7 @@
 
 ;;; Code:
 
-;; Tramp connection variables that `pi-coding-agent/start-remote-session'
+;; Tramp connection variables that `pilish/start-remote-session'
 ;; let-binds around its connection.  This file is byte-compiled with
 ;; `lexical-binding', and Tramp reads these variables dynamically deep
 ;; inside its connection code — without these declarations the byte
@@ -17,20 +17,20 @@
 (defvar tramp-connection-properties)
 (defvar tramp-process-connection-type)
 (defvar tramp-remote-path)
-(defvar pi-coding-agent-executable)
+(defvar pilish-executable)
 ;; Package variable read dynamically inside the package's spawn path
-;; (`pi-coding-agent--pi-command'); the remote flow let-binds it (and
-;; `pi-coding-agent--start-process' advice rebinds it) to drop local-only
+;; (`pilish--pi-command'); the remote flow let-binds it (and
+;; `pilish--start-process' advice rebinds it) to drop local-only
 ;; `-e' extensions.  Same lexical-binding caveat as above.
-(defvar pi-coding-agent-extra-args)
+(defvar pilish-extra-args)
 (declare-function tramp-make-tramp-file-name "tramp")
 
 ;; Absolute path to this layer's directory (resolved from funcs.el's
 ;; path). Used for the window layout file and PATH setup.
-(defvar pi-coding-agent--dir
+(defvar pilish--dir
   (file-name-directory (or load-file-name buffer-file-name)))
 
-(defun pi-coding-agent//add-pi-to-exec-path ()
+(defun pilish//add-pi-to-exec-path ()
   "Add directories containing the `pi' executable to `exec-path'.
 
 GUI-launched Emacs may not inherit the interactive shell's PATH, so
@@ -47,24 +47,24 @@ same commands the user's shell does."
           (push expanded exec-path))
         (setenv "PATH" (mapconcat #'identity exec-path ":"))))))
 
-(defun pi-coding-agent//ensure-purpose-config ()
+(defun pilish//ensure-purpose-config ()
   "Register the pi mode->purpose mappings and recompile purpose tables.
 
 `purpose-buffer-purpose' consults the compiled hash tables built by
 `purpose-compile-user-configuration' from the raw defcustoms, so
 plain `add-to-list' on `purpose-user-mode-purposes' is not enough.
 Runs from `purpose-mode-hook' once window-purpose is loaded, and
-again from `pi-coding-agent/layout' — the hook does not re-fire when
+again from `pilish/layout' — the hook does not re-fire when
 layers are reloaded via `SPC f e R', which would leave the compiled
 tables stale and the layout's buffer routing broken."
   (add-to-list 'purpose-user-mode-purposes
-               '(pi-coding-agent-chat-mode . pi-chat))
+               '(pilish-chat-mode . pi-chat))
   (add-to-list 'purpose-user-mode-purposes
-               '(pi-coding-agent-input-mode . pi-input))
+               '(pilish-input-mode . pi-input))
   (when (fboundp 'purpose-compile-user-configuration)
     (purpose-compile-user-configuration)))
 
-(defun pi-coding-agent//non-dummy-buffers-with-purpose (purpose)
+(defun pilish//non-dummy-buffers-with-purpose (purpose)
   "Return buffers with PURPOSE, excluding window-purpose dummy buffers.
 
 `purpose-buffers-with-purpose' includes the placeholder buffers
@@ -75,45 +75,45 @@ mistaken for real session buffers."
                   (string-prefix-p "*pu-dummy-" (buffer-name buf)))
                 (purpose-buffers-with-purpose purpose)))
 
-(defun pi-coding-agent/open-named-session (session)
+(defun pilish/open-named-session (session)
   "Start or switch to a pi session named SESSION in the current project.
 
-Unlike `pi-coding-agent' (which prompts for a name only with a prefix
+Unlike `pilish' (which prompts for a name only with a prefix
 arg), this always prompts, making multiple parallel sessions
 convenient from a leader-key binding."
   (interactive "sSession name: ")
-  (pi-coding-agent session))
+  (pilish session))
 
-(defun pi-coding-agent//most-recent-chat-buffer ()
+(defun pilish//most-recent-chat-buffer ()
   "Return the most recently used pi chat buffer, or nil."
   (cl-find-if (lambda (buf)
                 (and (buffer-live-p buf)
                      (with-current-buffer buf
-                       (derived-mode-p 'pi-coding-agent-chat-mode))))
+                       (derived-mode-p 'pilish-chat-mode))))
               (buffer-list)))
 
-(defun pi-coding-agent//live-session-buffers ()
+(defun pilish//live-session-buffers ()
   "Resolve the current session as (CHAT . INPUT), or nil.
 
-Like `pi-coding-agent', prefers the session for the current directory
+Like `pilish', prefers the session for the current directory
 (project root).  If that lookup misses — e.g. directory/project
 resolution differs from when the session was created — falls back to
 the most recently used existing session instead of letting the layout
 command spawn a second pi process.  Sessions whose process is dead are
-not returned: the launch path (`pi-coding-agent//launch-directory' +
-`pi-coding-agent--setup-session') should revive those.  Returns nil
+not returned: the launch path (`pilish//launch-directory' +
+`pilish--setup-session') should revive those.  Returns nil
 only when no usable session exists at all."
   (let* ((dir (condition-case nil
-                  (pi-coding-agent--session-directory)
+                  (pilish--session-directory)
                 (error nil)))
-         (chat (or (and dir (pi-coding-agent--find-session dir))
-                   (pi-coding-agent//most-recent-chat-buffer))))
+         (chat (or (and dir (pilish--find-session dir))
+                   (pilish//most-recent-chat-buffer))))
     (when chat
-      (let ((proc (buffer-local-value 'pi-coding-agent--process chat)))
+      (let ((proc (buffer-local-value 'pilish--process chat)))
         (when (and (processp proc) (process-live-p proc))
-          (cons chat (buffer-local-value 'pi-coding-agent--input-buffer chat)))))))
+          (cons chat (buffer-local-value 'pilish--input-buffer chat)))))))
 
-(defun pi-coding-agent//terminal-buffer-p ()
+(defun pilish//terminal-buffer-p ()
   "Return non-nil when the current buffer is a terminal emulator.
 
 Covers vterm, term/ansi-term (incl. multi-term), eshell and shell-mode
@@ -121,7 +121,7 @@ buffers — all of which keep `default-directory' in sync with the
 shell's current working directory."
   (derived-mode-p 'vterm-mode 'term-mode 'eshell-mode 'shell-mode))
 
-(defun pi-coding-agent//vterm-process-directory (proc)
+(defun pilish//vterm-process-directory (proc)
   "Return vterm process PROC's real working directory, or nil.
 Reads the `/proc/<pid>/cwd' symlink (Linux), which always reflects
 the shell's actual directory regardless of whether the shell emits
@@ -133,7 +133,7 @@ unusable, letting the caller fall back to `default-directory'."
               ((file-directory-p dir)))
     dir))
 
-(defun pi-coding-agent//terminal-directory ()
+(defun pilish//terminal-directory ()
   "Return the current terminal buffer's working directory, or nil.
 
 Terminal modes keep the buffer's `default-directory' in sync with the
@@ -146,19 +146,19 @@ instead.
 
 When the real cwd cannot be determined — vterm without a readable
 `/proc/<pid>/cwd', or a dead terminal process — the user is prompted
-to choose the launch directory (`pi-coding-agent//read-launch-directory'),
+to choose the launch directory (`pilish//read-launch-directory'),
 defaulting to the buffer's `default-directory', rather than silently
 using a possibly-stale directory.  Cancelling the prompt returns nil
 and aborts the launch."
   (if-let* ((proc (get-buffer-process (current-buffer)))
             (_ (process-live-p proc)))
       (if (derived-mode-p 'vterm-mode)
-          (or (pi-coding-agent//vterm-process-directory proc)
-              (pi-coding-agent//read-launch-directory))
-        (pi-coding-agent--route-preserving-expand-file-name default-directory))
-    (pi-coding-agent//read-launch-directory)))
+          (or (pilish//vterm-process-directory proc)
+              (pilish//read-launch-directory))
+        (pilish--route-preserving-expand-file-name default-directory))
+    (pilish//read-launch-directory)))
 
-(defun pi-coding-agent//read-launch-directory ()
+(defun pilish//read-launch-directory ()
   "Prompt for the directory to launch a pi agent in.
 
 Defaults to the current buffer's directory: the directory of the
@@ -168,9 +168,9 @@ visited file when there is one, else the buffer's `default-directory'."
                           default-directory))
          (dir (read-directory-name "Launch pi agent in directory: "
                                    default-dir default-dir t)))
-    (pi-coding-agent--route-preserving-expand-file-name dir)))
+    (pilish--route-preserving-expand-file-name dir)))
 
-(defun pi-coding-agent//launch-directory ()
+(defun pilish//launch-directory ()
   "Determine the directory for a new pi agent session.
 
 Called only when no live session could be found.  Inside pi chat/input
@@ -179,14 +179,14 @@ session in its recorded directory); inside a terminal buffer, uses the
 terminal's current working directory; elsewhere, prompts the user,
 defaulting to the current buffer's directory."
   (cond
-   ((derived-mode-p 'pi-coding-agent-chat-mode 'pi-coding-agent-input-mode)
-    (pi-coding-agent--session-directory))
-   ((pi-coding-agent//terminal-buffer-p)
-    (pi-coding-agent//terminal-directory))
+   ((derived-mode-p 'pilish-chat-mode 'pilish-input-mode)
+    (pilish--session-directory))
+   ((pilish//terminal-buffer-p)
+    (pilish//terminal-directory))
    (t
-    (pi-coding-agent//read-launch-directory))))
+    (pilish//read-launch-directory))))
 
-(defun pi-coding-agent//most-recent-non-pi-buffer (&optional restrict-to-persp)
+(defun pilish//most-recent-non-pi-buffer (&optional restrict-to-persp)
   "Return the most recently used buffer that is not a pi agent buffer.
 
 Skips minibuffer and Emacs-internal (space-prefixed) buffers, window-
@@ -202,22 +202,22 @@ command was run from a pi buffer)."
                        (not (string-prefix-p " " name))
                        (not (string-prefix-p "*pu-dummy-" name))
                        (not (with-current-buffer buf
-                              (derived-mode-p 'pi-coding-agent-chat-mode
-                                              'pi-coding-agent-input-mode)))
+                              (derived-mode-p 'pilish-chat-mode
+                                              'pilish-input-mode)))
                        (or (not restrict-to-persp)
                            (and (bound-and-true-p persp-mode)
                                 (persp-contain-buffer-p buf))))))
               (buffer-list)))
 
-(defun pi-coding-agent//window-layout-plist ()
-  "Build the pi window layout from `pi-coding-agent/layout-width-ratio'.
+(defun pilish//window-layout-plist ()
+  "Build the pi window layout from `pilish/layout-width-ratio'.
 
 Returns a window-purpose layout plist in the same format as
-`pi-coding-agent.window-layout': chat buffer over input buffer on the
-left, taking `pi-coding-agent/layout-width-ratio' of the frame width
+`pilish.window-layout': chat buffer over input buffer on the
+left, taking `pilish/layout-width-ratio' of the frame width
 (0.7 of the height for chat, 0.3 for input), and a general-purpose
 `edit' pane on the right that can hold any buffer."
-  (let* ((ratio (max 0.0 (min 1.0 pi-coding-agent/layout-width-ratio)))
+  (let* ((ratio (max 0.0 (min 1.0 pilish/layout-width-ratio)))
          ;; Reference size for the root and left-column nodes: leaf
          ;; :width/:height are frame fractions, inner nodes are sized
          ;; from their :edges relative to the root's (see
@@ -237,13 +237,13 @@ left, taking `pi-coding-agent/layout-width-ratio' of the frame width
                 :width (- 1.0 ratio) :height 1.0
                 :edges (list ratio 0.0 1.0 1.0)))))
 
-(defun pi-coding-agent/layout ()
+(defun pilish/layout ()
   "Start or focus a pi session and arrange it in the pi window layout.
 
-Applies the layout generated by `pi-coding-agent//window-layout-plist'
+Applies the layout generated by `pilish//window-layout-plist'
 (chat buffer top-left, input buffer bottom-left, and a
 general-purpose pane on the right that can hold any buffer); the left
-column takes `pi-coding-agent/layout-width-ratio' of the frame width.
+column takes `pilish/layout-width-ratio' of the frame width.
 
 The pi frontend uses raw `switch-to-buffer'/`split-window' calls, so
 the session must be started first and the layout applied afterwards:
@@ -251,61 +251,61 @@ the purpose-based buffer routing in `purpose-set-window-layout' then
 places the existing chat/input buffers into their dedicated windows.
 
 When no live session exists, a new one is launched in the directory
-chosen by `pi-coding-agent//launch-directory': inside pi chat/input
+chosen by `pilish//launch-directory': inside pi chat/input
 buffers the session's recorded directory is reused (reviving a dead
 process), inside a terminal buffer the terminal's current working
 directory is used, and elsewhere the user is prompted, defaulting to
 the current buffer's directory."
   (interactive)
   ;; The package is lazy-loaded via autoloads and the layer's init does
-  ;; not require it, so in a fresh Emacs the `pi-coding-agent--*'
+  ;; not require it, so in a fresh Emacs the `pilish--*'
   ;; internals below may be undefined until an autoloaded command has
   ;; run.  Load it explicitly to avoid void-function errors on the
   ;; launch path.
-  (unless (featurep 'pi-coding-agent)
-    (require 'pi-coding-agent))
+  (unless (featurep 'pilish)
+    (require 'pilish))
   (let ((saved-buffer (current-buffer))
-        (session (pi-coding-agent//live-session-buffers)))
-    (pi-coding-agent//ensure-purpose-config)
+        (session (pilish//live-session-buffers)))
+    (pilish//ensure-purpose-config)
     ;; Reuse the existing session when there is one — never start a new
     ;; pi process just to arrange windows.  Only when no session exists
     ;; at all is a new one launched, in the directory chosen by
-    ;; `pi-coding-agent//launch-directory' (the session's own directory
+    ;; `pilish//launch-directory' (the session's own directory
     ;; inside pi buffers, the terminal's cwd in terminal buffers, a user
-    ;; prompt elsewhere).  `pi-coding-agent--setup-session' revives dead
+    ;; prompt elsewhere).  `pilish--setup-session' revives dead
     ;; sessions and reuses existing ones for the chosen directory.
     ;; Any error in the launch path is reported verbatim (not swallowed)
     ;; so the real failure surfaces in the minibuffer/*Messages*.
     (unless session
       (let ((dir (condition-case err
-                     (pi-coding-agent//launch-directory)
+                     (pilish//launch-directory)
                    (error
-                    (user-error "pi-coding-agent/layout: %s"
+                    (user-error "pilish/layout: %s"
                                 (error-message-string err))))))
         (if (null dir)
-            (user-error "pi-coding-agent/layout: no directory chosen")
+            (user-error "pilish/layout: no directory chosen")
           (condition-case err
-              (let ((chat (pi-coding-agent--setup-session dir)))
+              (let ((chat (pilish--setup-session dir)))
                 (setq session (cons chat
                                     (buffer-local-value
-                                     'pi-coding-agent--input-buffer chat))))
+                                     'pilish--input-buffer chat))))
             (error
-             (user-error "pi-coding-agent/layout: %s"
+             (user-error "pilish/layout: %s"
                          (error-message-string err)))))))
     ;; Apply the generated layout (chat/input left, edit right); the
     ;; purpose-based buffer routing then places the existing chat/input
     ;; buffers into their dedicated windows.
-    (pi-coding-agent//apply-pi-layout (car session) (cdr session)
+    (pilish//apply-pi-layout (car session) (cdr session)
                                       saved-buffer nil)))
 
-(defun pi-coding-agent//apply-pi-layout (chat input saved-buffer
+(defun pilish//apply-pi-layout (chat input saved-buffer
                                               &optional restrict-to-persp)
   "Arrange the pi windows and focus the input buffer.
 
-Applies the layout generated by `pi-coding-agent//window-layout-plist'
+Applies the layout generated by `pilish//window-layout-plist'
 (chat buffer top-left, input buffer bottom-left, and a general-purpose
 pane on the right that can hold any buffer); the left column takes
-`pi-coding-agent/layout-width-ratio' of the frame width.  CHAT and INPUT
+`pilish/layout-width-ratio' of the frame width.  CHAT and INPUT
 fall back to the current pi-chat/pi-input purpose buffers when nil.
 
 SAVED-BUFFER is restored to the right (edit) pane when usable; when it
@@ -321,18 +321,18 @@ keep working."
   ;; depends on them, and they can be stale (e.g. when layer files were
   ;; reloaded with `SPC f e R' after startup, the purpose-mode hook
   ;; that normally refreshes them never re-fires).
-  (pi-coding-agent//ensure-purpose-config)
-  (purpose-set-window-layout (pi-coding-agent//window-layout-plist))
+  (pilish//ensure-purpose-config)
+  (purpose-set-window-layout (pilish//window-layout-plist))
   ;; Re-assert the session buffers in their panes and focus the input
   ;; window.  The purpose fill loop usually does this, but doing it
   ;; explicitly guarantees the panes show the current session's
   ;; buffers (and not dummy placeholders) regardless of fill-loop
   ;; timing.  Dummies are filtered out — see
-  ;; `pi-coding-agent//non-dummy-buffers-with-purpose'.
+  ;; `pilish//non-dummy-buffers-with-purpose'.
   (let ((chat (or chat
-                  (car (pi-coding-agent//non-dummy-buffers-with-purpose 'pi-chat))))
+                  (car (pilish//non-dummy-buffers-with-purpose 'pi-chat))))
         (input (or input
-                   (car (pi-coding-agent//non-dummy-buffers-with-purpose 'pi-input)))))
+                   (car (pilish//non-dummy-buffers-with-purpose 'pi-input)))))
     (dolist (w (window-list (selected-frame) nil (frame-first-window (selected-frame))))
       (cond ((eq (purpose-window-purpose w) 'pi-chat)
              (when chat
@@ -360,11 +360,11 @@ keep working."
                (cond ((and (buffer-live-p saved-buffer)
                            (not (eq cur-buf saved-buffer))
                            (not (with-current-buffer saved-buffer
-                                  (derived-mode-p 'pi-coding-agent-chat-mode
-                                                  'pi-coding-agent-input-mode))))
+                                  (derived-mode-p 'pilish-chat-mode
+                                                  'pilish-input-mode))))
                       (set-window-buffer w saved-buffer))
                      ((not (eq cur-buf saved-buffer))
-                      (when-let* ((recent (pi-coding-agent//most-recent-non-pi-buffer
+                      (when-let* ((recent (pilish//most-recent-non-pi-buffer
                                            restrict-to-persp)))
                         (set-window-buffer w recent))))))))
     ;; Drop dummy placeholder buffers that are no longer displayed.
@@ -384,23 +384,23 @@ keep working."
 ;; specs captured through persp's own save/load dispatch.  See
 ;; DESIGN.org for the full decision record.
 
-(defcustom pi-coding-agent/session-root "~/.pi/agent/sessions/"
+(defcustom pilish/session-root "~/.pi/agent/sessions/"
   "Directory containing pi session JSONL files, organized by directory."
   :type 'directory
-  :group 'pi-coding-agent)
+  :group 'pilish)
 
-(defun pi-coding-agent//session-root ()
+(defun pilish//session-root ()
   "Return the pi session root, following PI_AGENT_DIR when set.
 pi resolves its agent directory from the PI_AGENT_DIR environment
 variable; sessions then live under <PI_AGENT_DIR>/sessions instead of
-the `pi-coding-agent/session-root' default, so the session scan follows
+the `pilish/session-root' default, so the session scan follows
 the same environment."
   (if-let* ((agent-dir (getenv "PI_AGENT_DIR"))
             ((not (string-empty-p agent-dir))))
       (expand-file-name "sessions" agent-dir)
-    (expand-file-name pi-coding-agent/session-root)))
+    (expand-file-name pilish/session-root)))
 
-(defcustom pi-coding-agent/session-sort-opened 'dir-then-name
+(defcustom pilish/session-sort-opened 'dir-then-name
   "Sort order for live sessions in the switch-session list.
 Live sessions are the active pi chat buffers.  `dir-then-name' sorts
 by session directory, then by title (the default); `alpha' sorts by
@@ -408,38 +408,38 @@ title only, `chrono' by last modification (newest first)."
   :type '(choice (const :tag "Directory, then name" dir-then-name)
                  (const :tag "Alphabetical" alpha)
                  (const :tag "Chronological" chrono))
-  :group 'pi-coding-agent)
+  :group 'pilish)
 
-(defcustom pi-coding-agent/session-sort-closed 'chrono
+(defcustom pilish/session-sort-closed 'chrono
   "Sort order for closed sessions in the switch-session list.
 `chrono' sorts by last modification, newest first (descending — the
 default); `alpha' sorts by title (lexical)."
   :type '(choice (const :tag "Chronological (newest first)" chrono)
                  (const :tag "Alphabetical" alpha))
-  :group 'pi-coding-agent)
+  :group 'pilish)
 
-(defcustom pi-coding-agent/ssh-config-file "~/.ssh/config"
+(defcustom pilish/ssh-config-file "~/.ssh/config"
   "SSH configuration file scanned for remote-host candidates.
-`pi-coding-agent/start-remote-session' reads the plain (non-wildcard)
+`pilish/start-remote-session' reads the plain (non-wildcard)
 `Host' entries from this file — following `Include' directives — and
 turns each into a TRAMP directory (/ssh:HOST:~)."
   :type 'file
-  :group 'pi-coding-agent)
+  :group 'pilish)
 
-(defcustom pi-coding-agent/remote-executables nil
+(defcustom pilish/remote-executables nil
   "Per-host mapping of verified remote pi and node executables.
 Alist of (HOST . (PI-PATH . NODE-PATH)): PI-PATH is the absolute
 path of the pi binary on that remote host, NODE-PATH the node
 binary that pi's shebang (`#!/usr/bin/env node') resolves through —
 nil when node only needs to be found through PATH.  The mapping is
-filled in automatically by `pi-coding-agent/start-remote-session'
+filled in automatically by `pilish/start-remote-session'
 once the executables have been located and verified working on the
 host (the user is asked to locate them when the search fails), and
 is consulted again on later sessions to skip the search.  Sessions
-started through `pi-coding-agent/start-remote-session' — and every
-remote spawn of `pi-coding-agent--start-process' (see
-`pi-coding-agent//remote-spawn-start-process') — bind
-`pi-coding-agent-executable' to a wrapper that exports NODE-PATH's
+started through `pilish/start-remote-session' — and every
+remote spawn of `pilish--start-process' (see
+`pilish//remote-spawn-start-process') — bind
+`pilish-executable' to a wrapper that exports NODE-PATH's
 directory into the spawn PATH, making the pi spawn independent of
 the remote PATH (both for finding pi and for resolving pi's
 `#!/usr/bin/env node' shebang)."
@@ -447,11 +447,11 @@ the remote PATH (both for finding pi and for resolving pi's
                 :value-type (cons (string :tag "pi executable")
                                   (choice (string :tag "node executable")
                                           (const :tag "found through PATH" nil))))
-  :group 'pi-coding-agent)
+  :group 'pilish)
 
-(defcustom pi-coding-agent/remote-connect-timeout 20
+(defcustom pilish/remote-connect-timeout 20
   "Timeout in seconds for remote connections in
-`pi-coding-agent/start-remote-session'.
+`pilish/start-remote-session'.
 Before opening TRAMP, the host is probed with an asynchronous `ssh'
 that is hard-killed after this many seconds; this bounds failure
 modes that TRAMP cannot, because TRAMP's wait loop suspends timer
@@ -463,28 +463,28 @@ same value), so an unreachable or unresponsive host fails with a
 clear error instead of hanging on \"Opening connection ...\".  nil
 keeps TRAMP's own defaults."
   :type '(choice (const :tag "TRAMP defaults" nil) natnum)
-  :group 'pi-coding-agent)
+  :group 'pilish)
 
-(defvar pi-coding-agent//registry nil
+(defvar pilish//registry nil
   "Alist mapping perspective name to a session-entry plist.
 Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
 :buffers SPECS)).  SPECS are persp savelist specs captured through
 `persp-save-buffer-functions'.")
 
-(defvar pi-coding-agent//registry-file
-  (expand-file-name "pi-coding-agent/registry.el" spacemacs-cache-directory)
+(defvar pilish//registry-file
+  (expand-file-name "pilish/registry.el" spacemacs-cache-directory)
   "File the session registry is persisted to (runtime state, not dotfiles).")
 
-(defvar pi-coding-agent//session-cache (make-hash-table :test 'equal)
+(defvar pilish//session-cache (make-hash-table :test 'equal)
   "Cache of session-file -> (mtime . metadata plist).")
 
-(defvar pi-coding-agent//renaming-self nil
+(defvar pilish//renaming-self nil
   "Non-nil while this layer renames a perspective itself.")
 
-(defvar pi-coding-agent-session-history nil
+(defvar pilish-session-history nil
   "History of sessions selected by the pi session pickers.")
 
-(defun pi-coding-agent//plain-string (string)
+(defun pilish//plain-string (string)
   "Return STRING without text properties, or nil for nil.
 Picker candidates (helm) hand back strings carrying e.g. `helm-ff'
 properties, and those strings end up as perspective names and
@@ -497,47 +497,47 @@ keeps the bookkeeping property-blind; nil-safe so plist getters can
 be passed through directly."
   (and string (substring-no-properties string)))
 
-(defun pi-coding-agent//registry-entry (persp-name)
+(defun pilish//registry-entry (persp-name)
   "Return the registry entry of perspective PERSP-NAME, or nil.
 Names are compared property-stripped (see
-`pi-coding-agent//plain-string'), so an entry whose key was stored
+`pilish//plain-string'), so an entry whose key was stored
 with completion properties still matches the plain perspective name
 and vice versa."
   (and persp-name
        (cl-find-if
         (lambda (e)
-          (equal (pi-coding-agent//plain-string (car e))
-                 (pi-coding-agent//plain-string persp-name)))
-        pi-coding-agent//registry)))
+          (equal (pilish//plain-string (car e))
+                 (pilish//plain-string persp-name)))
+        pilish//registry)))
 
-(defun pi-coding-agent//registry-load ()
-  "Load the session registry from `pi-coding-agent//registry-file'.
+(defun pilish//registry-load ()
+  "Load the session registry from `pilish//registry-file'.
 Fail-open: any read/parse error yields an empty registry with a
 message.  Keys and session files are property-stripped on load —
 earlier releases persisted helm-pickup properties into both, and a
 property-laden `:session-file' is exactly what made deleting such a
 session resolve a path no `equal' lookup could match again."
-  (setq pi-coding-agent//registry
+  (setq pilish//registry
         (condition-case err
-            (let ((data (and (file-exists-p pi-coding-agent//registry-file)
+            (let ((data (and (file-exists-p pilish//registry-file)
                              (with-temp-buffer
-                               (insert-file-contents pi-coding-agent//registry-file)
+                               (insert-file-contents pilish//registry-file)
                                (ignore-errors (read (buffer-string)))))))
               (pcase data
-                (`(pi-coding-agent-registry 1 ,entries)
+                (`(pilish-registry 1 ,entries)
                  (if (and (listp entries)
                           (cl-every (lambda (e)
                                       (and (consp e) (stringp (car e))
                                            (listp (cdr e))))
                                     entries))
                      (mapcar (lambda (e)
-                               (cons (pi-coding-agent//plain-string (car e))
+                               (cons (pilish//plain-string (car e))
                                      (let ((file (plist-get (cdr e)
                                                             :session-file)))
                                        (if file
                                            (plist-put (copy-sequence (cdr e))
                                                       :session-file
-                                                      (pi-coding-agent//plain-string
+                                                      (pilish//plain-string
                                                        file))
                                          (cdr e)))))
                              entries)
@@ -549,206 +549,206 @@ session resolve a path no `equal' lookup could match again."
                     (error-message-string err))
            nil))))
 
-(defun pi-coding-agent//registry-save ()
+(defun pilish//registry-save ()
   "Persist the session registry atomically (temp file + rename)."
   (condition-case err
-      (let ((tmp (concat pi-coding-agent//registry-file ".tmp")))
-        (make-directory (file-name-directory pi-coding-agent//registry-file) t)
+      (let ((tmp (concat pilish//registry-file ".tmp")))
+        (make-directory (file-name-directory pilish//registry-file) t)
         (with-temp-file tmp
-          (prin1 (list 'pi-coding-agent-registry 1 pi-coding-agent//registry)
+          (prin1 (list 'pilish-registry 1 pilish//registry)
                  (current-buffer)))
-        (rename-file tmp pi-coding-agent//registry-file t))
+        (rename-file tmp pilish//registry-file t))
     (error
      (message "pi: failed to save registry: %s"
               (error-message-string err)))))
 
-(defun pi-coding-agent//registry-put (persp-name &rest plist)
+(defun pilish//registry-put (persp-name &rest plist)
   "Add or update the registry entry for PERSP-NAME with PLIST.
 The name and the `:session-file' slot are stored property-stripped
-(see `pi-coding-agent//plain-string')."
+(see `pilish//plain-string')."
   (let ((plist (if (plist-member plist :session-file)
                    (plist-put plist :session-file
-                              (pi-coding-agent//plain-string
+                              (pilish//plain-string
                                (plist-get plist :session-file)))
                  plist))
-        (entry (pi-coding-agent//registry-entry persp-name)))
+        (entry (pilish//registry-entry persp-name)))
     (if entry
         (setcdr entry plist)
-      (push (cons (pi-coding-agent//plain-string persp-name) plist)
-            pi-coding-agent//registry))))
+      (push (cons (pilish//plain-string persp-name) plist)
+            pilish//registry))))
 
-(defun pi-coding-agent//registry-remove (persp-name)
+(defun pilish//registry-remove (persp-name)
   "Remove the registry entry for PERSP-NAME.
 The comparison is property-stripped (see
-`pi-coding-agent//plain-string'): an entry keyed by a
+`pilish//plain-string'): an entry keyed by a
 completion-property-laden name must still be removed when the
 session is deleted, or it lingers pointing at the deleted file."
-  (setq pi-coding-agent//registry
+  (setq pilish//registry
         (cl-delete-if
          (lambda (e)
-           (equal (pi-coding-agent//plain-string (car e))
-                  (pi-coding-agent//plain-string persp-name)))
-         pi-coding-agent//registry)))
+           (equal (pilish//plain-string (car e))
+                  (pilish//plain-string persp-name)))
+         pilish//registry)))
 
-(defun pi-coding-agent//registry-persp-name-for-file (file)
+(defun pilish//registry-persp-name-for-file (file)
   "Return the perspective name registered for session FILE, or nil.
 Files are compared property-stripped (see
-`pi-coding-agent//plain-string')."
-  (setq file (pi-coding-agent//plain-string file))
+`pilish//plain-string')."
+  (setq file (pilish//plain-string file))
   (car (cl-find-if
         (lambda (e)
-          (equal (pi-coding-agent//plain-string
+          (equal (pilish//plain-string
                   (plist-get (cdr e) :session-file))
                  file))
-        pi-coding-agent//registry)))
+        pilish//registry)))
 
 ;; ---------------------------------------------------------------------
 ;; Perspective naming and label sync
 
-(defun pi-coding-agent//truncate (string width)
+(defun pilish//truncate (string width)
   "Truncate STRING to WIDTH columns with an ellipsis."
   (if (> (length string) width)
       (truncate-string-to-width string width nil nil t)
     string))
 
-(defun pi-coding-agent//session-file-cwd (file)
+(defun pilish//session-file-cwd (file)
   "Return FILE's recorded cwd, or nil.
 Remote (TRAMP) FILEs are only read over an already-established
-connection (`pi-coding-agent//tramp-connection-alive-p', an I/O-free
+connection (`pilish//tramp-connection-alive-p', an I/O-free
 check) — an unreachable host must never block a listing; nil is
 returned then."
   (condition-case nil
-      (and (or (not (pi-coding-agent--remote-prefix-for-path file))
-               (pi-coding-agent//tramp-connection-alive-p file))
-           (pi-coding-agent--session-file-cwd-or-error file))
+      (and (or (not (pilish--remote-prefix-for-path file))
+               (pilish//tramp-connection-alive-p file))
+           (pilish--session-file-cwd-or-error file))
     (error nil)))
 
-(defun pi-coding-agent//file-uuid-prefix (file)
+(defun pilish//file-uuid-prefix (file)
   "Return a short (8-char) uuid prefix for session FILE, or nil."
   (when (string-match "_\\([0-9a-f-]\\{8\\}\\)" file)
     (match-string 1 file)))
 
-(defun pi-coding-agent//make-persp-label (title file)
+(defun pilish//make-persp-label (title file)
   "Build a perspective label \"TITLE · abbrev-path\" for session FILE."
   (let ((abbrev (and file
-                     (when-let* ((dir (pi-coding-agent//session-file-cwd file)))
+                     (when-let* ((dir (pilish//session-file-cwd file)))
                        (abbreviate-file-name (directory-file-name dir))))))
     (if abbrev
         (format "%s · %s" title abbrev)
       title)))
 
-(defun pi-coding-agent//unique-persp-name (base &optional file)
+(defun pilish//unique-persp-name (base &optional file)
   "Return BASE, uniquified with a short uuid/timestamp suffix on collision.
 `persp-get-by-name-and-exists' returns an (EXISTS . PERSP) cons."
   (if (car (persp-get-by-name-and-exists base))
       (format "%s %s" base
-              (or (and file (pi-coding-agent//file-uuid-prefix file))
+              (or (and file (pilish//file-uuid-prefix file))
                   (format-time-string "%H:%M:%S")))
     base))
 
-(defun pi-coding-agent//rename-persp (old-name new-name)
+(defun pilish//rename-persp (old-name new-name)
   "Rename perspective OLD-NAME to NEW-NAME, updating the registry key."
   (when-let* ((persp (persp-get-by-name old-name))
               ((persp-p persp)))
-    (let ((pi-coding-agent//renaming-self t))
+    (let ((pilish//renaming-self t))
       (persp-rename new-name persp))
-    (pi-coding-agent//registry-save)))
+    (pilish//registry-save)))
 
-(defun pi-coding-agent//on-persp-renamed (_persp old-name new-name)
+(defun pilish//on-persp-renamed (_persp old-name new-name)
   "Keep the registry key in sync when a pi perspective is renamed.
 A rename not done by this layer (i.e. the user via SPC l r) locks the
 label so the session title no longer auto-syncs to it."
-  (when-let* ((entry (pi-coding-agent//registry-entry old-name)))
-    (unless pi-coding-agent//renaming-self
+  (when-let* ((entry (pilish//registry-entry old-name)))
+    (unless pilish//renaming-self
       (setcdr entry (plist-put (cdr entry) :label-locked t)))
     (setcar entry new-name)
-    (pi-coding-agent//registry-save)))
+    (pilish//registry-save)))
 
-(defun pi-coding-agent//desired-label-title (file)
+(defun pilish//desired-label-title (file)
   "Return the title a session label should have, or nil when undecidable.
 Session /name wins, then the first-message snippet, then \"New session\".
-Whitespace runs are collapsed (see `pi-coding-agent//collapse-whitespace')
+Whitespace runs are collapsed (see `pilish//collapse-whitespace')
 so perspective names never contain newlines."
-  (when-let* ((meta (pi-coding-agent//session-metadata-cached file)))
-    (or (let ((name (pi-coding-agent//collapse-whitespace
+  (when-let* ((meta (pilish//session-metadata-cached file)))
+    (or (let ((name (pilish//collapse-whitespace
                      (plist-get meta :session-name))))
           (and (stringp name) name))
-        (let ((fm (pi-coding-agent//collapse-whitespace
+        (let ((fm (pilish//collapse-whitespace
                    (plist-get meta :first-message))))
-          (and (stringp fm) (pi-coding-agent//truncate fm 40)))
+          (and (stringp fm) (pilish//truncate fm 40)))
         "New session")))
 
-(defun pi-coding-agent//registry-fill-session-file (persp-name plist)
+(defun pilish//registry-fill-session-file (persp-name plist)
   "Return PLIST's :session-file, resolving and persisting it when nil.
 Fresh sessions register with :session-file nil because pi creates the
 JSONL file only on the first assistant response; once the perspective's
 pi chat buffer settles on a file, it is recorded in the registry entry
 and persisted, so the session can be listed as opened and switched to
 instead of re-opened.  The file is stored property-stripped (see
-`pi-coding-agent//plain-string').  Returns nil while still
+`pilish//plain-string').  Returns nil while still
 unresolvable."
   (or (plist-get plist :session-file)
       (when-let* ((persp (persp-get-by-name persp-name))
                   ((perspective-p persp))
-                  (chat (pi-coding-agent//chat-buffer-in-persp persp))
-                  (f (plist-get (buffer-local-value 'pi-coding-agent--state chat)
+                  (chat (pilish//chat-buffer-in-persp persp))
+                  (f (plist-get (buffer-local-value 'pilish--state chat)
                                 :session-file))
                   ((stringp f))
                   ((not (string-empty-p f))))
-        (when-let* ((entry (pi-coding-agent//registry-entry persp-name)))
+        (when-let* ((entry (pilish//registry-entry persp-name)))
           (setcdr entry (plist-put plist :session-file
-                                   (pi-coding-agent//plain-string f)))
-          (pi-coding-agent//registry-save))
+                                   (pilish//plain-string f)))
+          (pilish//registry-save))
         f)))
 
-(defun pi-coding-agent//sync-labels ()
+(defun pilish//sync-labels ()
   "Lazily sync perspective labels with their session titles.
 Sessions without a /name keep the first-message snippet; perspectives
 renamed by the user are skipped.  Fresh sessions whose registry
 :session-file is still nil are resolved from their chat buffer state
 first, so the placeholder label updates to the first-message snippet.
 Called from the session list and before switching."
-  (dolist (entry pi-coding-agent//registry)
+  (dolist (entry pilish//registry)
     (let ((name (car entry)) (plist (cdr entry)))
-      (pi-coding-agent//registry-fill-session-file name plist)
+      (pilish//registry-fill-session-file name plist)
       (when (and (not (plist-get plist :label-locked))
                  (perspective-p (persp-get-by-name name))
                  (plist-get plist :session-file)
                  ;; Never rename from a remote file whose connection is
                  ;; down: the metadata guard would fall back to a stale
-                 ;; title while `pi-coding-agent//make-persp-label'
+                 ;; title while `pilish//make-persp-label'
                  ;; loses the directory part (its cwd read is
                  ;; connection-gated too), and the next connected
                  ;; listing would rename the label right back.
-                 (or (not (pi-coding-agent--remote-prefix-for-path
+                 (or (not (pilish--remote-prefix-for-path
                            (plist-get plist :session-file)))
-                     (pi-coding-agent//tramp-connection-alive-p
+                     (pilish//tramp-connection-alive-p
                       (plist-get plist :session-file))))
-        (when-let* ((title (pi-coding-agent//desired-label-title
+        (when-let* ((title (pilish//desired-label-title
                             (plist-get plist :session-file)))
-                    (new-name (pi-coding-agent//make-persp-label
+                    (new-name (pilish//make-persp-label
                                title (plist-get plist :session-file)))
                     ((not (string= new-name name))))
-          (pi-coding-agent//rename-persp name new-name))))))
+          (pilish//rename-persp name new-name))))))
 
-(defun pi-coding-agent//after-set-session-name (&rest args)
+(defun pilish//after-set-session-name (&rest args)
   "Immediately sync the current perspective label after a session rename.
-The lazy scan in `pi-coding-agent//sync-labels' is the backstop (e.g.
+The lazy scan in `pilish//sync-labels' is the backstop (e.g.
 renames done via the /name slash command)."
   (let ((name (car args)))
     (when (and (stringp name)
                (not (string-empty-p (string-trim name)))
                (bound-and-true-p persp-mode))
       (let* ((persp-name (safe-persp-name (get-current-persp)))
-             (entry (pi-coding-agent//registry-entry persp-name)))
+             (entry (pilish//registry-entry persp-name)))
         (when (and entry (not (plist-get (cdr entry) :label-locked))
-                   (pi-coding-agent//registry-fill-session-file
+                   (pilish//registry-fill-session-file
                     (car entry) (cdr entry)))
-          (let ((new-name (pi-coding-agent//make-persp-label
+          (let ((new-name (pilish//make-persp-label
                            (string-trim name)
                            (plist-get (cdr entry) :session-file))))
             (unless (string= new-name persp-name)
-              (pi-coding-agent//rename-persp persp-name new-name))))))))
+              (pilish//rename-persp persp-name new-name))))))))
 
 ;; ---------------------------------------------------------------------
 ;; Session-change sync (package commands that switch the session file)
@@ -756,19 +756,19 @@ renames done via the /name slash command)."
 ;; Several package commands switch the live pi session to a DIFFERENT
 ;; session file without telling the layer:
 ;;
-;; - `pi-coding-agent-new-session' (SPC a i N, , n, menu "new", /new):
+;; - `pilish-new-session' (SPC a i N, , n, menu "new", /new):
 ;;   resets in place -> new_session RPC -> brand-new file;
-;; - `pi-coding-agent-resume-session' (menu "r", C-c C-r, /resume):
+;; - `pilish-resume-session' (menu "r", C-c C-r, /resume):
 ;;   switch_session RPC -> selected file;
-;; - `pi-coding-agent--execute-fork' (menu "f", fork-at-point, /fork):
+;; - `pilish--execute-fork' (menu "f", fork-at-point, /fork):
 ;;   fork RPC -> forked file (the frontend branches to a new session);
-;; - `pi-coding-agent-open-session-file' (SPC a i s): switch_session RPC
+;; - `pilish-open-session-file' (SPC a i s): switch_session RPC
 ;;   to the chosen file;
-;; - `pi-coding-agent-compact' (menu "c", /compact): compact RPC —
+;; - `pilish-compact' (menu "c", /compact): compact RPC —
 ;;   pi rewrites the same file today, but if a future pi changes the
 ;;   file this keeps the registry honest; otherwise it is a no-op;
-;; - `pi-coding-agent' itself: the main entry starts a NAMED session
-;;   when given a name (`pi-coding-agent/open-named-session', SPC
+;; - `pilish' itself: the main entry starts a NAMED session
+;;   when given a name (`pilish/open-named-session', SPC
 ;;   a i S, calls it with the name), moving the live session to a new
 ;;   file in the same directory.  Without the sync the registry entry
 ;;   keeps pointing at the old file — the delete then resolved that
@@ -780,8 +780,8 @@ renames done via the /name slash command)."
 ;; session file after any of these.  That staleness would:
 ;;
 ;; - list the old file as opened (●) and the new one as closed (○) in
-;;   `pi-coding-agent/switch-session';
-;; - make `pi-coding-agent//switch-to-session' re-resume the old file
+;;   `pilish/switch-session';
+;; - make `pilish//switch-to-session' re-resume the old file
 ;;   into the shared per-directory process when the stale "current"
 ;;   entry is picked, undoing the switch;
 ;; - freeze the perspective label on the old session's title (the lazy
@@ -797,7 +797,7 @@ renames done via the /name slash command)."
 ;; transition not ready, layer's own open flow which already registry-
 ;; put the file) and no-registry-entry paths are no-ops.
 
-(defun pi-coding-agent//persp-containing-buffer (buf)
+(defun pilish//persp-containing-buffer (buf)
   "Return the first live perspective containing BUFFER, or nil.
 The nil (Default) pseudo-perspective must be excluded explicitly:
 `persp-get-by-name' returns nil for it, `persp-p' treats nil as a valid
@@ -814,15 +814,15 @@ return nil.  The strict `perspective-p' predicate excludes it."
                        (persp-names))))
       (persp-get-by-name name))))
 
-(defun pi-coding-agent//sync-registry-after-session-change (&rest _)
+(defun pilish//sync-registry-after-session-change (&rest _)
   "Re-sync the registry + label after a package session switch.
 
 Runs as :after advice on the package commands that switch the live pi
-session to another session file (`pi-coding-agent' — also the named-
-session entry via `pi-coding-agent/open-named-session',
-`pi-coding-agent-new-session', `pi-coding-agent-resume-session',
-`pi-coding-agent--execute-fork', `pi-coding-agent-open-session-file',
-`pi-coding-agent-compact').
+session to another session file (`pilish' — also the named-
+session entry via `pilish/open-named-session',
+`pilish-new-session', `pilish-resume-session',
+`pilish--execute-fork', `pilish-open-session-file',
+`pilish-compact').
 
 Resolves the owning perspective from the session's chat buffer (not
 the current one — an async switch can move the user elsewhere before
@@ -832,64 +832,64 @@ perspective label.  The chat buffer may be shared by several
 perspectives of one directory (D6); the owning perspective's entry is
 updated because that is the perspective whose session identity the
 buffer carries, while the other perspectives' entries are the existing
-drift case handled by `pi-coding-agent//switch-to-session'."
+drift case handled by `pilish//switch-to-session'."
   (when (bound-and-true-p persp-mode)
-    (let* ((chat (pi-coding-agent--get-chat-buffer))
-           (proc (and chat (buffer-local-value 'pi-coding-agent--process chat))))
+    (let* ((chat (pilish--get-chat-buffer))
+           (proc (and chat (buffer-local-value 'pilish--process chat))))
       (when (and (bufferp chat) (buffer-live-p chat)
                  (processp proc) (process-live-p proc))
-        (let ((source (pi-coding-agent//persp-containing-buffer chat)))
-          (pi-coding-agent--rpc-async proc '(:type "get_state")
+        (let ((source (pilish//persp-containing-buffer chat)))
+          (pilish--rpc-async proc '(:type "get_state")
             (lambda (response)
               (when (and (eq (plist-get response :success) t)
                          (buffer-live-p chat)
                          (process-live-p proc)
                          (bound-and-true-p persp-mode))
-                (let* ((dir (pi-coding-agent--chat-session-directory chat))
+                (let* ((dir (pilish--chat-session-directory chat))
                        (file (plist-get
-                              (pi-coding-agent--extract-state-from-response
+                              (pilish--extract-state-from-response
                                response dir)
                               :session-file)))
                   (when (and (stringp file) (not (string-empty-p file)))
                     (let* ((persp (or source (get-current-persp)))
                            (name (and (perspective-p persp)
                                       (safe-persp-name persp)))
-                           (entry (pi-coding-agent//registry-entry name)))
+                           (entry (pilish//registry-entry name)))
                       (when (and entry
                                  (not (equal
                                        (plist-get (cdr entry) :session-file)
                                        file)))
-                        (pi-coding-agent//registry-put
+                        (pilish//registry-put
                          name
                          :session-file file
                          :label-locked (plist-get (cdr entry) :label-locked)
                          :buffers (plist-get (cdr entry) :buffers))
-                        (pi-coding-agent//registry-save)
+                        (pilish//registry-save)
                         ;; Re-derive the label from the settled file's
                         ;; metadata: a brand-new session returns to the
                         ;; "New session · path" placeholder (first
                         ;; message re-syncs it via the lazy scan), a
                         ;; resumed/forked session takes its title.
-                        (pi-coding-agent//sync-labels)))))))))))))
+                        (pilish//sync-labels)))))))))))))
 
 ;; ---------------------------------------------------------------------
 ;; Session scanning and the switch-session list
 
-(defun pi-coding-agent//session-scan-info (file)
+(defun pilish//session-scan-info (file)
   "Return package-scanned session info for FILE, or nil.
 Delegates to the installed package's canonical session scanner and
 normalizes to (:first-message :message-count :session-name :cwd).
-The scanner moved between releases — `pi-coding-agent-jsonl-read-
+The scanner moved between releases — `pilish-jsonl-read-
 session-info' in intermediate versions, `pilish-jsonl-read-session-
-info' after the pilish rename, `pi-coding-agent--session-metadata'
+info' after the pilish rename, `pilish--session-metadata'
 (whose plist already is the layer dialect) in older ones — so the
 name is resolved at runtime with `fboundp'; calling a missing name
 directly would make EVERY metadata read fail and silently empty the
 closed-session lists.  nil when no scanner exists or FILE is not a
 pi session (the scanners fail open internally)."
   (cond
-   ((fboundp 'pi-coding-agent-jsonl-read-session-info)
-    (let ((info (pi-coding-agent-jsonl-read-session-info file)))
+   ((fboundp 'pilish-jsonl-read-session-info)
+    (let ((info (pilish-jsonl-read-session-info file)))
       (and info
            (list :first-message (plist-get info :firstMessage)
                  :message-count (plist-get info :messageCount)
@@ -902,37 +902,37 @@ pi session (the scanners fail open internally)."
                  :message-count (plist-get info :messageCount)
                  :session-name (plist-get info :name)
                  :cwd (plist-get info :cwd)))))
-   ((fboundp 'pi-coding-agent--session-metadata)
-    (let ((meta (pi-coding-agent--session-metadata file)))
+   ((fboundp 'pilish--session-metadata)
+    (let ((meta (pilish--session-metadata file)))
       (and meta
            (list :first-message (plist-get meta :first-message)
                  :message-count (plist-get meta :message-count)
                  :session-name (plist-get meta :session-name)
                  :cwd (plist-get meta :cwd)))))))
 
-(defun pi-coding-agent//session-metadata-cached (file)
+(defun pilish//session-metadata-cached (file)
   "Return cached metadata for session FILE, re-parsing when mtime changed.
 Metadata uses the layer's dialect — (:modified-time TIME :first-message
 TEXT :message-count COUNT :session-name NAME :cwd DIR) — parsed with
 the package's canonical session scanner (see
-`pi-coding-agent//session-scan-info'; :modified-time comes from
+`pilish//session-scan-info'; :modified-time comes from
 FILE's own mtime, matching the oldest scanner's behavior).  Fail-open:
 a vanished or unreadable FILE — e.g. one whose directory no longer
 exists — yields nil with a message instead of an error, so session
 listing and deletion never abort on stale or missing session files.
 
 Remote (TRAMP) FILEs are only read over an already-established
-connection (`pi-coding-agent//tramp-connection-alive-p', an I/O-free
+connection (`pilish//tramp-connection-alive-p', an I/O-free
 check): an unreachable host must never block a listing.  A
 disconnected remote file falls back to its stale cache entry
 (unchecked mtime) and yields nil without one."
   (condition-case err
-      (let* ((remote (pi-coding-agent--remote-prefix-for-path file))
+      (let* ((remote (pilish--remote-prefix-for-path file))
              (connected (or (not remote)
-                            (pi-coding-agent//tramp-connection-alive-p file)))
+                            (pilish//tramp-connection-alive-p file)))
              (attrs (and connected (file-attributes file)))
              (mtime (and attrs (file-attribute-modification-time attrs)))
-             (cached (gethash file pi-coding-agent//session-cache)))
+             (cached (gethash file pilish//session-cache)))
         (cond
          ;; Normal path: cache hit with matching mtime.
          ((and cached (equal (car cached) mtime)) (cdr cached))
@@ -941,66 +941,66 @@ disconnected remote file falls back to its stale cache entry
          ;; touch the file.
          ((and remote (not connected) cached) (cdr cached))
          (connected
-          (let* ((info (pi-coding-agent//session-scan-info file))
+          (let* ((info (pilish//session-scan-info file))
                  (meta (and info
                             (plist-put (copy-sequence info)
                                        :modified-time mtime))))
-            (puthash file (cons mtime meta) pi-coding-agent//session-cache)
+            (puthash file (cons mtime meta) pilish//session-cache)
             meta))))
     (error
      (message "pi: cannot read session metadata for %s: %s"
               (abbreviate-file-name file) (error-message-string err))
      nil)))
 
-(defun pi-coding-agent//live-session-mappings ()
+(defun pilish//live-session-mappings ()
   "Return ((PERSP-NAME . SESSION-FILE) ...) for perspectives showing
 pi chat buffers.
 Each real perspective contributes its registry session file (fresh
 entries with :session-file nil are resolved from the chat buffer state
 and persisted) plus the settled session file of every pi chat buffer it
 displays.  This covers sessions started outside the registry flow
-(named sessions via `pi-coding-agent/open-named-session', plain
-`pi-coding-agent' in an unregistered perspective) and fresh sessions
+(named sessions via `pilish/open-named-session', plain
+`pilish' in an unregistered perspective) and fresh sessions
 whose JSONL file pi creates only on the first assistant response.  A
 chat buffer shared by several perspectives of one directory (D6) maps
 to each perspective that displays it.
 
-Used by `pi-coding-agent//open-or-switch' to resolve the perspective
+Used by `pilish//open-or-switch' to resolve the perspective
 to switch to for a session file when the registry misses.  The session
 LISTS determine liveness from the active pi chat buffers instead (see
-`pi-coding-agent//opened-session-files' / `pi-coding-agent//session-targets')."
+`pilish//opened-session-files' / `pilish//session-targets')."
   (when (bound-and-true-p persp-mode)
     (let (pairs)
       (dolist (name (persp-names))
         (when-let* ((persp (persp-get-by-name name))
                     ((persp-p persp)))
-          (when-let* ((entry (pi-coding-agent//registry-entry name))
-                      (f (pi-coding-agent//registry-fill-session-file
+          (when-let* ((entry (pilish//registry-entry name))
+                      (f (pilish//registry-fill-session-file
                           name (cdr entry))))
             (push (cons name f) pairs))
           (dolist (buf (safe-persp-buffers persp))
             (when (with-current-buffer buf
-                    (derived-mode-p 'pi-coding-agent-chat-mode))
+                    (derived-mode-p 'pilish-chat-mode))
               (when-let* ((state (buffer-local-value
-                                  'pi-coding-agent--state buf))
+                                  'pilish--state buf))
                           (f (plist-get state :session-file))
                           ((stringp f))
                           ((not (string-empty-p f))))
                 (push (cons name f) pairs))))))
       (nreverse pairs))))
 
-(defun pi-coding-agent//opened-session-files ()
+(defun pilish//opened-session-files ()
   "Return session files loaded by an active pi chat buffer.
 Live sessions are defined by their chat buffers, not by the registry
 or the perspective mapping: every active pi chat buffer (mode
-`pi-coding-agent-chat-mode', live process) is a live session, and its
+`pilish-chat-mode', live process) is a live session, and its
 loaded session file — when pi has written one yet — is that session's
 file.  Session files on disk not loaded by an active buffer are
 closed."
   (delete-dups
-   (cl-loop for buf in (pi-coding-agent//active-chat-buffers)
+   (cl-loop for buf in (pilish//active-chat-buffers)
             for file = (plist-get (buffer-local-value
-                                   'pi-coding-agent--state buf)
+                                   'pilish--state buf)
                                   :session-file)
             when (and (stringp file) (not (string-empty-p file)))
             collect file)))
@@ -1016,29 +1016,29 @@ closed."
 ;; probed in the background instead and its sessions reappear in a
 ;; later listing once it answers.
 
-(defun pi-coding-agent//tramp-connection-alive-p (path)
+(defun pilish//tramp-connection-alive-p (path)
   "Return non-nil when TRAMP has an established connection for PATH.
 Checked without any I/O: `tramp-dissect-file-name' parses purely and
 `tramp-get-connection-process' only looks up the connection's ssh
 process, so callers can tell whether remote work would be fast (no
 reconnection) or would block on an unreachable host.  Non-remote
 PATHs return nil."
-  (and (pi-coding-agent--remote-prefix-for-path path)
+  (and (pilish--remote-prefix-for-path path)
        (when-let* ((vec (ignore-errors (tramp-dissect-file-name path)))
                    (proc (tramp-get-connection-process vec)))
          (process-live-p proc))))
 
-(defun pi-coding-agent//buffer-remote-prefix (buf)
+(defun pilish//buffer-remote-prefix (buf)
   "Return the TRAMP remote prefix of BUF's session directory, or nil.
 nil means the buffer's session is local.  Purely syntactic — no
 connection is made."
   (condition-case nil
-      (pi-coding-agent--remote-prefix-for-path
+      (pilish--remote-prefix-for-path
        (with-current-buffer buf
-         (pi-coding-agent--chat-session-directory)))
+         (pilish--chat-session-directory)))
     (error nil)))
 
-(defun pi-coding-agent//current-session-remote-prefix ()
+(defun pilish//current-session-remote-prefix ()
   "Return the TRAMP remote prefix of the current session, or nil.
 The current session is the current perspective's pi chat buffer; nil
 when there is none (default perspective, no session) or it is local —
@@ -1046,34 +1046,34 @@ the state in which session lists must not contain, or ever touch,
 remote sessions."
   (when-let* ((persp (get-current-persp))
               ((perspective-p persp))
-              (chat (pi-coding-agent//chat-buffer-in-persp persp)))
-    (pi-coding-agent//buffer-remote-prefix chat)))
+              (chat (pilish//chat-buffer-in-persp persp)))
+    (pilish//buffer-remote-prefix chat)))
 
-(defvar pi-coding-agent//remote-probes-in-flight
+(defvar pilish//remote-probes-in-flight
   (make-hash-table :test 'equal)
   "Hosts with a background reachability probe running.
-Guards `pi-coding-agent//remote-probe-async' against stacking probes
+Guards `pilish//remote-probe-async' against stacking probes
 when session lists are invoked repeatedly while a host is down.
 Entries are host name strings; they are removed by the probe's
 sentinel.")
 
-(defun pi-coding-agent//remote-probe-async (prefix)
+(defun pilish//remote-probe-async (prefix)
   "Probe PREFIX's remote host over ssh in the background; return nil.
 Listing sessions must not block on an unreachable host, so instead of
 connecting synchronously this fires a bounded `ssh' probe (BatchMode,
 ConnectTimeout — the same recipe as
-`pi-coding-agent//remote-host-probe') and reports the outcome in the
+`pilish//remote-host-probe') and reports the outcome in the
 echo area: reachable — the next session listing includes the host's
 remote sessions; exit 255 — the host answered but BatchMode
 authentication failed, TRAMP will prompt interactively when a remote
 session is opened; anything else — unreachable, its remote sessions
 stay out of the lists.  Probes are throttled per host
-(`pi-coding-agent//remote-probes-in-flight')."
+(`pilish//remote-probes-in-flight')."
   (let ((host (file-remote-p prefix 'host))
-        (timeout (max 1 (or pi-coding-agent/remote-connect-timeout 20))))
+        (timeout (max 1 (or pilish/remote-connect-timeout 20))))
     (when (and host
-               (not (gethash host pi-coding-agent//remote-probes-in-flight)))
-      (puthash host t pi-coding-agent//remote-probes-in-flight)
+               (not (gethash host pilish//remote-probes-in-flight)))
+      (puthash host t pilish//remote-probes-in-flight)
       (message "pi: %s is not connected — probing in the background; its remote sessions reappear in the session list once it answers"
                host)
       (condition-case err
@@ -1088,7 +1088,7 @@ stay out of the lists.  Probes are throttled per host
            :sentinel
            (lambda (proc _event)
              (when (memq (process-status proc) '(exit signal))
-               (remhash host pi-coding-agent//remote-probes-in-flight)
+               (remhash host pilish//remote-probes-in-flight)
                (pcase (process-exit-status proc)
                  (0 (message "pi: %s is reachable — re-run the session list to include its remote sessions"
                              host))
@@ -1102,60 +1102,60 @@ stay out of the lists.  Probes are throttled per host
                (ignore-errors
                  (kill-buffer (process-buffer proc))))))
         (file-error
-         (remhash host pi-coding-agent//remote-probes-in-flight)
+         (remhash host pilish//remote-probes-in-flight)
          (message "pi: background probe for %s failed: %s"
                   host (error-message-string err))))
     nil)))
 
-(defun pi-coding-agent//remote-scan-root (prefix)
+(defun pilish//remote-scan-root (prefix)
   "Return the session root to scan for remote PREFIX, or nil.
 Remote sessions of PREFIX's host are listed only over an
 already-established TRAMP connection, so an unreachable host never
 blocks a listing: with the connection down, a background probe is
-fired (`pi-coding-agent//remote-probe-async') and nil is returned —
+fired (`pilish//remote-probe-async') and nil is returned —
 the host's closed sessions reappear in a later listing once it
 answers.  nil PREFIX (local context) returns nil: the local session
 root is scanned by default."
   (cond
    ((null prefix) nil)
-   ((pi-coding-agent//tramp-connection-alive-p prefix)
+   ((pilish//tramp-connection-alive-p prefix)
     (concat prefix "~/.pi/agent/sessions/"))
    (t
-    (pi-coding-agent//remote-probe-async prefix)
+    (pilish//remote-probe-async prefix)
     nil)))
 
-(defun pi-coding-agent//remote-executable-entry-for (file)
+(defun pilish//remote-executable-entry-for (file)
   "Return the verified (PI-PATH . NODE-PATH) mapping for FILE's host, or nil.
-Reads the mapping `pi-coding-agent/remote-executables' that
-`pi-coding-agent/start-remote-session' fills in after locating and
+Reads the mapping `pilish/remote-executables' that
+`pilish/start-remote-session' fills in after locating and
 verifying the host's pi.  nil for local files and hosts without a
 mapping (the default executable is used, as before)."
-  (when-let* ((prefix (pi-coding-agent--remote-prefix-for-path file))
+  (when-let* ((prefix (pilish--remote-prefix-for-path file))
               (host (file-remote-p prefix 'host))
-              (entry (alist-get host pi-coding-agent/remote-executables
+              (entry (alist-get host pilish/remote-executables
                                 nil nil #'string-equal))
               ((stringp (car entry))))
     entry))
 
-(defun pi-coding-agent//remote-executable-for (file)
+(defun pilish//remote-executable-for (file)
   "Return the verified remote pi executable for FILE's host, or nil.
-The pi part of `pi-coding-agent//remote-executable-entry-for'."
-  (when-let* ((entry (pi-coding-agent//remote-executable-entry-for file)))
+The pi part of `pilish//remote-executable-entry-for'."
+  (when-let* ((entry (pilish//remote-executable-entry-for file)))
     (car entry)))
 
-(defun pi-coding-agent//remote-spawn-executable (entry)
-  "Return a `pi-coding-agent-executable' value that runs ENTRY's pi remotely.
+(defun pilish//remote-spawn-executable (entry)
+  "Return a `pilish-executable' value that runs ENTRY's pi remotely.
 ENTRY is a (PI-PATH . NODE-PATH) mapping as recorded in
-`pi-coding-agent/remote-executables'.  With NODE-PATH, the value is a
+`pilish/remote-executables'.  With NODE-PATH, the value is a
 \"sh -c\" wrapper that exports node's bin directory into PATH before
 exec'ing pi: the TRAMP spawn shell is a non-interactive login shell
 whose rc files are skipped on purpose (see
-`pi-coding-agent/start-remote-session'), so `node' — typically
+`pilish/start-remote-session'), so `node' — typically
 installed under ~/.local/share/pi-node/… and only put on PATH by the
 interactive shell's rc file — is invisible to it, and pi's
 `#!/usr/bin/env node' shebang dies with exit 127 (\"env: node: No such
 file or directory\") right after the ready marker.  The wrapper gives
-the spawn the same treatment `pi-coding-agent//remote-verify-pi'
+the spawn the same treatment `pilish//remote-verify-pi'
 gives its verification run, making the spawn independent of the
 remote PATH entirely.  It composes with the package's own remote
 wrapper (ready marker + `exec \"$0\" \"$@\"'): that wrapper's \"$0\" is
@@ -1172,23 +1172,23 @@ the plain absolute pi path is returned."
               pi-path)
       (list pi-path))))
 
-(defun pi-coding-agent//ensure-remote-reachable (file)
+(defun pilish//ensure-remote-reachable (file)
   "Bound the connection cost of opening remote session FILE.
 Local files and already-established TRAMP connections return
 immediately.  Otherwise probe the host with the bounded ssh deadline
-(`pi-coding-agent//remote-host-probe'): reachable and auth results
+(`pilish//remote-host-probe'): reachable and auth results
 fall through to the open (TRAMP handles interactive authentication),
 while an unreachable host signals a clear `user-error' instead of
 leaving TRAMP waiting forever on a silent ssh — the same failure mode
-`pi-coding-agent/start-remote-session' guards against."
-  (when-let* ((prefix (pi-coding-agent--remote-prefix-for-path file))
-              ((not (pi-coding-agent//tramp-connection-alive-p file))))
+`pilish/start-remote-session' guards against."
+  (when-let* ((prefix (pilish--remote-prefix-for-path file))
+              ((not (pilish//tramp-connection-alive-p file))))
     (let* ((host (file-remote-p prefix 'host))
-           (timeout pi-coding-agent/remote-connect-timeout)
+           (timeout pilish/remote-connect-timeout)
            (probe (progn
                     (message "pi: connecting to %s (ssh probe timeout %ds)..."
                              host (or timeout 20))
-                    (pi-coding-agent//remote-host-probe host timeout))))
+                    (pilish//remote-host-probe host timeout))))
       (pcase probe
         (`(reachable . ,_) nil)
         (`(auth . ,diag)
@@ -1201,65 +1201,65 @@ leaving TRAMP waiting forever on a silent ssh — the same failure mode
                      (if (string-empty-p diag) ""
                        (format ": %s" diag))))))))
 
-(defun pi-coding-agent//normalized-dir (dir)
+(defun pilish//normalized-dir (dir)
   "Return DIR expanded (route-preserving) with a trailing slash.
-Matches the normalization `pi-coding-agent--session-file-cwd-or-error'
+Matches the normalization `pilish--session-file-cwd-or-error'
 applies to recorded cwds.  Remote (TRAMP) DIRs are additionally
 canonicalized through TRAMP (`~' home components expanded), so one
 remote directory compares equal regardless of `~' spelling."
-  (if (pi-coding-agent--remote-prefix-for-path dir)
+  (if (pilish--remote-prefix-for-path dir)
       (file-name-as-directory (expand-file-name dir))
     (file-name-as-directory
-     (pi-coding-agent--route-preserving-expand-file-name dir))))
+     (pilish--route-preserving-expand-file-name dir))))
 
-(defun pi-coding-agent//entry-cwd (file cwd)
+(defun pilish//entry-cwd (file cwd)
   "Return session entry CWD anchored for its session FILE.
 Local files keep CWD as-is; remote (TRAMP) FILES anchor the
 process-local CWD (as recorded in the session header) with the file's
 remote prefix, so directory comparisons via
-`pi-coding-agent//normalized-dir' work across the remote/local
+`pilish//normalized-dir' work across the remote/local
 boundary."
-  (if (and cwd (pi-coding-agent--remote-prefix-for-path file))
-      (pi-coding-agent--emacs-directory cwd file)
+  (if (and cwd (pilish--remote-prefix-for-path file))
+      (pilish--emacs-directory cwd file)
     cwd))
 
-(defun pi-coding-agent//session-entries-in-dir (dir &optional root)
+(defun pilish//session-entries-in-dir (dir &optional root)
   "Return session entries whose recorded cwd is DIR (exact match).
 DIR is compared expanded and with a trailing slash, matching the
-normalization `pi-coding-agent--session-file-cwd-or-error' applies to
+normalization `pilish--session-file-cwd-or-error' applies to
 recorded cwds.  ROOT overrides the scanned session root (see
-`pi-coding-agent//session-entries')."
-  (let ((dir (pi-coding-agent//normalized-dir dir)))
+`pilish//session-entries')."
+  (let ((dir (pilish//normalized-dir dir)))
     (cl-remove-if-not
      (lambda (entry)
        (let ((cwd (plist-get entry :cwd)))
          (and (stringp cwd)
-              (equal (pi-coding-agent//normalized-dir cwd) dir))))
-     (pi-coding-agent//session-entries root))))
+              (equal (pilish//normalized-dir cwd) dir))))
+     (pilish//session-entries root))))
 
-(defun pi-coding-agent//file-in-opened-p (file opened)
+(defun pilish//file-in-opened-p (file opened)
   "Return non-nil when FILE is one of the opened session files OPENED.
 Remote files are compared in TRAMP-canonical form (`~' home
 components expanded), so scan results and live-session state can
 differ in `~' spelling and still match; local files are compared
 plainly."
-  (if (pi-coding-agent--remote-prefix-for-path file)
+  (if (pilish--remote-prefix-for-path file)
       (let ((canon (expand-file-name file)))
         (cl-some (lambda (f) (equal (expand-file-name f) canon)) opened))
     (member file opened)))
 
-(defun pi-coding-agent//session-entries (&optional root)
+(defun pilish//session-entries (&optional root)
   "Return plist entries for all sessions under ROOT.
-ROOT defaults to the pi session root: `pi-coding-agent/session-root',
+ROOT defaults to the pi session root: `pilish/session-root',
 overridden by the PI_AGENT_DIR environment variable when set (pi then
 stores sessions under <PI_AGENT_DIR>/sessions).  A remote (TRAMP) ROOT
 is scanned best-effort: connection failures yield an empty list
 instead of signalling, so an unreachable host degrades to no closed
 sessions rather than blocking the caller.  Each entry carries an
 :opened flag (non-nil when the file is loaded by an active pi chat
-buffer — see `pi-coding-agent//opened-session-files')."
-  (let* ((root (or root (pi-coding-agent//session-root)))
-         (remote-p (pi-coding-agent--remote-prefix-for-path root))
+buffer — see `pilish//opened-session-files')."
+  (let* ((root (or root (pilish//session-root)))
+         (remote-p (pilish--remote-prefix-for-path root))
          (files (if remote-p
                     (condition-case nil
                         (and (file-directory-p root)
@@ -1267,17 +1267,17 @@ buffer — see `pi-coding-agent//opened-session-files')."
                       (error nil))
                   (and (file-directory-p root)
                        (directory-files-recursively root "\\.jsonl$"))))
-         (opened (pi-coding-agent//opened-session-files))
+         (opened (pilish//opened-session-files))
          entries)
     (dolist (file files)
-      (when-let* ((meta (pi-coding-agent//session-metadata-cached file)))
+      (when-let* ((meta (pilish//session-metadata-cached file)))
         (push (list :file file
-                    :cwd (pi-coding-agent//entry-cwd file (plist-get meta :cwd))
+                    :cwd (pilish//entry-cwd file (plist-get meta :cwd))
                     :first-message (plist-get meta :first-message)
                     :name (plist-get meta :session-name)
                     :count (plist-get meta :message-count)
                     :modified (plist-get meta :modified-time)
-                    :opened (pi-coding-agent//file-in-opened-p file opened))
+                    :opened (pilish//file-in-opened-p file opened))
               entries)))
     ;; Drop cache entries for deleted files — only within the scanned
     ;; ROOT's scope: a local scan cannot see remote files (their
@@ -1289,61 +1289,61 @@ buffer — see `pi-coding-agent//opened-session-files')."
     (maphash (lambda (file _)
                (unless (member file files)
                  (let ((file-remote
-                        (pi-coding-agent--remote-prefix-for-path file)))
+                        (pilish--remote-prefix-for-path file)))
                    (when (if remote-p
                              (and file-remote
                                   (equal file-remote
-                                         (pi-coding-agent--remote-prefix-for-path
+                                         (pilish--remote-prefix-for-path
                                           root)))
                            (not file-remote))
-                     (remhash file pi-coding-agent//session-cache)))))
-             pi-coding-agent//session-cache)
+                     (remhash file pilish//session-cache)))))
+             pilish//session-cache)
     (nreverse entries)))
 
-(defun pi-coding-agent//disambiguated-label (label n file)
+(defun pilish//disambiguated-label (label n file)
   "LABEL, suffixed with a short uuid when seen N (>0) times before.
 Two sessions can render identically (same title and directory); the
 second and later ones get a uuid suffix so each candidate stays
 selectable.  FILE supplies the uuid prefix; \"?\" when unavailable."
   (if (> n 0)
       (format "%s  (%s)" label
-              (or (pi-coding-agent//file-uuid-prefix file) "?"))
+              (or (pilish//file-uuid-prefix file) "?"))
     label))
 
-(defun pi-coding-agent//session-buffer-dir-p (buf dir)
+(defun pilish//session-buffer-dir-p (buf dir)
   "Return non-nil when pi chat buffer BUF's session directory is DIR.
 The buffer's session directory is read like
-`pi-coding-agent//context-directory' reads it (via
-`pi-coding-agent--chat-session-directory') and compared with the same
-normalization `pi-coding-agent//normalized-dir' applies to recorded
+`pilish//context-directory' reads it (via
+`pilish--chat-session-directory') and compared with the same
+normalization `pilish//normalized-dir' applies to recorded
 cwds."
   (when-let* ((buf-dir (condition-case nil
                            (with-current-buffer buf
-                             (pi-coding-agent--chat-session-directory))
+                             (pilish--chat-session-directory))
                          (error nil)))
               ((stringp buf-dir))
-              ((equal (pi-coding-agent//normalized-dir buf-dir)
-                      (pi-coding-agent//normalized-dir dir))))
+              ((equal (pilish//normalized-dir buf-dir)
+                      (pilish//normalized-dir dir))))
     t))
 
-(defun pi-coding-agent//remote-scope-prefixes (remote-scope)
+(defun pilish//remote-scope-prefixes (remote-scope)
   "Return the TRAMP prefixes REMOTE-SCOPE admits, or nil for none.
-REMOTE-SCOPE is the scope argument of `pi-coding-agent//session-targets':
+REMOTE-SCOPE is the scope argument of `pilish//session-targets':
 nil or `local' admit no remote host, a TRAMP prefix string admits that
 one host, `t' admits every host with an active pi chat buffer plus the
 current session's host, and a list of TRAMP prefixes admits exactly
 the hosts of those prefixes.  The result is deduplicated.  The
 enumeration is purely local — reachability of each admitted host is
 decided later, per host, without blocking
-\(`pi-coding-agent//remote-scan-root')."
+\(`pilish//remote-scan-root')."
   (let (prefixes)
     (dolist (prefix (cond
                      ((stringp remote-scope) (list remote-scope))
                      ((eq remote-scope t)
                       (delq nil
-                            (cons (pi-coding-agent//current-session-remote-prefix)
-                                  (mapcar #'pi-coding-agent//buffer-remote-prefix
-                                          (pi-coding-agent//active-chat-buffers)))))
+                            (cons (pilish//current-session-remote-prefix)
+                                  (mapcar #'pilish//buffer-remote-prefix
+                                          (pilish//active-chat-buffers)))))
                      ((listp remote-scope) remote-scope)
                      (t nil)))
       (when (and (stringp prefix)
@@ -1351,50 +1351,50 @@ decided later, per host, without blocking
         (push prefix prefixes)))
     (nreverse prefixes)))
 
-(defun pi-coding-agent//known-remote-prefixes ()
+(defun pilish//known-remote-prefixes ()
   "Return the TRAMP prefixes of every host this layer knows runs pi.
 Sources, unioned and deduplicated: hosts with verified executables in
-`pi-coding-agent/remote-executables' (persisted across Emacs runs —
-the machines `pi-coding-agent/start-remote-session' has located pi
+`pilish/remote-executables' (persisted across Emacs runs —
+the machines `pilish/start-remote-session' has located pi
 on), hosts of active pi chat buffers (their prefixes are kept
 verbatim), and the current session's host.  Purely local — no remote
 file is touched; each host's sessions are read later over an
 already-established connection only, so an unreachable host never
-blocks the listing that consults this (`pi-coding-agent//remote-scan-root';
+blocks the listing that consults this (`pilish//remote-scan-root';
 it is probed in the background instead)."
   (let (prefixes)
-    (dolist (entry pi-coding-agent/remote-executables)
+    (dolist (entry pilish/remote-executables)
       (when (stringp (car entry))
         (push (format "/ssh:%s:" (car entry)) prefixes)))
-    (dolist (buf (pi-coding-agent//active-chat-buffers))
-      (when-let* ((prefix (pi-coding-agent//buffer-remote-prefix buf)))
+    (dolist (buf (pilish//active-chat-buffers))
+      (when-let* ((prefix (pilish//buffer-remote-prefix buf)))
         (push prefix prefixes)))
-    (when-let* ((prefix (pi-coding-agent//current-session-remote-prefix)))
+    (when-let* ((prefix (pilish//current-session-remote-prefix)))
       (push prefix prefixes))
     (nreverse (delete-dups (delq nil prefixes)))))
 
-(defun pi-coding-agent//remote-scope-entries (remote-scope dir)
+(defun pilish//remote-scope-entries (remote-scope dir)
   "Return closed-session entries contributed by REMOTE-SCOPE's hosts.
-REMOTE-SCOPE follows `pi-coding-agent//session-targets'' convention:
+REMOTE-SCOPE follows `pilish//session-targets'' convention:
 a TRAMP prefix string scopes to that one host, `t' (the close/delete
 scope) to every host with an active pi chat buffer plus the current
 session's host, and a list of TRAMP prefixes to exactly those hosts.
 Each host's root is scanned only over an already-established
-connection (`pi-coding-agent//remote-scan-root': a disconnected host
+connection (`pilish//remote-scan-root': a disconnected host
 gets a background probe and contributes nothing instead of blocking).
 nil when DIR is given — directory-scoped lists come from their own
 root — or when REMOTE-SCOPE admits no remote host (nil or `local`)."
   (when (null dir)
-    (let ((prefixes (pi-coding-agent//remote-scope-prefixes remote-scope)))
+    (let ((prefixes (pilish//remote-scope-prefixes remote-scope)))
       (apply #'append
              (delq nil
                    (mapcar
                     (lambda (prefix)
-                      (let ((root (pi-coding-agent//remote-scan-root prefix)))
-                        (and root (pi-coding-agent//session-entries root))))
+                      (let ((root (pilish//remote-scan-root prefix)))
+                        (and root (pilish//session-entries root))))
                     prefixes))))))
 
-(defun pi-coding-agent//session-targets (&optional dir include-closed
+(defun pilish//session-targets (&optional dir include-closed
                                         exclude-current root remote-scope)
   "Return (LIVE . CLOSED) candidate alists for the session pickers.
 
@@ -1421,33 +1421,33 @@ cannot block the list;
 - a TRAMP prefix string keeps local sessions plus that host's,
 - a list of TRAMP prefixes keeps local sessions plus exactly those
   hosts' (the switch-session hub scope, see
-  `pi-coding-agent//known-remote-prefixes'), and
+  `pilish//known-remote-prefixes'), and
 - t keeps local sessions plus every active remote host's.
 A scoped host contributes BOTH its live chat buffers and its closed
 session files, the files scanned only over an already-established
-connection (`pi-coding-agent//remote-scan-root': a disconnected host
+connection (`pilish//remote-scan-root': a disconnected host
 gets a background probe and contributes nothing instead of blocking
 the listing).
 
 Each alist maps a candidate string to its target; duplicate labels
 (same title and directory) are disambiguated with a uuid suffix
-\(`pi-coding-agent//disambiguated-label').  LIVE always precedes
+\(`pilish//disambiguated-label').  LIVE always precedes
 CLOSED, and the pickers keep that order: the two-group picker
 renders them as \"Live sessions\" then \"Closed sessions\" (see
-`pi-coding-agent//pick-session'), while the switch hub keeps each
+`pilish//pick-session'), while the switch hub keeps each
 group's order inside the per-host sections it rebuilds
-\(`pi-coding-agent//switch-session-sections')."
+\(`pilish//switch-session-sections')."
   (let* ((entries (append
-                   (if dir (pi-coding-agent//session-entries-in-dir dir root)
-                     (pi-coding-agent//session-entries root))
+                   (if dir (pilish//session-entries-in-dir dir root)
+                     (pilish//session-entries root))
                    ;; A scoped host adds its closed sessions, scanned
                    ;; only over an established connection (nil root ->
                    ;; no scan -> no blocking).
-                   (pi-coding-agent//remote-scope-entries remote-scope
+                   (pilish//remote-scope-entries remote-scope
                                                           dir)))
          (remote-prefixes
           (and (not (null remote-scope))
-               (pi-coding-agent//remote-scope-prefixes remote-scope)))
+               (pilish//remote-scope-prefixes remote-scope)))
          (by-file (make-hash-table :test 'equal))
          (seen (make-hash-table :test 'equal))
          (current-persp (get-current-persp))
@@ -1455,7 +1455,7 @@ group's order inside the per-host sections it rebuilds
                                (perspective-p current-persp)
                                (safe-persp-buffers current-persp)))
          (current-file (and exclude-current
-                            (pi-coding-agent//current-session-file)))
+                            (pilish//current-session-file)))
          live closed)
     (dolist (entry entries)
       (puthash (plist-get entry :file) entry by-file))
@@ -1464,8 +1464,8 @@ group's order inside the per-host sections it rebuilds
     ;; be stale (a killed perspective still registered) or miss sessions
     ;; started outside the registry flow, while the chat buffers always
     ;; reflect what is actually running.
-    (dolist (buf (pi-coding-agent//active-chat-buffers))
-      (let ((buf-prefix (pi-coding-agent//buffer-remote-prefix buf)))
+    (dolist (buf (pilish//active-chat-buffers))
+      (let ((buf-prefix (pilish//buffer-remote-prefix buf)))
         (when (and
                ;; Local sessions are always in scope; remote ones when
                ;; the scope admits their host (a prefix or list of
@@ -1474,58 +1474,58 @@ group's order inside the per-host sections it rebuilds
                (or (null buf-prefix)
                    (and remote-prefixes
                         (member buf-prefix remote-prefixes)))
-               (or (null dir) (pi-coding-agent//session-buffer-dir-p buf dir))
+               (or (null dir) (pilish//session-buffer-dir-p buf dir))
                (or (null current-buffers)
                    (not (memq buf current-buffers))))
           (let* ((file (plist-get (buffer-local-value
-                                   'pi-coding-agent--state buf)
+                                   'pilish--state buf)
                                   :session-file))
                  (file (and (stringp file) (not (string-empty-p file)) file))
                  (entry (and file (gethash file by-file)))
-                 (label (pi-coding-agent//chat-buffer-label buf by-file))
+                 (label (pilish//chat-buffer-label buf by-file))
                  (n (gethash label seen 0)))
             (puthash label (1+ n) seen)
-            (push (cons (pi-coding-agent//disambiguated-label label n file)
+            (push (cons (pilish//disambiguated-label label n file)
                         (append (list :buffer buf :label label :opened t)
                                 (and file (list :file file))
                                 (and entry (list :entry entry))))
                   live)))))
     ;; CLOSED: session files on disk not loaded by an active buffer
-    ;; (the :opened flag of `pi-coding-agent//session-entries' is
+    ;; (the :opened flag of `pilish//session-entries' is
     ;; derived from the active buffers).
     (when include-closed
       (dolist (entry entries)
         (let* ((file (plist-get entry :file))
-               (label (pi-coding-agent//session-base-label entry))
+               (label (pilish//session-base-label entry))
                (n (gethash label seen 0)))
           (unless (or (plist-get entry :opened)
                       (and current-file (equal file current-file)))
             (puthash label (1+ n) seen)
-            (push (cons (pi-coding-agent//disambiguated-label label n file)
+            (push (cons (pilish//disambiguated-label label n file)
                         (list :entry entry :label label :opened nil))
                   closed)))))
     (cons (nreverse live) (nreverse closed))))
 
-(defun pi-coding-agent//target-host (target)
+(defun pilish//target-host (target)
   "Host name of session TARGET, or nil for a local session.
 Read from the target's session file when it has one, else from its
 live chat buffer's session directory.  Purely syntactic — no remote
 connection is made — so grouping sessions by host never touches their
-machines.  Used by `pi-coding-agent//switch-session-sections' to
+machines.  Used by `pilish//switch-session-sections' to
 regroup the scope's candidates into one section per remote host."
   (or (when-let* ((file (plist-get (plist-get target :entry) :file)))
         (and (stringp file) (file-remote-p file 'host)))
       (when-let* ((buf (plist-get target :buffer))
-                  (prefix (pi-coding-agent//buffer-remote-prefix buf)))
+                  (prefix (pilish//buffer-remote-prefix buf)))
         (file-remote-p prefix 'host))))
 
-(defun pi-coding-agent//switch-session-sections (live closed)
+(defun pilish//switch-session-sections (live closed)
   "Ordered picker sections for the switch-session list from LIVE/CLOSED.
 LIVE and CLOSED are the scope's full sorted candidate alists — local
-and remote sessions mixed, as `pi-coding-agent//session-targets'
+and remote sessions mixed, as `pilish//session-targets'
 returns them.  Local candidates form the leading \"Live sessions\"
 section and the trailing \"Closed sessions\" section; remote
-candidates are regrouped by their host (`pi-coding-agent//target-host')
+candidates are regrouped by their host (`pilish//target-host')
 into one section per remote host — named after the host — placed
 between the two and ordered by host name.  Each host section lists
 its host's live candidates (●) before its closed ones (○), keeping
@@ -1537,11 +1537,11 @@ classic two sections."
         (local-live '())
         (local-closed '()))
     (dolist (cand live)
-      (if-let* ((host (pi-coding-agent//target-host (cdr cand))))
+      (if-let* ((host (pilish//target-host (cdr cand))))
           (push cand (gethash host live-by-host))
         (push cand local-live)))
     (dolist (cand closed)
-      (if-let* ((host (pi-coding-agent//target-host (cdr cand))))
+      (if-let* ((host (pilish//target-host (cdr cand))))
           (push cand (gethash host closed-by-host))
         (push cand local-closed)))
     (let ((hosts (delete-dups
@@ -1556,7 +1556,7 @@ classic two sections."
        (and local-closed (list (cons "Closed sessions"
                                      (nreverse local-closed))))))))
 
-(defun pi-coding-agent//collapse-whitespace (string)
+(defun pilish//collapse-whitespace (string)
   "Collapse whitespace runs in STRING to single spaces, ends trimmed.
 Newlines and tabs in first-message titles would otherwise break the
 session list into multi-line rows (helm and *Completions* display
@@ -1567,19 +1567,19 @@ directory, or time.  Returns nil for non-strings and blank strings."
                       (replace-regexp-in-string "[ \t\n\r]+" " " string))))
       (and (not (string-empty-p collapsed)) collapsed))))
 
-(defun pi-coding-agent//entry-title (entry)
+(defun pilish//entry-title (entry)
   "Display title for session ENTRY (name, first message, or placeholder).
 Newlines and other whitespace runs are collapsed to single spaces, so
 titles stay on one line in the session lists."
-  (or (let ((name (pi-coding-agent//collapse-whitespace
+  (or (let ((name (pilish//collapse-whitespace
                    (plist-get entry :name))))
         (and (stringp name) name))
-      (let ((fm (pi-coding-agent//collapse-whitespace
+      (let ((fm (pilish//collapse-whitespace
                  (plist-get entry :first-message))))
-        (and (stringp fm) (pi-coding-agent//truncate fm 40)))
+        (and (stringp fm) (pilish//truncate fm 40)))
       "(no messages)"))
 
-(defun pi-coding-agent//target-meta (target slot default)
+(defun pilish//target-meta (target slot default)
   "Return session TARGET's metadata SLOT, falling back to DEFAULT.
 The slot is read from the target's :entry when it has one, else from
 the target itself — live sessions carry their file metadata in
@@ -1589,36 +1589,36 @@ perspective) carry :count/:modified directly."
       (plist-get target slot)
       default))
 
-(defun pi-coding-agent//target-title (target)
+(defun pilish//target-title (target)
   "Sort/display title for session TARGET: its entry's title, else its label."
   (if-let* ((entry (plist-get target :entry)))
-      (pi-coding-agent//entry-title entry)
+      (pilish//entry-title entry)
     (plist-get target :label)))
 
-(defun pi-coding-agent//target-count (target)
+(defun pilish//target-count (target)
   "Message count of session TARGET."
-  (pi-coding-agent//target-meta target :count 0))
+  (pilish//target-meta target :count 0))
 
-(defun pi-coding-agent//target-modified (target)
+(defun pilish//target-modified (target)
   "Last-modification time of session TARGET."
-  (pi-coding-agent//target-meta target :modified (current-time)))
+  (pilish//target-meta target :modified (current-time)))
 
-(defun pi-coding-agent//target-dir (target)
+(defun pilish//target-dir (target)
   "Normalized session directory of TARGET, or nil when undeterminable.
 Closed targets read the recorded :cwd from their :entry; live targets
 without a file entry fall back to the chat buffer's session
 directory."
   (or (when-let* ((entry (plist-get target :entry))
                   (cwd (plist-get entry :cwd)))
-        (pi-coding-agent//normalized-dir cwd))
+        (pilish//normalized-dir cwd))
       (when-let* ((buf (plist-get target :buffer)))
         (condition-case nil
-            (pi-coding-agent//normalized-dir
+            (pilish//normalized-dir
              (with-current-buffer buf
-               (pi-coding-agent--chat-session-directory)))
+               (pilish--chat-session-directory)))
           (error nil)))))
 
-(defun pi-coding-agent//sort-targets (targets mode)
+(defun pilish//sort-targets (targets mode)
   "Sort session TARGETS (a candidate alist) by MODE.
 `alpha' sorts by title, `chrono' by last modification (newest first),
 `dir-then-name' by session directory, then by title."
@@ -1626,25 +1626,25 @@ directory."
     ('alpha
      (sort (copy-sequence targets)
            (lambda (a b)
-             (string< (pi-coding-agent//target-title (cdr a))
-                      (pi-coding-agent//target-title (cdr b))))))
+             (string< (pilish//target-title (cdr a))
+                      (pilish//target-title (cdr b))))))
     ('chrono
      (sort (copy-sequence targets)
            (lambda (a b)
-             (time-less-p (pi-coding-agent//target-modified (cdr b))
-                          (pi-coding-agent//target-modified (cdr a))))))
+             (time-less-p (pilish//target-modified (cdr b))
+                          (pilish//target-modified (cdr a))))))
     ('dir-then-name
      (sort (copy-sequence targets)
            (lambda (a b)
-             (let ((dir-a (or (pi-coding-agent//target-dir (cdr a)) ""))
-                   (dir-b (or (pi-coding-agent//target-dir (cdr b)) "")))
+             (let ((dir-a (or (pilish//target-dir (cdr a)) ""))
+                   (dir-b (or (pilish//target-dir (cdr b)) "")))
                (if (string= dir-a dir-b)
-                   (string< (pi-coding-agent//target-title (cdr a))
-                            (pi-coding-agent//target-title (cdr b)))
+                   (string< (pilish//target-title (cdr a))
+                            (pilish//target-title (cdr b)))
                  (string< dir-a dir-b))))))
     (_ targets)))
 
-(defun pi-coding-agent//age-string (time)
+(defun pilish//age-string (time)
   "Humanized age of TIME, e.g. \"now\", \"5m\", \"3h\", \"2d\"."
   (let ((secs (max 0 (floor (float-time (time-subtract (current-time) time))))))
     (cond ((< secs 60) "now")
@@ -1652,11 +1652,11 @@ directory."
           ((< secs 86400) (format "%dh" (/ secs 3600)))
           (t (format "%dd" (/ secs 86400))))))
 
-(defun pi-coding-agent//session-header (title)
+(defun pilish//session-header (title)
   "Section header row \"──── TITLE ────\" marking a group boundary."
   (format "────── %s ──────" title))
 
-(defun pi-coding-agent//annotated-session-candidate (cand target)
+(defun pilish//annotated-session-candidate (cand target)
   "Annotated display string for session candidate CAND with TARGET.
 Separators and action items (nil target, e.g. \"✚ New session\")
 render as-is; sessions get a \"● \"/\"○ \" status glyph plus
@@ -1666,23 +1666,23 @@ render as-is; sessions get a \"● \"/\"○ \" status glyph plus
     (format "%s%s  %d msgs  %s"
             (if (plist-get target :opened) "● " "○ ")
             cand
-            (pi-coding-agent//target-count target)
-            (pi-coding-agent//age-string
-             (pi-coding-agent//target-modified target)))))
+            (pilish//target-count target)
+            (pilish//age-string
+             (pilish//target-modified target)))))
 
-(defun pi-coding-agent//helm-session-candidates (alist)
+(defun pilish//helm-session-candidates (alist)
   "Return (DISPLAY . REAL) cons candidates for helm from session ALIST.
 DISPLAY annotates the candidate with status glyph, message count, and
 age; REAL is the clean candidate string used for dispatch, so helm
 matching (on DISPLAY) and the caller's `assoc' lookups stay
 consistent."
   (mapcar (lambda (cand)
-            (cons (pi-coding-agent//annotated-session-candidate
+            (cons (pilish//annotated-session-candidate
                    (car cand) (cdr cand))
                   (car cand)))
           alist))
 
-(defun pi-coding-agent//session-target-affixation (alist)
+(defun pilish//session-target-affixation (alist)
   "Return an affixation function for session candidate ALIST.
 Candidates are annotated with a status glyph (● live / ○ closed)
 plus message count and age; section-header rows (:separator targets)
@@ -1699,14 +1699,14 @@ annotation."
               (suffix (if (and target
                                (not (eq (plist-get target :separator) t)))
                           (format "  %d msgs  %s"
-                                  (pi-coding-agent//target-count target)
-                                  (pi-coding-agent//age-string
-                                   (pi-coding-agent//target-modified target)))
+                                  (pilish//target-count target)
+                                  (pilish//age-string
+                                   (pilish//target-modified target)))
                         "")))
          (list cand glyph suffix)))
      cands)))
 
-(defun pi-coding-agent//session-collection (alist)
+(defun pilish//session-collection (alist)
   "Return a completing-read collection over candidate ALIST.
 Provides affixation metadata (status glyph, count, age) and keeps the
 pre-sorted candidate order."
@@ -1718,17 +1718,17 @@ pre-sorted candidate order."
        ((eq (car-safe action) 'metadata)
         `(metadata (category . pi-session)
                    (affixation-function
-                    . ,(pi-coding-agent//session-target-affixation alist))
+                    . ,(pilish//session-target-affixation alist))
                    (display-sort-function . identity)))
        (t nil)))))
 
-(defun pi-coding-agent//cr-pick-session-target (sections prompt
+(defun pilish//cr-pick-session-target (sections prompt
                                                 &optional default-label
                                                 must-match extra)
   "completing-read over SECTIONS; return the choice.
 SECTIONS is an ordered list of (NAME . ALIST): each non-empty
 candidate ALIST renders as a non-selectable section-header row
-(`pi-coding-agent//session-header') followed by its candidates,
+(`pilish//session-header') followed by its candidates,
 annotated with status glyph, message count, and age and keeping
 their pre-sorted order.  Sections therefore appear in the minibuffer
 in SECTIONS' order with a visible boundary between them.  EXTRA (an
@@ -1739,15 +1739,15 @@ candidate string, or the typed input when MUST-MATCH is nil."
    with alist = (append
                  (cl-loop for (name . cands) in sections
                           for rows = (and cands
-                                          (cons (cons (pi-coding-agent//session-header name)
+                                          (cons (cons (pilish//session-header name)
                                                       '(:separator t))
                                                 cands))
                           append rows)
                  extra)
-   with collection = (pi-coding-agent//session-collection alist)
+   with collection = (pilish//session-collection alist)
    for choice = (completing-read
                  prompt collection nil must-match default-label
-                 'pi-coding-agent-session-history)
+                 'pilish-session-history)
    until (not (eq (plist-get (cdr (assoc choice alist)) :separator) t))
    do (message "Pick a session, not a section header")
    finally return choice))
@@ -1756,7 +1756,7 @@ candidate string, or the typed input when MUST-MATCH is nil."
 ;; helm-source.el) is only available at runtime, once helm is loaded.
 (declare-function helm-make-source "helm-source.el")
 
-(defun pi-coding-agent//helm-pick-session-target (sections prompt
+(defun pilish//helm-pick-session-target (sections prompt
                                                  &optional default-label
                                                  must-match extra)
   "Helm pick of a session from SECTIONS.
@@ -1780,25 +1780,25 @@ candidate (no annotation)."
                   when alist
                   collect (helm-make-source
                            name 'helm-source-sync
-                           :candidates (pi-coding-agent//helm-session-candidates alist)
+                           :candidates (pilish//helm-session-candidates alist)
                            :must-match must-match
                            :action 'identity))
          (cl-loop for (name . alist) in extra
                   collect (helm-make-source
                            name 'helm-source-sync
-                           :candidates (pi-coding-agent//helm-session-candidates alist)
+                           :candidates (pilish//helm-session-candidates alist)
                            :must-match nil
                            :action 'identity)))
         :buffer "*helm pi session*"
         :prompt prompt
         :default default-label))
 
-(defun pi-coding-agent//pick-session-sections (sections prompt
+(defun pilish//pick-session-sections (sections prompt
                                                 &optional default-label
                                                 must-match extra)
   "Unified session picker over SECTIONS; return the chosen candidate.
 SECTIONS is an ordered list of (NAME . ALIST): session candidate
-alists (as built by `pi-coding-agent//session-targets' and sorted by
+alists (as built by `pilish//session-targets' and sorted by
 the caller) grouped under a section named NAME and rendered in
 order, with a section boundary between groups — separate helm
 sources named NAME, section-header rows under completing-read
@@ -1808,12 +1808,12 @@ list are omitted.  EXTRA is a list of (NAME . ALIST) action sections
 appended after the last section otherwise.  Returns the chosen
 candidate string — or the typed input when MUST-MATCH is nil."
   (if (featurep 'helm)
-      (pi-coding-agent//helm-pick-session-target
+      (pilish//helm-pick-session-target
        sections prompt default-label must-match extra)
-    (pi-coding-agent//cr-pick-session-target
+    (pilish//cr-pick-session-target
      sections prompt default-label must-match extra)))
 
-(defun pi-coding-agent//pick-session (live closed prompt
+(defun pilish//pick-session (live closed prompt
                                       &optional default-label must-match extra)
   "Unified session picker over LIVE/CLOSED candidate alists.
 Live sessions are always offered before closed ones, with a clear
@@ -1824,9 +1824,9 @@ action alist (e.g. \"✚ New session\"), offered as its own source
 under helm and appended after the closed group otherwise.  Returns
 the chosen candidate string — or the typed input when MUST-MATCH is
 nil.  This is the two-group entry point of
-`pi-coding-agent//pick-session-sections', which the switch list uses
+`pilish//pick-session-sections', which the switch list uses
 to place per-remote-host sections between the two groups."
-  (pi-coding-agent//pick-session-sections
+  (pilish//pick-session-sections
    (append (list (cons "Live sessions" live))
            (and closed (list (cons "Closed sessions" closed))))
    prompt default-label must-match extra))
@@ -1834,18 +1834,18 @@ to place per-remote-host sections between the two groups."
 ;; ---------------------------------------------------------------------
 ;; Opening, switching, reviving
 
-(defun pi-coding-agent//chat-buffers-in-persp (persp)
+(defun pilish//chat-buffers-in-persp (persp)
   "Return the pi chat buffers of PERSP, in perspective buffer order."
   (cl-remove-if-not (lambda (buf)
                       (with-current-buffer buf
-                        (derived-mode-p 'pi-coding-agent-chat-mode)))
+                        (derived-mode-p 'pilish-chat-mode)))
                     (safe-persp-buffers persp)))
 
-(defun pi-coding-agent//chat-buffer-in-persp (persp)
+(defun pilish//chat-buffer-in-persp (persp)
   "Return the first pi chat buffer of PERSP, or nil."
-  (car (pi-coding-agent//chat-buffers-in-persp persp)))
+  (car (pilish//chat-buffers-in-persp persp)))
 
-(defun pi-coding-agent//revive-collision-name (dir file)
+(defun pilish//revive-collision-name (dir file)
   "Return a generated launch name when DIR runs a different live unnamed session.
 
 When DIR's canonical unnamed chat buffer is live with a different
@@ -1854,41 +1854,41 @@ the unnamed launch name would hijack that live session's buffers and
 process.  In that case return a stable generated name (title +
 session-file uuid prefix); otherwise nil, so the directory's canonical
 unnamed buffer is used as before."
-  (when-let* ((live (pi-coding-agent--find-session dir)))
+  (when-let* ((live (pilish--find-session dir)))
     (let ((live-file (plist-get (buffer-local-value
-                                 'pi-coding-agent--state live)
+                                 'pilish--state live)
                                 :session-file)))
       (unless (equal live-file file)
-        (let ((meta (pi-coding-agent//session-metadata-cached file)))
-          (pi-coding-agent//derived-session-name
+        (let ((meta (pilish//session-metadata-cached file)))
+          (pilish//derived-session-name
            (append (list :file file)
                    (and meta
                         (list :name (plist-get meta :session-name)
                               :first-message (plist-get meta :first-message))))))))))
 
-(defun pi-coding-agent//revive-session (chat file &optional launch)
+(defun pilish//revive-session (chat file &optional launch)
   "Ensure a live pi process for the session of FILE and resume FILE.
 CHAT is an existing chat buffer to reuse; its launch name is used when
 LAUNCH is nil.  An unnamed revive whose directory already runs a live
 unnamed session of a different file is opened under a generated name
 instead, so it never hijacks that live session's buffers/process.
 Returns the chat buffer."
-  (let* ((dir (pi-coding-agent--session-file-cwd-or-error file))
-         (launch (or launch (and chat (pi-coding-agent--chat-session-name chat))
-                     (pi-coding-agent//revive-collision-name dir file))))
+  (let* ((dir (pilish--session-file-cwd-or-error file))
+         (launch (or launch (and chat (pilish--chat-session-name chat))
+                     (pilish//revive-collision-name dir file))))
     (condition-case err
-        (let* ((chat (pi-coding-agent--setup-session dir launch))
-               (proc (buffer-local-value 'pi-coding-agent--process chat)))
+        (let* ((chat (pilish--setup-session dir launch))
+               (proc (buffer-local-value 'pilish--process chat)))
           (when (and (processp proc) (process-live-p proc)
-                     (pi-coding-agent--session-transition-ready-p chat "open"))
-            (pi-coding-agent--resume-selected-session proc chat file))
+                     (pilish--session-transition-ready-p chat "open"))
+            (pilish--resume-selected-session proc chat file))
           chat)
       (error
        (message "pi: failed to revive session %s: %s" file
                 (error-message-string err))
        nil))))
 
-(defun pi-coding-agent//registry-launch-name (persp-name file)
+(defun pilish//registry-launch-name (persp-name file)
   "Return the saved launch name for FILE in perspective PERSP-NAME.
 
 Reads the captured chat buffer spec (D7) of the registry entry, whose
@@ -1897,7 +1897,7 @@ suffix, or nil for unnamed).  Used when reviving a perspective whose
 chat buffers were killed, so a named/generated session is revived under
 its original buffer name instead of falling back to the directory's
 canonical unnamed one."
-  (when-let* ((entry (pi-coding-agent//registry-entry persp-name))
+  (when-let* ((entry (pilish//registry-entry persp-name))
               (specs (plist-get (cdr entry) :buffers)))
     (cl-some
      (lambda (spec)
@@ -1908,7 +1908,7 @@ canonical unnamed one."
            (and (stringp launch) (not (string-empty-p launch)) launch))))
      specs)))
 
-(defun pi-coding-agent//switch-to-session (persp-name file)
+(defun pilish//switch-to-session (persp-name file)
   "Switch to opened session PERSP-NAME, reviving a dead pi process.
 
 A live process is not proof that FILE is loaded: the chat buffer and its
@@ -1930,15 +1930,15 @@ re-resume a different session into the wrong process."
     (let* ((chat (or (cl-find-if
                       (lambda (buf)
                         (equal (plist-get (buffer-local-value
-                                           'pi-coding-agent--state buf)
+                                           'pilish--state buf)
                                           :session-file)
                                file))
-                      (pi-coding-agent//chat-buffers-in-persp persp))
-                     (pi-coding-agent//chat-buffer-in-persp persp)))
-           (file-dir (pi-coding-agent//session-file-cwd file))
+                      (pilish//chat-buffers-in-persp persp))
+                     (pilish//chat-buffer-in-persp persp)))
+           (file-dir (pilish//session-file-cwd file))
            (chat-dir (and chat
                           (with-current-buffer chat
-                            (pi-coding-agent--chat-session-directory))))
+                            (pilish--chat-session-directory))))
            (wrong-buffer (and chat file-dir
                               (not (equal
                                     (file-name-as-directory file-dir)
@@ -1946,15 +1946,15 @@ re-resume a different session into the wrong process."
            (stale-process
             (and chat (not wrong-buffer)
                  (let* ((proc (buffer-local-value
-                               'pi-coding-agent--process chat))
+                               'pilish--process chat))
                         (state (buffer-local-value
-                                'pi-coding-agent--state chat)))
+                                'pilish--state chat)))
                    (or (not (processp proc))
                        (not (process-live-p proc))
                        (not (equal (plist-get state :session-file)
                                    file)))))))
       (when (or (null chat) wrong-buffer stale-process)
-        (let ((new-chat (pi-coding-agent//revive-session
+        (let ((new-chat (pilish//revive-session
                          chat file
                          ;; Buffers were killed (or belong to another
                          ;; directory): revive under the registry's saved
@@ -1962,18 +1962,18 @@ re-resume a different session into the wrong process."
                          ;; named/generated session keeps its buffer
                          ;; identity.
                          (and (or (null chat) wrong-buffer)
-                              (pi-coding-agent//registry-launch-name
+                              (pilish//registry-launch-name
                                persp-name file)))))
           (when (and new-chat (not (eq new-chat chat)))
             ;; The perspective was displaying another directory's session
             ;; buffer (drifted in through the layout fallback): pin the
             ;; correct buffers into the pi panes.
-            (pi-coding-agent//apply-pi-layout
+            (pilish//apply-pi-layout
              new-chat
-             (buffer-local-value 'pi-coding-agent--input-buffer new-chat)
+             (buffer-local-value 'pilish--input-buffer new-chat)
              nil nil)))))))
 
-(defun pi-coding-agent//restore-registry-buffers (entry)
+(defun pilish//restore-registry-buffers (entry)
   "Replay ENTRY's captured buffer specs through persp's load dispatch.
 Pi chat/input specs are skipped (the open path re-creates them).  Each
 spec fails open: errors are logged and missing files are not restored
@@ -1997,76 +1997,76 @@ as empty buffers."
            (message "pi: failed to restore buffer %S: %s"
                     spec (error-message-string err))))))))
 
-(defun pi-coding-agent//current-session-file ()
+(defun pilish//current-session-file ()
   "Return the session file of the current perspective, or nil.
 Only real perspectives count; the default perspective has no session."
   (when (bound-and-true-p persp-mode)
     (let* ((persp (get-current-persp))
            (name (safe-persp-name persp))
-           (entry (pi-coding-agent//registry-entry name)))
-      (or (and entry (pi-coding-agent//registry-fill-session-file
+           (entry (pilish//registry-entry name)))
+      (or (and entry (pilish//registry-fill-session-file
                       name (cdr entry)))
           (when (and persp (perspective-p persp))
-            (when-let* ((chat (pi-coding-agent//chat-buffer-in-persp persp)))
-              (plist-get (buffer-local-value 'pi-coding-agent--state chat)
+            (when-let* ((chat (pilish//chat-buffer-in-persp persp)))
+              (plist-get (buffer-local-value 'pilish--state chat)
                          :session-file)))))))
 
-(defun pi-coding-agent//open-session-launch-name (entry)
+(defun pilish//open-session-launch-name (entry)
   "Return the launch name to open closed session ENTRY, or nil.
 
 Named sessions reopen under their recorded :name (the session file's
 metadata), so their buffer identity survives the close/reopen cycle.
 An unnamed session returns nil when its directory has no live unnamed
-chat buffer — `pi-coding-agent--setup-session' then creates the
+chat buffer — `pilish--setup-session' then creates the
 directory's canonical buffers fresh — and a generated disambiguating
 name when it does, so reopening never reuses (and thereby hijacks) the
 directory's live unnamed chat buffer and process."
   (let* ((file (plist-get entry :file))
-         (name (pi-coding-agent//collapse-whitespace (plist-get entry :name))))
+         (name (pilish//collapse-whitespace (plist-get entry :name))))
     (cond
      ((and (stringp name) (not (string-empty-p name))) name)
      ((and (stringp file)
            (not (string-empty-p file))
            (condition-case nil
-               (pi-coding-agent--find-session
-                (pi-coding-agent--session-file-cwd-or-error file))
+               (pilish--find-session
+                (pilish--session-file-cwd-or-error file))
              (error nil)))
-      (pi-coding-agent//derived-session-name entry))
+      (pilish//derived-session-name entry))
      (t nil))))
 
-(defun pi-coding-agent//derived-session-name (entry)
+(defun pilish//derived-session-name (entry)
   "Return a stable launch name for unnamed closed session ENTRY.
 
 Used when ENTRY's directory already runs a live unnamed session, so
 reopening must not reuse the directory's canonical buffers.  The name
 joins the entry's display title with its session file's uuid prefix;
 the uuid keeps same-titled sessions of one directory distinct."
-  (let* ((title (pi-coding-agent//collapse-whitespace
-                 (pi-coding-agent//entry-title entry)))
-         (uuid (pi-coding-agent//file-uuid-prefix (plist-get entry :file))))
+  (let* ((title (pilish//collapse-whitespace
+                 (pilish//entry-title entry)))
+         (uuid (pilish//file-uuid-prefix (plist-get entry :file))))
     (if (and title uuid (not (string-empty-p title)))
         (format "%s · %s" title uuid)
       (or title uuid (format-time-string "%H:%M:%S")))))
 
-(defun pi-coding-agent//open-session-file-with-name (file launch)
+(defun pilish//open-session-file-with-name (file launch)
   "Open session FILE with launch name LAUNCH as a live session.
 
-Mirrors the package's `pi-coding-agent-open-session-file' — setup,
+Mirrors the package's `pilish-open-session-file' — setup,
 show buffers, resume — but passes LAUNCH (the session's recorded name
-or a generated disambiguator) to `pi-coding-agent--setup-session' so
+or a generated disambiguator) to `pilish--setup-session' so
 the reopened session gets its own chat/input buffers and pi process
 instead of reusing the directory's canonical unnamed ones.  Returns
 the chat buffer."
-  (let* ((dir (pi-coding-agent--session-file-cwd-or-error file))
-         (chat (pi-coding-agent--setup-session dir launch))
-         (input (buffer-local-value 'pi-coding-agent--input-buffer chat))
-         (proc (buffer-local-value 'pi-coding-agent--process chat)))
-    (pi-coding-agent--show-session-buffers chat input)
-    (when (pi-coding-agent--session-transition-ready-p chat "open")
-      (pi-coding-agent--resume-selected-session proc chat file))
+  (let* ((dir (pilish--session-file-cwd-or-error file))
+         (chat (pilish--setup-session dir launch))
+         (input (buffer-local-value 'pilish--input-buffer chat))
+         (proc (buffer-local-value 'pilish--process chat)))
+    (pilish--show-session-buffers chat input)
+    (when (pilish--session-transition-ready-p chat "open")
+      (pilish--resume-selected-session proc chat file))
     chat))
 
-(defun pi-coding-agent//open-session (entry)
+(defun pilish//open-session (entry)
   "Open closed session ENTRY: new perspective, pi session, buffers, layout.
 
 The reopened session always gets fresh chat/input buffers (and a fresh
@@ -2075,141 +2075,141 @@ unnamed ones open as the directory's canonical session unless that
 would collide with a live unnamed session of the same directory, in
 which case the session is opened under a generated unique name."
   (let* ((file (plist-get entry :file))
-         (title (pi-coding-agent//entry-title entry))
-         (label (pi-coding-agent//make-persp-label title file))
-         (persp-name (pi-coding-agent//unique-persp-name label file)))
+         (title (pilish//entry-title entry))
+         (label (pilish//make-persp-label title file))
+         (persp-name (pilish//unique-persp-name label file)))
     (persp-switch persp-name)
-    (pi-coding-agent//registry-put persp-name
+    (pilish//registry-put persp-name
                                    :session-file file
                                    :label-locked nil
                                    :buffers nil)
-    (pi-coding-agent//registry-save)
+    (pilish//registry-save)
     (condition-case err
-        (let* ((launch (pi-coding-agent//open-session-launch-name entry))
-               (chat (pi-coding-agent//open-session-file-with-name file launch))
+        (let* ((launch (pilish//open-session-launch-name entry))
+               (chat (pilish//open-session-file-with-name file launch))
                (input (and chat (buffer-local-value
-                                 'pi-coding-agent--input-buffer chat))))
-          (pi-coding-agent//restore-registry-buffers
-           (pi-coding-agent//registry-entry persp-name))
+                                 'pilish--input-buffer chat))))
+          (pilish//restore-registry-buffers
+           (pilish//registry-entry persp-name))
           ;; Pass the session's own chat/input buffers explicitly: the
           ;; layout fallback otherwise fills the pi panes with whatever
           ;; pi-chat buffer the purpose system considers most recent,
           ;; which can be another perspective's buffer (e.g. a different
           ;; directory's session).
-          (pi-coding-agent//apply-pi-layout chat input nil t))
+          (pilish//apply-pi-layout chat input nil t))
       (error
        ;; Roll back the perspective on failure: kill the pi process and
        ;; any session buffers created before the failure, then the
        ;; perspective itself.
        (when (perspective-p (persp-get-by-name persp-name))
          (let ((persp (persp-get-by-name persp-name)))
-           (dolist (buf (pi-coding-agent//exclusive-buffers persp))
+           (dolist (buf (pilish//exclusive-buffers persp))
              (when (buffer-live-p buf)
-               (pi-coding-agent//skip-kill-confirmation-for buf)
+               (pilish//skip-kill-confirmation-for buf)
                (kill-buffer buf)))
            (persp-kill (list persp-name) t)))
-       (pi-coding-agent//registry-remove persp-name)
-       (pi-coding-agent//registry-save)
+       (pilish//registry-remove persp-name)
+       (pilish//registry-save)
        (user-error "pi: failed to open session: %s"
                    (error-message-string err))))))
 
-(defun pi-coding-agent//open-or-switch (entry)
+(defun pilish//open-or-switch (entry)
   "Open closed session ENTRY, or switch to it when already opened.
 A live perspective whose chat buffer has settled on the session's file
 counts as opened even when its registry entry is stale or absent (e.g.
-named sessions started via `pi-coding-agent/open-named-session' inside
+named sessions started via `pilish/open-named-session' inside
 a registered perspective).
 
 Remote (TRAMP) session files are opened with the host's verified
-executable mapping (`pi-coding-agent//remote-executable-entry-for'),
-matching `pi-coding-agent/start-remote-session's spawn: the mapped
+executable mapping (`pilish//remote-executable-entry-for'),
+matching `pilish/start-remote-session's spawn: the mapped
 node directory is exported into the spawn PATH so pi's
 `#!/usr/bin/env node' shebang resolves on the PATH-less TRAMP spawn
 shell, and local `-e' extensions are dropped (handled for every
-remote spawn by `pi-coding-agent//remote-spawn-start-process').  An
+remote spawn by `pilish//remote-spawn-start-process').  An
 unestablished connection is probed with the bounded ssh deadline
-first (`pi-coding-agent//ensure-remote-reachable') — the open fails
+first (`pilish//ensure-remote-reachable') — the open fails
 with a clear error instead of hanging inside TRAMP's untimeoutable
 connection wait."
   (let* ((file (plist-get entry :file))
-         (remote-entry (pi-coding-agent//remote-executable-entry-for file))
-         ;; `pi-coding-agent-executable' is read deep inside the
+         (remote-entry (pilish//remote-executable-entry-for file))
+         ;; `pilish-executable' is read deep inside the
          ;; package's spawn path (and the startup version check); binding
          ;; it dynamically here makes a remote open spawn pi exactly
-         ;; like `pi-coding-agent/start-remote-session' does.
-         (pi-coding-agent-executable
+         ;; like `pilish/start-remote-session' does.
+         (pilish-executable
           (if remote-entry
-              (pi-coding-agent//remote-spawn-executable remote-entry)
-            pi-coding-agent-executable))
-         (persp-name (or (pi-coding-agent//registry-persp-name-for-file file)
-                         (car (rassoc file (pi-coding-agent//live-session-mappings))))))
-    (pi-coding-agent//ensure-remote-reachable file)
+              (pilish//remote-spawn-executable remote-entry)
+            pilish-executable))
+         (persp-name (or (pilish//registry-persp-name-for-file file)
+                         (car (rassoc file (pilish//live-session-mappings))))))
+    (pilish//ensure-remote-reachable file)
     (if persp-name
-        (pi-coding-agent//switch-to-session persp-name file)
-      (pi-coding-agent//open-session entry))))
+        (pilish//switch-to-session persp-name file)
+      (pilish//open-session entry))))
 
-(defun pi-coding-agent//adopt-live-buffer (buf file)
+(defun pilish//adopt-live-buffer (buf file)
   "Adopt live chat buffer BUF (no perspective) into a fresh perspective.
 
 BUF is a session started outside the persp flow: it is live and FILE
 has settled.  The existing chat/input buffers and their pi process are
 kept — no second process is spawned — and are registered into a new
 perspective with the pi window layout applied.  Returns BUF."
-  (let* ((title (pi-coding-agent//entry-title (list :file file)))
-         (label (pi-coding-agent//make-persp-label title file))
-         (persp-name (pi-coding-agent//unique-persp-name label file))
-         (input (buffer-local-value 'pi-coding-agent--input-buffer buf)))
+  (let* ((title (pilish//entry-title (list :file file)))
+         (label (pilish//make-persp-label title file))
+         (persp-name (pilish//unique-persp-name label file))
+         (input (buffer-local-value 'pilish--input-buffer buf)))
     (persp-switch persp-name)
     (when (and (buffer-live-p buf) (buffer-live-p input))
       (persp-add-buffer (list buf input) (get-current-persp) nil))
-    (pi-coding-agent//registry-put persp-name
+    (pilish//registry-put persp-name
                                    :session-file file
                                    :label-locked nil
                                    :buffers nil)
-    (pi-coding-agent//registry-save)
+    (pilish//registry-save)
     (condition-case err
-        (pi-coding-agent//apply-pi-layout buf input nil t)
+        (pilish//apply-pi-layout buf input nil t)
       (error
        (when (perspective-p (persp-get-by-name persp-name))
          (persp-kill (list persp-name) t))
-       (pi-coding-agent//registry-remove persp-name)
-       (pi-coding-agent//registry-save)
+       (pilish//registry-remove persp-name)
+       (pilish//registry-save)
        (user-error "pi: failed to adopt session: %s"
                    (error-message-string err))))
     buf))
 
-(defun pi-coding-agent//switch-to-live-buffer (buf)
+(defun pilish//switch-to-live-buffer (buf)
   "Switch to the perspective owning live pi chat buffer BUF.
 When BUF belongs to no perspective (a session started outside the
 persp flow), the existing buffers and process are adopted into a fresh
 perspective; for a fresh session without a file yet, BUF is displayed
 directly."
-  (if-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
+  (if-let* ((persp (pilish//persp-containing-buffer buf)))
       (let ((name (safe-persp-name persp)))
         (if (perspective-p (persp-get-by-name name))
             (persp-switch name)
           (user-error "The selected session's perspective is gone")))
     (if-let* ((file (plist-get (buffer-local-value
-                                'pi-coding-agent--state buf)
+                                'pilish--state buf)
                                :session-file))
               ((stringp file))
               ((not (string-empty-p file))))
-        (pi-coding-agent//adopt-live-buffer buf file)
+        (pilish//adopt-live-buffer buf file)
       (switch-to-buffer buf))))
 
-(defun pi-coding-agent//open-or-switch-target (target)
+(defun pilish//open-or-switch-target (target)
   "Open or switch to session TARGET from the session pickers.
 TARGET is (:buffer BUF) for a live session (switch to the
 perspective owning the active chat buffer) or (:entry ENTRY) for a
 closed one (open it, switching to it when it is already opened)."
   (cond
    ((plist-get target :buffer)
-    (pi-coding-agent//switch-to-live-buffer (plist-get target :buffer)))
+    (pilish//switch-to-live-buffer (plist-get target :buffer)))
    ((plist-get target :entry)
-    (pi-coding-agent//open-or-switch (plist-get target :entry)))
+    (pilish//open-or-switch (plist-get target :entry)))
    (t (user-error "Invalid session target"))))
 
-(defun pi-coding-agent/switch-session ()
+(defun pilish/switch-session ()
   "List all pi sessions; open the chosen one or switch to it if opened.
 The current session is excluded.  Sessions are grouped into sections,
 in order: the local machine's live sessions (●, active pi chat
@@ -2219,52 +2219,52 @@ local groups, then the local closed sessions (○, files on disk not
 loaded by a live session) under \"Closed sessions\".  Sections render
 with a boundary between groups — separate sources under helm, header
 rows otherwise — and each section keeps its group's sort order
-(configurable via `pi-coding-agent/session-sort-opened' and
-`pi-coding-agent/session-sort-closed'; a remote host section lists
+(configurable via `pilish/session-sort-opened' and
+`pilish/session-sort-closed'; a remote host section lists
 its host's live sessions first, then its closed ones).  Picking a
 live session switches to its perspective; picking a closed one opens
 it (reviving the perspective still registered for it).
 
 Scope: local sessions are always listed.  A remote host is listed
 whenever the layer knows it runs pi sessions — hosts with verified
-executables in `pi-coding-agent/remote-executables', hosts of active
+executables in `pilish/remote-executables', hosts of active
 pi chat buffers, and the host of the current session
-(`pi-coding-agent//known-remote-prefixes').  Listing a host's
+(`pilish//known-remote-prefixes').  Listing a host's
 sessions is best effort and never blocks: its live chat buffers are
 read from local state, its closed session files are scanned only over
 an already-established TRAMP connection; a disconnected host is
-probed in the background (`pi-coding-agent//remote-probe-async') and
+probed in the background (`pilish//remote-probe-async') and
 contributes no section to this listing — its sessions reappear in a
 later listing once it answers."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (pi-coding-agent//sync-labels)
-  (let* ((remote-prefixes (pi-coding-agent//known-remote-prefixes))
+  (pilish//sync-labels)
+  (let* ((remote-prefixes (pilish//known-remote-prefixes))
          (remote-scope (or remote-prefixes 'local))
-         (groups (pi-coding-agent//session-targets nil t t nil remote-scope))
-         (live (pi-coding-agent//sort-targets
-                (car groups) pi-coding-agent/session-sort-opened))
-         (closed (pi-coding-agent//sort-targets
-                  (cdr groups) pi-coding-agent/session-sort-closed))
-         (sections (pi-coding-agent//switch-session-sections live closed)))
+         (groups (pilish//session-targets nil t t nil remote-scope))
+         (live (pilish//sort-targets
+                (car groups) pilish/session-sort-opened))
+         (closed (pilish//sort-targets
+                  (cdr groups) pilish/session-sort-closed))
+         (sections (pilish//switch-session-sections live closed)))
     (if (null sections)
         (user-error "No other pi sessions found (looked in %s%s)"
-                    (expand-file-name pi-coding-agent/session-root)
+                    (expand-file-name pilish/session-root)
                     (if remote-prefixes
                         (format "; remote hosts %s are not connected or session-less (a background probe is running)"
                                 (mapconcat (lambda (prefix)
                                              (file-remote-p prefix 'host))
                                            remote-prefixes ", "))
                       ""))
-      (let ((choice (pi-coding-agent//pick-session-sections
+      (let ((choice (pilish//pick-session-sections
                      sections "Pi session: " nil t)))
         (when choice
-          (pi-coding-agent//open-or-switch-target
+          (pilish//open-or-switch-target
            (cdr (assoc choice (apply #'append (mapcar #'cdr sections))))))))))
 
-(defun pi-coding-agent/switch-session-in-dir ()
+(defun pilish/switch-session-in-dir ()
   "Switch to another pi session of the current directory, with its layout.
 
 The directory is the session's own directory inside pi chat/input
@@ -2281,36 +2281,36 @@ session opens it in a fresh perspective with its workspace restored.
 Either way the pi window
 layout (chat/input left, edit right) is applied afterwards."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (pi-coding-agent//sync-labels)
-  (let* ((dir (pi-coding-agent//context-directory))
+  (pilish//sync-labels)
+  (let* ((dir (pilish//context-directory))
          ;; A remote DIR's sessions live on its host: that host's live
          ;; buffers are admitted (REMOTE-SCOPE) and its closed sessions
          ;; are scanned — but only over an established connection
-         ;; (`pi-coding-agent//remote-scan-root' fires a background
+         ;; (`pilish//remote-scan-root' fires a background
          ;; probe and returns nil otherwise, so an unreachable host
          ;; never blocks the listing).
-         (remote-prefix (pi-coding-agent--remote-prefix-for-path dir))
-         (groups (pi-coding-agent//session-targets
+         (remote-prefix (pilish--remote-prefix-for-path dir))
+         (groups (pilish//session-targets
                   dir t t
-                  (pi-coding-agent//remote-scan-root remote-prefix)
+                  (pilish//remote-scan-root remote-prefix)
                   remote-prefix))
-         (live (pi-coding-agent//sort-targets
-                (car groups) pi-coding-agent/session-sort-opened))
-         (closed (pi-coding-agent//sort-targets
-                  (cdr groups) pi-coding-agent/session-sort-closed)))
+         (live (pilish//sort-targets
+                (car groups) pilish/session-sort-opened))
+         (closed (pilish//sort-targets
+                  (cdr groups) pilish/session-sort-closed)))
     (if (and (null live) (null closed))
         (user-error "No other pi sessions found in %s"
                     (abbreviate-file-name (directory-file-name dir)))
-      (let ((choice (pi-coding-agent//pick-session
+      (let ((choice (pilish//pick-session
                      live closed
                      (format "Pi session in %s: "
                              (abbreviate-file-name (directory-file-name dir)))
                      nil t)))
         (when choice
-          (pi-coding-agent//open-or-switch-target
+          (pilish//open-or-switch-target
            (cdr (or (assoc choice live) (assoc choice closed))))
           ;; Re-assert the pi window layout for the switched-to session
           ;; (chat/input left, edit right), putting whatever buffer the
@@ -2319,16 +2319,16 @@ layout (chat/input left, edit right) is applied afterwards."
           ;; perspective so buffers from other workspaces never leak in.
           (when-let* ((persp (get-current-persp))
                       ((perspective-p persp))
-                      (chat (pi-coding-agent//chat-buffer-in-persp persp)))
-            (pi-coding-agent//apply-pi-layout
+                      (chat (pilish//chat-buffer-in-persp persp)))
+            (pilish//apply-pi-layout
              chat
-             (buffer-local-value 'pi-coding-agent--input-buffer chat)
+             (buffer-local-value 'pilish--input-buffer chat)
              (current-buffer) t)))))))
 
 ;; ---------------------------------------------------------------------
 ;; New session
 
-(defun pi-coding-agent//context-directory ()
+(defun pilish//context-directory ()
   "The \"current directory\" for session commands (never prompts itself).
 Inside pi chat/input buffers the session's recorded directory; inside
 terminal buffers the terminal's working directory (vterm via its
@@ -2336,34 +2336,34 @@ terminal buffers the terminal's working directory (vterm via its
 sync); elsewhere the visited file's directory, else
 `default-directory'."
   (cond
-   ((derived-mode-p 'pi-coding-agent-chat-mode 'pi-coding-agent-input-mode)
+   ((derived-mode-p 'pilish-chat-mode 'pilish-input-mode)
     (condition-case nil
-        (pi-coding-agent--session-directory)
+        (pilish--session-directory)
       (error default-directory)))
-   ((pi-coding-agent//terminal-buffer-p)
+   ((pilish//terminal-buffer-p)
     (if (and (derived-mode-p 'vterm-mode)
              (get-buffer-process (current-buffer)))
-        (or (pi-coding-agent//vterm-process-directory
+        (or (pilish//vterm-process-directory
              (get-buffer-process (current-buffer)))
             default-directory)
       default-directory))
    (t (or (and buffer-file-name (file-name-directory buffer-file-name))
           default-directory))))
 
-(defun pi-coding-agent//live-session-in-dir-p (dir)
+(defun pilish//live-session-in-dir-p (dir)
   "Return non-nil when DIR has a live unnamed pi session."
-  (when-let* ((chat (pi-coding-agent--find-session dir)))
-    (let ((proc (buffer-local-value 'pi-coding-agent--process chat)))
+  (when-let* ((chat (pilish--find-session dir)))
+    (let ((proc (buffer-local-value 'pilish--process chat)))
       (and (processp proc) (process-live-p proc)))))
 
-(defconst pi-coding-agent//new-session-candidate "✚ New session"
+(defconst pilish//new-session-candidate "✚ New session"
   "Completing-read candidate for starting a fresh pi session.")
 
-(defun pi-coding-agent//read-new-session-name (dir)
+(defun pilish//read-new-session-name (dir)
   "Prompt for the name of a fresh pi session in DIR.
 Returns the trimmed name, or nil when the user wants an unnamed
 session (empty input).  An unnamed session is refused later by
-`pi-coding-agent//start-fresh-session' when DIR already runs a live
+`pilish//start-fresh-session' when DIR already runs a live
 unnamed session."
   (let ((name (string-trim
                (read-string
@@ -2371,12 +2371,12 @@ unnamed session."
                         (abbreviate-file-name (directory-file-name dir)))))))
     (and (not (string-empty-p name)) name)))
 
-(defun pi-coding-agent//new-session-choice (dir &optional root)
+(defun pilish//new-session-choice (dir &optional root)
   "Choose between DIR's existing sessions and a fresh session.
 Returns (existing . TARGET) when an existing session was chosen,
 (new . NAME) when a fresh session named NAME (nil = unnamed) should
 be started.  ROOT overrides the scanned session root (see
-`pi-coding-agent//session-entries'); it is how the remote-session flow
+`pilish//session-entries'); it is how the remote-session flow
 scans the chosen host's own session directory.
 
 With no existing sessions (none live, none closed) a fresh session
@@ -2388,22 +2388,22 @@ through the unified session picker — live (●) first, then closed
 title — plus the \"✚ New session\" candidate and free-form input
 (any non-matching name) both starting a fresh named session; an
 empty input starts an unnamed session."
-  (let* ((groups (pi-coding-agent//session-targets
+  (let* ((groups (pilish//session-targets
                   dir t nil root
                   ;; A remote DIR's live sessions live on its host:
                   ;; admit that host's chat buffers (directory-scoped
                   ;; lists get their closed entries from ROOT itself,
                   ;; not from the scope).
-                  (pi-coding-agent--remote-prefix-for-path dir)))
-         (live (pi-coding-agent//sort-targets
-                (car groups) pi-coding-agent/session-sort-opened))
-         (closed (pi-coding-agent//sort-targets
-                  (cdr groups) pi-coding-agent/session-sort-closed)))
+                  (pilish--remote-prefix-for-path dir)))
+         (live (pilish//sort-targets
+                (car groups) pilish/session-sort-opened))
+         (closed (pilish//sort-targets
+                  (cdr groups) pilish/session-sort-closed)))
     (if (and (null live) (null closed))
-        (cons 'new (and (pi-coding-agent//live-session-in-dir-p dir)
-                        (pi-coding-agent//read-new-session-name dir)))
-      (let* ((extra (list (cons pi-coding-agent//new-session-candidate nil)))
-             (choice (pi-coding-agent//pick-session
+        (cons 'new (and (pilish//live-session-in-dir-p dir)
+                        (pilish//read-new-session-name dir)))
+      (let* ((extra (list (cons pilish//new-session-candidate nil)))
+             (choice (pilish//pick-session
                       live closed
                       (format "Pi session in %s (type a new name for a new session): "
                               (abbreviate-file-name (directory-file-name dir)))
@@ -2412,22 +2412,22 @@ empty input starts an unnamed session."
         (cond
          (target
           (cons 'existing target))
-         ((string= choice pi-coding-agent//new-session-candidate)
-          (cons 'new (pi-coding-agent//read-new-session-name dir)))
+         ((string= choice pilish//new-session-candidate)
+          (cons 'new (pilish//read-new-session-name dir)))
          ((or (null choice) (string-empty-p choice))
           (cons 'new nil))
          (t
           (cons 'new (let ((name (string-trim choice)))
                        (and (not (string-empty-p name)) name)))))))))
 
-(defun pi-coding-agent//start-fresh-session (dir &optional name)
+(defun pilish//start-fresh-session (dir &optional name)
   "Start a brand-new pi session in DIR as its own perspective.
 NAME (optional, trimmed) opens a named parallel session, labelled
 NAME and label-locked; without NAME an unnamed session is started
 (labelled \"New session · DIR\") and refused when DIR already runs a
 live unnamed session — the package allows one unnamed session per
 directory.  Creates and switches to the perspective, starts the pi
-process via `pi-coding-agent--setup-session' (fresh, no resume),
+process via `pilish--setup-session' (fresh, no resume),
 registers the registry entry, and applies the pi window layout.
 Returns the chat buffer; on failure the fresh perspective is rolled
 back and an error signalled."
@@ -2435,13 +2435,13 @@ back and an error signalled."
                     (not (string-empty-p (string-trim name)))
                     (string-trim name)))
          (dir (file-name-as-directory
-               (pi-coding-agent--route-preserving-expand-file-name dir)))
+               (pilish--route-preserving-expand-file-name dir)))
          (label (if name
                     name
                   (format "New session · %s"
                           (abbreviate-file-name (directory-file-name dir)))))
-         (persp-name (pi-coding-agent//unique-persp-name label nil)))
-    (when (and (null name) (pi-coding-agent//live-session-in-dir-p dir))
+         (persp-name (pilish//unique-persp-name label nil)))
+    (when (and (null name) (pilish//live-session-in-dir-p dir))
       (user-error "A pi session is already running in %s — give a session \
 name for a parallel session" dir))
     (persp-switch persp-name)
@@ -2451,14 +2451,14 @@ name for a parallel session" dir))
     ;; rolls the fresh perspective back so a retry starts clean.
     (let ((chat
            (condition-case err
-               (let ((chat (pi-coding-agent--setup-session dir name)))
-                 (pi-coding-agent//registry-put persp-name
+               (let ((chat (pilish--setup-session dir name)))
+                 (pilish//registry-put persp-name
                                                 :session-file nil
                                                 :label-locked (and name t)
                                                 :buffers nil)
-                 (pi-coding-agent//registry-save)
-                 (let ((input (buffer-local-value 'pi-coding-agent--input-buffer chat)))
-                   (pi-coding-agent//apply-pi-layout chat input nil t))
+                 (pilish//registry-save)
+                 (let ((input (buffer-local-value 'pilish--input-buffer chat)))
+                   (pilish//apply-pi-layout chat input nil t))
                  chat)
              (error
               (when (perspective-p (persp-get-by-name persp-name))
@@ -2467,10 +2467,10 @@ name for a parallel session" dir))
                           (error-message-string err))))))
       chat)))
 
-(defun pi-coding-agent/start-new-session ()
+(defun pilish/start-new-session ()
   "Start a new pi session in a user-chosen directory, or open an existing one.
 
-Always prompts for the directory (unlike `pi-coding-agent/layout',
+Always prompts for the directory (unlike `pilish/layout',
 which reuses the recorded directory inside pi buffers); the prompt
 default follows the layout's directory logic.  When the directory has
 existing sessions, they are offered for selection — live (●) first,
@@ -2484,25 +2484,25 @@ session; an empty name starts an unnamed session, refused when the
 directory already runs a live unnamed session.  With no existing
 sessions a fresh unnamed session is started directly."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((default-dir (pi-coding-agent//context-directory))
+  (let* ((default-dir (pilish//context-directory))
          (dir (read-directory-name "Start new pi session in directory: "
                                    default-dir default-dir t))
-         (dir (pi-coding-agent--route-preserving-expand-file-name dir))
-         (choice (pi-coding-agent//new-session-choice dir)))
+         (dir (pilish--route-preserving-expand-file-name dir))
+         (choice (pilish//new-session-choice dir)))
     (pcase choice
       (`(existing . ,target)
-       (pi-coding-agent//open-or-switch-target target))
+       (pilish//open-or-switch-target target))
       (`(new . ,name)
-       (pi-coding-agent//start-fresh-session dir name)))))
+       (pilish//start-fresh-session dir name)))))
 
 ;; ---------------------------------------------------------------------
 ;; Remote sessions (TRAMP)
 ;;
-;; `pi-coding-agent/start-remote-session' (SPC a i m) starts a session
-;; on a remote host the way `pi-coding-agent/start-new-session' does
+;; `pilish/start-remote-session' (SPC a i m) starts a session
+;; on a remote host the way `pilish/start-new-session' does
 ;; locally: choose a host from the ssh config (a single configured
 ;; host is used without prompting), choose the remote directory
 ;; (default: the host's home), then the normal new-session flow —
@@ -2510,13 +2510,13 @@ sessions a fresh unnamed session is started directly."
 ;; scanned on the remote host), a fresh session otherwise.
 ;;
 ;; The pi process itself runs on the remote host through TRAMP: the
-;; package's `pi-coding-agent--start-process' detects the remote
+;; package's `pilish--start-process' detects the remote
 ;; prefix in the session directory and starts pi over ssh
 ;; (`make-process' with :file-handler and a ready-marker protocol),
 ;; so the remote host needs the pi CLI installed and reachable via
 ;; `ssh HOST'.
 
-(defun pi-coding-agent//ssh-config-include-files (patterns file)
+(defun pilish//ssh-config-include-files (patterns file)
   "Return readable files named by ssh config `Include' PATTERNS.
 PATTERNS is the raw value of an `Include' directive in FILE.
 `~' references and glob(7) wildcards are expanded; relative paths
@@ -2536,10 +2536,10 @@ Unreadable or missing files are skipped."
             (push m files)))))
     (nreverse files)))
 
-(defun pi-coding-agent//ssh-config-parse (&optional files depth)
+(defun pilish//ssh-config-parse (&optional files depth)
   "Parse ssh config FILES, returning (HOSTS . INFO).
 FILES is a string or list of strings; nil means
-`pi-coding-agent/ssh-config-file'.  HOSTS lists the plain host names
+`pilish/ssh-config-file'.  HOSTS lists the plain host names
 in config order — wildcard and negation patterns (containing `*',
 `?', `[' or `!') and `Match' blocks are skipped — deduplicated.
 INFO is an alist mapping each host to (HOSTNAME . USER) taken from
@@ -2547,7 +2547,7 @@ its block; option lines attach to every plain pattern of the
 current `Host' line.  `Include' directives are followed recursively
 (depth-capped)."
   (let* ((files (cond ((null files)
-                       (list (expand-file-name pi-coding-agent/ssh-config-file)))
+                       (list (expand-file-name pilish/ssh-config-file)))
                       ((stringp files) (list files))
                       (t files)))
          (hosts '())
@@ -2576,8 +2576,8 @@ current `Host' line.  `Include' directives are followed recursively
                        (push pat cur))))
                   ("include"
                    (unless in-match
-                     (let ((sub (pi-coding-agent//ssh-config-parse
-                                 (pi-coding-agent//ssh-config-include-files
+                     (let ((sub (pilish//ssh-config-parse
+                                 (pilish//ssh-config-include-files
                                   rest file)
                                  (1+ (or depth 0)))))
                        ;; hosts/info are kept reversed; the include's
@@ -2603,26 +2603,26 @@ current `Host' line.  `Include' directives are followed recursively
     (cons (delete-dups (nreverse hosts))
           (delete-dups info))))
 
-(defun pi-coding-agent//ssh-config-hosts (&optional file)
+(defun pilish//ssh-config-hosts (&optional file)
   "Return the host aliases from the ssh config file.
 Only plain `Host' patterns whose block declares a `HostName' field
 (an alias pointing at the real DNS name) are returned; entries that
 are already direct hostnames, or that only set options like `User'
 or `IdentityFile', are filtered out.  See
-`pi-coding-agent//ssh-config-parse' for the extraction rules."
-  (let* ((parsed (pi-coding-agent//ssh-config-parse file))
+`pilish//ssh-config-parse' for the extraction rules."
+  (let* ((parsed (pilish//ssh-config-parse file))
          (info (cdr parsed)))
     (cl-remove-if-not
      (lambda (host) (car (cdr (assoc host info))))
      (car parsed))))
 
-(defun pi-coding-agent//ssh-config-host-info (host &optional file)
+(defun pilish//ssh-config-host-info (host &optional file)
   "Return (HOSTNAME . USER) for HOST from the ssh config, or nil."
-  (cdr (assoc host (cdr (pi-coding-agent//ssh-config-parse file)))))
+  (cdr (assoc host (cdr (pilish//ssh-config-parse file)))))
 
-(defun pi-coding-agent//read-remote-host (hosts)
+(defun pilish//read-remote-host (hosts)
   "Prompt for one of HOSTS, annotating each with its ssh config info."
-  (let* ((info (cdr (pi-coding-agent//ssh-config-parse)))
+  (let* ((info (cdr (pilish//ssh-config-parse)))
          ;; `completion-extra-properties' is read by the completion UI
          ;; (vertico, Emacs's own *Completions*) during the minibuffer
          ;; session, which runs inside this dynamic extent.
@@ -2637,15 +2637,15 @@ or `IdentityFile', are filtered out.  See
                               (and user (format " (user %s)" user)))))))))
     (completing-read "Remote host: " hosts nil t nil nil nil)))
 
-(defun pi-coding-agent//remote-session-root (dir)
+(defun pilish//remote-session-root (dir)
   "Return the pi session root on DIR's remote host, or nil for a local DIR.
 Uses the remote default agent directory (~/.pi/agent/sessions); the
 local PI_AGENT_DIR override is not propagated to remote pi processes
 (TRAMP does not forward environment), so it is not applied here."
-  (when-let* ((prefix (pi-coding-agent--remote-prefix dir)))
+  (when-let* ((prefix (pilish--remote-prefix dir)))
     (concat prefix "~/.pi/agent/sessions/")))
 
-(defun pi-coding-agent//remote-login-args (timeout)
+(defun pilish//remote-login-args (timeout)
   "Full ssh login args for the `login-args' connection property.
 The property REPLACES the method's args, so the complete ssh arg
 list is rebuilt: `-l %u' / `-p %p' specs, an added
@@ -2671,10 +2671,10 @@ recognized prompt; TRAMP then switches to its own clean shell."
           (list (list "-e" "none") (list "%h")
                 (list "exec") (list "/bin/sh" "-i"))))
 
-(defun pi-coding-agent//remote-host-probe (host &optional timeout)
+(defun pilish//remote-host-probe (host &optional timeout)
   "Probe HOST's ssh reachability with a bounded asynchronous subprocess.
 Run `ssh HOST true' with `-o BatchMode=yes' and `-o
-ConnectTimeout=TIMEOUT' (default `pi-coding-agent/remote-connect-timeout',
+ConnectTimeout=TIMEOUT' (default `pilish/remote-connect-timeout',
 minimum 1s) asynchronously, and hard-kill the probe at the
 deadline.  Return (RESULT . DIAGNOSTIC): RESULT is `reachable'
 (exit 0), `auth' (host answered but rejected BatchMode
@@ -2698,7 +2698,7 @@ plain `true' so a successful probe also reports the remote home
 directory (the DIAGNOSTIC of a `reachable' result); the caller uses
 it to make user-private bin directories visible to TRAMP."
   (let* ((timeout (max 1 (or timeout
-                             pi-coding-agent/remote-connect-timeout
+                             pilish/remote-connect-timeout
                              20)))
          (outbuf (generate-new-buffer " *pi-remote-probe stdout*"))
          (errbuf (generate-new-buffer " *pi-remote-probe stderr*"))
@@ -2758,7 +2758,7 @@ it to make user-private bin directories visible to TRAMP."
           (kill-buffer buf))))
     result))
 
-(defun pi-coding-agent//remote-shell-run (script)
+(defun pilish//remote-shell-run (script)
   "Run SCRIPT with /bin/sh -c on the live TRAMP connection.
 `default-directory' must be a remote directory when called.
 Returns (EXIT-STATUS . TRIMMED-OUTPUT); the process runs over the
@@ -2772,7 +2772,7 @@ already-established connection, so a dead connection fails fast."
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 
-(defun pi-coding-agent//remote-ask-executable (host name)
+(defun pilish//remote-ask-executable (host name)
   "Ask the user to locate executable NAME on remote HOST.
 Completes over the remote file system, then verifies the chosen
 path is remotely executable.  Loops until a valid path is given or
@@ -2792,13 +2792,13 @@ the user quits; returns the absolute remote path or nil."
           (message "Not an executable: %s" answer)))
       (user-error "pi: cannot continue without %s on %s" name host))))
 
-(defun pi-coding-agent//remote-verify-pi (host pi-path node-path)
+(defun pilish//remote-verify-pi (host pi-path node-path)
   "Verify that pi at PI-PATH runs on HOST; return its version line.
 Runs `pi --version' over the live connection; NODE-PATH (optional)
 is the mapped node binary whose directory is prepended to PATH so
 pi's `#!/usr/bin/env node' shebang resolves.  Returns the trimmed
 version output, or nil when the run fails."
-  (pcase (pi-coding-agent//remote-shell-run
+  (pcase (pilish//remote-shell-run
           (format "%s%s --version"
                   (if node-path
                       (format "PATH=%s:$PATH; export PATH; "
@@ -2809,10 +2809,10 @@ version output, or nil when the run fails."
                   (tramp-shell-quote-argument pi-path)))
     (`(0 . ,out) (and (not (string-empty-p out)) out))))
 
-(defun pi-coding-agent//remote-locate-executables (host &optional home)
+(defun pilish//remote-locate-executables (host &optional home)
   "Locate the pi and node executables on remote HOST before starting pi.
 The live TRAMP connection to HOST must be established.  The saved
-mapping in `pi-coding-agent/remote-executables' is consulted and
+mapping in `pilish/remote-executables' is consulted and
 re-verified first (the pi binary must still exist and actually
 run), then the connection's PATH and common install locations are
 searched, and finally the user is asked to locate the binary
@@ -2824,7 +2824,7 @@ needed through PATH."
   (let* ((root (format "/ssh:%s:" host))
          (home (and home (directory-file-name home)))
          (remote (lambda (p) (concat root p)))
-         (entry (alist-get host pi-coding-agent/remote-executables nil nil #'string-equal))
+         (entry (alist-get host pilish/remote-executables nil nil #'string-equal))
          (default-directory root)
          pi-path node-path)
     ;; 1. Saved mapping: re-verify that the pi binary still exists
@@ -2833,11 +2833,11 @@ needed through PATH."
                (file-executable-p (funcall remote (car entry))))
       (setq pi-path (car entry) node-path (cdr entry)))
     (when (and pi-path
-               (not (pi-coding-agent//remote-verify-pi host pi-path node-path)))
+               (not (pilish//remote-verify-pi host pi-path node-path)))
       (setq pi-path nil))
     ;; 2. Search the connection's PATH and common install locations.
     (unless pi-path
-      (let ((found (cdr (pi-coding-agent//remote-shell-run "command -v pi 2>/dev/null"))))
+      (let ((found (cdr (pilish//remote-shell-run "command -v pi 2>/dev/null"))))
         (when (and (string-prefix-p "/" found) (file-executable-p (funcall remote found)))
           (setq pi-path found))))
     (unless pi-path
@@ -2858,7 +2858,7 @@ needed through PATH."
     ;; 4. node: pi's `#!/usr/bin/env node' shebang resolves it through
     ;; PATH; record where it lives when it is not on the default PATH.
     (unless node-path
-      (let ((found (pi-coding-agent//remote-shell-run "command -v node 2>/dev/null")))
+      (let ((found (pilish//remote-shell-run "command -v node 2>/dev/null")))
         (when (and (eq (car found) 0) (string-prefix-p "/" (cdr found)))
           (setq node-path (cdr found)))))
     (unless node-path
@@ -2869,31 +2869,31 @@ needed through PATH."
                    (file-executable-p (funcall remote (concat dir "/node"))))
           (setq node-path (concat dir "/node")))))
     ;; 5. Verify the whole chain actually works before recording it.
-    (unless (pi-coding-agent//remote-verify-pi host pi-path node-path)
+    (unless (pilish//remote-verify-pi host pi-path node-path)
       (let ((answer (and (yes-or-no-p
                           (format "pi at %s on %s did not run - likely its node runtime is missing. Locate node on %s? "
                                   pi-path host host))
                          (read-file-name (format "node executable on %s: " host)
                                          root nil t nil #'file-executable-p))))
         (setq node-path (and answer (file-remote-p answer 'localname)))
-        (unless (pi-coding-agent//remote-verify-pi host pi-path node-path)
+        (unless (pilish//remote-verify-pi host pi-path node-path)
           (user-error "pi at %s on %s still does not run (node: %s) - check `ssh %s' and install pi + node"
                       pi-path host (or node-path "missing") host))))
     ;; 6. Persist the verified mapping for this host.
-    (setq pi-coding-agent/remote-executables
+    (setq pilish/remote-executables
           (cons (cons host (cons pi-path node-path))
                 ;; String keys: `assoc-delete-all', not assq — eq never
                 ;; matches strings, so an assq-based delete never
                 ;; removed the previous entry and the saved custom
                 ;; accumulated a duplicate per re-verification.
-                (assoc-delete-all host pi-coding-agent/remote-executables)))
-    (customize-save-variable 'pi-coding-agent/remote-executables
-                             pi-coding-agent/remote-executables)
+                (assoc-delete-all host pilish/remote-executables)))
+    (customize-save-variable 'pilish/remote-executables
+                             pilish/remote-executables)
     (message "pi on %s: %s%s" host pi-path
              (if node-path (format " (node: %s)" node-path) ""))
     (cons pi-path node-path)))
 
-(defun pi-coding-agent//remote-extra-args (host)
+(defun pilish//remote-extra-args (host)
   "Extra pi arguments usable on remote HOST.
 Drops every \"-e LOCAL-FILE\" pair whose file lives on this machine
 (not a remote file name) — a remote pi process cannot load it, and
@@ -2901,7 +2901,7 @@ the Emacs bridge extension in particular could not work remotely
 anyway: its tool drives this Emacs through `emacsclient', which
 would have to run on HOST and reach this Emacs' server socket.  All
 other arguments are passed through unchanged."
-  (let (out (tail pi-coding-agent-extra-args))
+  (let (out (tail pilish-extra-args))
     (while tail
       (let ((arg (pop tail)))
         (if (and (string-equal arg "-e") tail)
@@ -2914,13 +2914,13 @@ other arguments are passed through unchanged."
           (setq out (append out (list arg))))))
     out))
 
-(defun pi-coding-agent/start-remote-session (&optional host)
-  "Start a pi session on a remote host from `pi-coding-agent/ssh-config-file'.
+(defun pilish/start-remote-session (&optional host)
+  "Start a pi session on a remote host from `pilish/ssh-config-file'.
 
 Prompts for the host among the aliases of the ssh config file —
 plain (non-wildcard) `Host' entries whose block declares a
 `HostName' field; with exactly one alias it is used without
-prompting.  Then behaves like `pi-coding-agent/start-new-session'
+prompting.  Then behaves like `pilish/start-new-session'
 on that host: prompts for the remote directory (default: the host's
 home), offers that directory's existing sessions — live first, then
 closed, scanned on the remote host — and starts a fresh session
@@ -2930,18 +2930,18 @@ The pi process runs on the remote host through TRAMP (ssh method),
 so the host must be reachable via `ssh HOST' with the pi CLI
 installed."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((timeout pi-coding-agent/remote-connect-timeout)
-         (hosts (pi-coding-agent//ssh-config-hosts))
+  (let* ((timeout pilish/remote-connect-timeout)
+         (hosts (pilish//ssh-config-hosts))
          (host (or host
                    (pcase (length hosts)
                      (0 (user-error
                          "No host aliases in %s — add Host entries with a HostName field pointing at the real DNS name (or use SPC a i n with a /ssh:HOST:path directory)"
-                         (expand-file-name pi-coding-agent/ssh-config-file)))
+                         (expand-file-name pilish/ssh-config-file)))
                      (1 (car hosts))
-                     (_ (pi-coding-agent//read-remote-host hosts)))))
+                     (_ (pilish//read-remote-host hosts)))))
          ;; Bound while the connection is established: ssh's own
          ;; ConnectTimeout (via the login-args property, which
          ;; replaces the method args) aborts an unreachable or
@@ -2954,7 +2954,7 @@ installed."
           (if timeout
               (cons (list (format "/ssh:%s:" host)
                           "login-args"
-                          (pi-coding-agent//remote-login-args timeout))
+                          (pilish//remote-login-args timeout))
                     tramp-connection-properties)
             tramp-connection-properties))
          ;; Reachability probe BEFORE any TRAMP work: an ssh that stays
@@ -2967,7 +2967,7 @@ installed."
          ;; user's private bin directories visible on the connection.
          (probe (progn
                   (message "Probing %s (ssh, %ds timeout) ..." host timeout)
-                  (pi-coding-agent//remote-host-probe host timeout)))
+                  (pilish//remote-host-probe host timeout)))
          (_ (pcase probe
               (`(reachable . ,_) nil)
               (`(auth . ,diag)
@@ -3020,7 +3020,7 @@ installed."
          ;; default expansion.  The canonical home (no `~') also keeps
          ;; the prompt itself free of hidden connections.
          ;; `tramp-set-connection-property' ensures the login-args
-         ;; (see `pi-coding-agent//remote-login-args') also apply when
+         ;; (see `pilish//remote-login-args') also apply when
          ;; a connection cache for this host already exists — pushed
          ;; `tramp-connection-properties' entries only seed freshly
          ;; created cache tables.
@@ -3036,11 +3036,11 @@ installed."
                 (tramp-flush-connection-property vec "remote-path")
                 (tramp-set-connection-property
                  vec "login-args"
-                 (pi-coding-agent//remote-login-args timeout)))))
+                 (pilish//remote-login-args timeout)))))
          (home (condition-case err
                    (progn
                      (message "Connecting to %s ..." host)
-                     (pi-coding-agent//normalized-dir
+                     (pilish//normalized-dir
                       (format "/ssh:%s:~" host)))
                  (error
                   (user-error
@@ -3052,7 +3052,7 @@ installed."
          ;; shell is bypassed on purpose), so `pi' may not be found
          ;; there even though it works in an ssh login session.  The
          ;; located paths are verified by actually running pi remotely,
-         ;; recorded in `pi-coding-agent/remote-executables', and bound
+         ;; recorded in `pilish/remote-executables', and bound
          ;; as the executable below — with the mapped node directory
          ;; exported into the spawn PATH, since pi's
          ;; `#!/usr/bin/env node' shebang would otherwise fail with
@@ -3060,60 +3060,60 @@ installed."
          ;; PATH-less spawn shell — making the pi spawn independent of
          ;; the remote PATH entirely.
          (executables (condition-case err
-                          (pi-coding-agent//remote-locate-executables
+                          (pilish//remote-locate-executables
                            host (file-remote-p home 'localname))
                         (quit (user-error "pi: cancelled — no executable mapping for %s" host))))
          (dir (read-directory-name
                (format "Start pi session on %s in directory: " host)
                home home t))
          (dir (condition-case err
-                  (pi-coding-agent//normalized-dir dir)
+                  (pilish//normalized-dir dir)
                 (error
                  (user-error "Cannot reach %s: %s"
                              host (error-message-string err)))))
-         (choice (pi-coding-agent//new-session-choice
-                  dir (pi-coding-agent//remote-session-root dir))))
-    (let ((pi-coding-agent-executable
-           (pi-coding-agent//remote-spawn-executable executables))
-          (pi-coding-agent-extra-args (pi-coding-agent//remote-extra-args host)))
+         (choice (pilish//new-session-choice
+                  dir (pilish//remote-session-root dir))))
+    (let ((pilish-executable
+           (pilish//remote-spawn-executable executables))
+          (pilish-extra-args (pilish//remote-extra-args host)))
       (pcase choice
         (`(existing . ,target)
-         (pi-coding-agent//open-or-switch-target target)
+         (pilish//open-or-switch-target target)
          ;; Cover later re-spawns of the pi process (restart, session
          ;; file re-open) with the verified PATH-independent spawn.
-         (when (derived-mode-p 'pi-coding-agent-mode)
-           (setq-local pi-coding-agent-executable
-                       (pi-coding-agent//remote-spawn-executable
+         (when (derived-mode-p 'pilish-mode)
+           (setq-local pilish-executable
+                       (pilish//remote-spawn-executable
                         executables))))
         (`(new . ,name)
-         (let ((chat (pi-coding-agent//start-fresh-session dir name)))
+         (let ((chat (pilish//start-fresh-session dir name)))
            (when (buffer-live-p chat)
              (with-current-buffer chat
-               (setq-local pi-coding-agent-executable
-                           (pi-coding-agent//remote-spawn-executable
+               (setq-local pilish-executable
+                           (pilish//remote-spawn-executable
                             executables))))))))))
 
 ;; ---------------------------------------------------------------------
 ;; Worktree and workspace sessions
 ;;
 ;; Two commands turn a git repository (or several) into a fresh
-;; worktree under `pi-coding-agent/workspace-root' (default ~/work)
+;; worktree under `pilish/workspace-root' (default ~/work)
 ;; and start a new pi session — own perspective, pi window layout —
 ;; in it:
 ;;
-;; - `pi-coding-agent/new-worktree-session' (SPC a i w): one repo ->
+;; - `pilish/new-worktree-session' (SPC a i w): one repo ->
 ;;   one worktree at ROOT/SUFFIX, session named SUFFIX;
-;; - `pi-coding-agent/new-workspace-session' (SPC a i W): one or more
+;; - `pilish/new-workspace-session' (SPC a i W): one or more
 ;;   repos -> ROOT/NAME/repos/<repo> worktrees, session named NAME at
 ;;   ROOT/NAME.
 ;;
 ;; Repos are picked with helm (single-select, or multi-select with
-;; `pi-coding-agent/repo-mark-key' marking for the workspace command;
+;; `pilish/repo-mark-key' marking for the workspace command;
 ;; `completing-read'/`completing-read-multiple' without helm).  The
 ;; pickers unbind helm's C-SPC/C-@ marking keys, which commonly
 ;; conflict with input method activation.  Candidates come from the
 ;; context directory, `projectile-known-projects', and one level
-;; under each `pi-coding-agent/repo-roots' entry; any path can be
+;; under each `pilish/repo-roots' entry; any path can be
 ;; typed instead.  Worktrees are created from the repo's mainline
 ;; branch — origin/main, else origin/master, else the local
 ;; main/master — fetched best-effort from origin first
@@ -3122,7 +3122,7 @@ installed."
 ;; checked out attached; otherwise the worktree is created detached
 ;; at the branch tip.
 
-(defun pi-coding-agent//git-run (dir &rest args)
+(defun pilish//git-run (dir &rest args)
   "Run `git -C DIR ARGS', sending combined output to the current buffer.
 
 Returns git's exit status (0 = success).  The `timeout' utility caps
@@ -3140,29 +3140,29 @@ git fail instead of waiting."
                                     process-environment)))
     (apply #'process-file program nil t nil args)))
 
-(defun pi-coding-agent//git-output (dir &rest args)
+(defun pilish//git-output (dir &rest args)
   "Run git in DIR with ARGS; return trimmed output, or nil on failure."
   (with-temp-buffer
-    (when (zerop (apply #'pi-coding-agent//git-run dir args))
+    (when (zerop (apply #'pilish//git-run dir args))
       (string-trim (buffer-string)))))
 
-(defun pi-coding-agent//git-repo-root (dir)
+(defun pilish//git-repo-root (dir)
   "Return the top-level worktree directory of the git repo containing DIR.
 DIR may be any subdirectory.  Returns nil when DIR is not inside a
 git repository."
-  (when-let* ((root (pi-coding-agent//git-output
+  (when-let* ((root (pilish//git-output
                      (expand-file-name dir) "rev-parse" "--show-toplevel"))
               ((file-directory-p root)))
     root))
 
-(defun pi-coding-agent//git-branch-exists-p (repo branch)
+(defun pilish//git-branch-exists-p (repo branch)
   "Return non-nil when REPO has BRANCH (local or remote-tracking)."
-  (or (pi-coding-agent//git-output repo "rev-parse" "--verify" "--quiet"
+  (or (pilish//git-output repo "rev-parse" "--verify" "--quiet"
                                    (format "refs/heads/%s" branch))
-      (pi-coding-agent//git-output repo "rev-parse" "--verify" "--quiet"
+      (pilish//git-output repo "rev-parse" "--verify" "--quiet"
                                    (format "refs/remotes/%s" branch))))
 
-(defun pi-coding-agent//git-default-branch (repo)
+(defun pilish//git-default-branch (repo)
   "Return REPO's mainline branch: origin/main, origin/master, local
 main, master, or the branch currently checked out — whichever exists
 first.  Remote-tracking branches win so worktrees start at the
@@ -3170,84 +3170,84 @@ latest fetched state of the repo's mainline.  Nil when REPO has no
 branches at all."
   (cl-find-if
    (lambda (branch) (and (stringp branch) (not (string-empty-p branch))))
-   (list (and (pi-coding-agent//git-branch-exists-p repo "origin/main")
+   (list (and (pilish//git-branch-exists-p repo "origin/main")
               "origin/main")
-         (and (pi-coding-agent//git-branch-exists-p repo "origin/master")
+         (and (pilish//git-branch-exists-p repo "origin/master")
               "origin/master")
-         (and (pi-coding-agent//git-branch-exists-p repo "main") "main")
-         (and (pi-coding-agent//git-branch-exists-p repo "master") "master")
-         (pi-coding-agent//git-output repo "symbolic-ref" "--short" "HEAD"))))
+         (and (pilish//git-branch-exists-p repo "main") "main")
+         (and (pilish//git-branch-exists-p repo "master") "master")
+         (pilish//git-output repo "symbolic-ref" "--short" "HEAD"))))
 
-(defun pi-coding-agent//git-has-remote (repo remote)
+(defun pilish//git-has-remote (repo remote)
   "Return non-nil when REPO has a git remote named REMOTE."
-  (when-let* ((out (pi-coding-agent//git-output repo "remote"))
+  (when-let* ((out (pilish//git-output repo "remote"))
               (remotes (split-string out "\n" t)))
     (member remote remotes)))
 
-(defun pi-coding-agent//git-fetch-branch (repo branch)
+(defun pilish//git-fetch-branch (repo branch)
   "Best-effort fetch of BRANCH into REPO, capped by `timeout'.
 No-op when REPO has no origin remote.  Fetch failures are logged and
 ignored: the worktree falls back to the previously fetched state of
 origin/BRANCH."
-  (when (pi-coding-agent//git-has-remote repo "origin")
+  (when (pilish//git-has-remote repo "origin")
     (let ((remote-branch (if (string-prefix-p "origin/" branch)
                              (substring branch (length "origin/"))
                            branch)))
       (with-temp-buffer
-        (unless (zerop (pi-coding-agent//git-run repo "fetch" "origin" remote-branch))
+        (unless (zerop (pilish//git-run repo "fetch" "origin" remote-branch))
           (message "pi: fetch of %s from origin failed — worktree will use the previously fetched origin/%s"
                    remote-branch remote-branch))))))
 
-(defun pi-coding-agent//workspace-root ()
-  "Return the absolute `pi-coding-agent/workspace-root', creating it."
-  (let ((root (expand-file-name pi-coding-agent/workspace-root)))
+(defun pilish//workspace-root ()
+  "Return the absolute `pilish/workspace-root', creating it."
+  (let ((root (expand-file-name pilish/workspace-root)))
     (make-directory root t)
     root))
 
-(defvar pi-coding-agent-repo-history nil
+(defvar pilish-repo-history nil
   "History of repo paths typed into the repo pickers.")
 
-(defun pi-coding-agent//git-repo-p (dir)
+(defun pilish//git-repo-p (dir)
   "Return non-nil when DIR looks like a git repo root (has a .git entry).
 Cheap check used for candidate listing; the pickers validate the
-final selection with `pi-coding-agent//git-repo-root'."
+final selection with `pilish//git-repo-root'."
   (file-exists-p (expand-file-name ".git" dir)))
 
-(defun pi-coding-agent//repo-candidates ()
+(defun pilish//repo-candidates ()
   "Git repo candidates for the repo pickers (abbreviated paths).
 Sources, in order: the current context directory,
 `projectile-known-projects' (when projectile is loaded), and one
-directory level under each entry of `pi-coding-agent/repo-roots'.
+directory level under each entry of `pilish/repo-roots'.
 Deduplicated; each candidate must have a .git entry."
   (let ((seen (make-hash-table :test #'equal))
         candidates)
     (cl-labels ((add (dir)
                  (let ((dir (expand-file-name dir)))
                    (when (and (file-directory-p dir)
-                              (pi-coding-agent//git-repo-p dir)
+                              (pilish//git-repo-p dir)
                               (not (gethash dir seen)))
                      (puthash dir t seen)
                      (push (abbreviate-file-name (directory-file-name dir))
                            candidates)))))
-      (add (pi-coding-agent//context-directory))
+      (add (pilish//context-directory))
       (dolist (dir (and (boundp 'projectile-known-projects)
                         (listp projectile-known-projects)
                         projectile-known-projects))
         (add dir))
-      (dolist (root pi-coding-agent/repo-roots)
+      (dolist (root pilish/repo-roots)
         (let ((root (expand-file-name root)))
           (when (file-directory-p root)
             (dolist (dir (directory-files root t "^[^.]"))
               (add dir)))))
       (nreverse candidates))))
 
-(defun pi-coding-agent//helm-repo-map ()
+(defun pilish//helm-repo-map ()
   "Keymap for the pi repo pickers: `helm-map' minus C-SPC marking.
 C-SPC/C-@ (and their marking) are removed so the picker does not
 shadow input method activation keys; marking uses
-`pi-coding-agent/repo-mark-key' (default C-;) instead."
+`pilish/repo-mark-key' (default C-;) instead."
   (let ((map (make-sparse-keymap))
-        (mark-key (or (bound-and-true-p pi-coding-agent/repo-mark-key)
+        (mark-key (or (bound-and-true-p pilish/repo-mark-key)
                       "C-;")))
     (set-keymap-parent map helm-map)
     (define-key map (kbd "C-SPC") nil)
@@ -3255,9 +3255,9 @@ shadow input method activation keys; marking uses
     (define-key map (kbd mark-key) #'helm-toggle-visible-mark-forward)
     map))
 
-(defun pi-coding-agent//helm-pick-repos (candidates prompt)
+(defun pilish//helm-pick-repos (candidates prompt)
   "Helm multi-select of repo CANDIDATES with PROMPT.
-`pi-coding-agent/repo-mark-key' (C-; by default) marks several
+`pilish/repo-mark-key' (C-; by default) marks several
 candidates, RET confirms.  Returns the selected strings: the marked
 candidates, or the single candidate at point; typed input is
 returned verbatim."
@@ -3269,81 +3269,81 @@ returned verbatim."
   (helm :sources (helm-make-source "Git repositories" 'helm-source-sync
                    :candidates candidates
                    :must-match nil
-                   :keymap (pi-coding-agent//helm-repo-map)
+                   :keymap (pilish//helm-repo-map)
                    :action (lambda (_candidate)
                              (helm-marked-candidates)))
         :buffer "*helm pi git repos*"
         :marked-candidates t
         :prompt prompt))
 
-(defun pi-coding-agent//helm-pick-repo (candidates prompt)
+(defun pilish//helm-pick-repo (candidates prompt)
   "Helm single-select of repo CANDIDATES with PROMPT.
 Returns the selected candidate string, or the typed input."
   (require 'helm)
   (helm :sources (helm-make-source "Git repository" 'helm-source-sync
                    :candidates candidates
                    :must-match nil
-                   :keymap (pi-coding-agent//helm-repo-map)
+                   :keymap (pilish//helm-repo-map)
                    :action 'identity)
         :buffer "*helm pi git repo*"
         :prompt prompt))
 
-(defun pi-coding-agent//pick-repos (prompt)
+(defun pilish//pick-repos (prompt)
   "Pick one or more git repos with PROMPT: helm multi-select.
 Without helm, falls back to `completing-read-multiple' (candidates
 separated by commas).  Returns a list of picked strings; nil when
 nothing was picked — with helm this means the user cancelled (C-g)."
-  (let* ((cands (pi-coding-agent//repo-candidates))
+  (let* ((cands (pilish//repo-candidates))
          (picks (if (featurep 'helm)
-                    (pi-coding-agent//helm-pick-repos cands prompt)
+                    (pilish//helm-pick-repos cands prompt)
                   (completing-read-multiple
-                   prompt cands nil nil nil 'pi-coding-agent-repo-history))))
+                   prompt cands nil nil nil 'pilish-repo-history))))
     (cl-remove-if (lambda (s) (string-empty-p (or s ""))) picks)))
 
-(defun pi-coding-agent//pick-repo (prompt)
+(defun pilish//pick-repo (prompt)
   "Pick a git repo with PROMPT: helm single-select.
 Without helm, falls back to `completing-read'.  Returns the picked
 string; nil when the user cancelled (helm) or input was empty
 (completing-read returns \"\")."
-  (let* ((cands (pi-coding-agent//repo-candidates))
+  (let* ((cands (pilish//repo-candidates))
          (pick (if (featurep 'helm)
-                   (pi-coding-agent//helm-pick-repo cands prompt)
+                   (pilish//helm-pick-repo cands prompt)
                  (completing-read prompt cands nil nil nil
-                                  'pi-coding-agent-repo-history))))
+                                  'pilish-repo-history))))
     pick))
 
-(defun pi-coding-agent//read-git-repo (prompt &optional default-dir)
+(defun pilish//read-git-repo (prompt &optional default-dir)
   "Pick a git repository with PROMPT, re-prompting until it is valid.
 Known repos are offered as candidates (see
-`pi-coding-agent//repo-candidates'); any directory can be typed
+`pilish//repo-candidates'); any directory can be typed
 instead.  Empty input falls back to DEFAULT-DIR when it is a
 repository.  Returns the repository's top-level directory."
   (let (repo)
     (cl-loop
-     for pick = (pi-coding-agent//pick-repo prompt)
+     for pick = (pilish//pick-repo prompt)
      for dir = (cond ((null pick) (keyboard-quit)) ; helm C-g: abort quietly
                      ((string-empty-p pick) (or default-dir ""))
                      (t pick))
      until (and (not (string-empty-p (or dir "")))
-                (setq repo (pi-coding-agent//git-repo-root dir)))
+                (setq repo (pilish//git-repo-root dir)))
      do (message "%s is not inside a git repository — choose again"
                  (abbreviate-file-name (directory-file-name dir))))
     repo))
 
-(defun pi-coding-agent//read-git-repos (prompt)
+(defun pilish//read-git-repos (prompt)
   "Pick one or more git repositories with PROMPT.
-Uses helm multi-select (`pi-coding-agent/repo-mark-key' marks
+Uses helm multi-select (`pilish/repo-mark-key' marks
 candidates, RET confirms; known repos are offered, see
-`pi-coding-agent//repo-candidates') or `completing-read-multiple'
+`pilish//repo-candidates') or `completing-read-multiple'
 without helm.  The whole batch is re-offered when any picked entry
 is not inside a git repository.  Returns the repository top-level
 directories, deduplicated, in selection order."
   (let (picks roots)
     (cl-loop
-     do (setq picks (pi-coding-agent//pick-repos prompt))
+     do (setq picks (pilish//pick-repos prompt))
      while (and picks
                 (cl-some #'null
-                         (setq roots (mapcar #'pi-coding-agent//git-repo-root
+                         (setq roots (mapcar #'pilish//git-repo-root
                                              picks))))
      do (message "Not a git repository: %s — choose again"
                  (mapconcat #'identity
@@ -3360,20 +3360,20 @@ directories, deduplicated, in selection order."
       (keyboard-quit))
     (cl-remove-duplicates roots :test #'equal)))
 
-(defvar pi-coding-agent-worktree-suffix-history nil
+(defvar pilish-worktree-suffix-history nil
   "History of worktree suffixes entered by the user.")
 
-(defvar pi-coding-agent-workspace-name-history nil
+(defvar pilish-workspace-name-history nil
   "History of workspace names entered by the user.")
 
-(defun pi-coding-agent//read-worktree-suffix (root)
+(defun pilish//read-worktree-suffix (root)
   "Prompt for the worktree directory name under ROOT.
 Re-prompts while the input is empty or a file/directory of that name
 already exists under ROOT.  Returns the suffix, trimmed of
 surrounding whitespace and slashes."
   (cl-loop
    for input = (read-string "Worktree suffix: " nil
-                            'pi-coding-agent-worktree-suffix-history)
+                            'pilish-worktree-suffix-history)
    for suffix = (string-trim input "/ \t\n")
    until (and (not (string-empty-p suffix))
               (not (file-exists-p (expand-file-name suffix root))))
@@ -3384,7 +3384,7 @@ surrounding whitespace and slashes."
                       suffix (abbreviate-file-name (directory-file-name root)))))
    finally return suffix))
 
-(defun pi-coding-agent//create-worktree (repo target branch)
+(defun pilish//create-worktree (repo target branch)
   "Create a git worktree at TARGET from BRANCH of REPO.
 TARGET must not exist yet; its parent directories are created.
 Stale worktree registrations are pruned first, so a manually deleted
@@ -3395,15 +3395,15 @@ detached at BRANCH's tip.  Signals a `user-error' carrying git's
 message when the worktree cannot be created."
   (make-directory (file-name-directory target) t)
   (with-temp-buffer
-    (pi-coding-agent//git-run repo "worktree" "prune")
-    (unless (or (zerop (pi-coding-agent//git-run repo "worktree" "add" target branch))
-                (zerop (pi-coding-agent//git-run repo "worktree" "add" "--detach"
+    (pilish//git-run repo "worktree" "prune")
+    (unless (or (zerop (pilish//git-run repo "worktree" "add" target branch))
+                (zerop (pilish//git-run repo "worktree" "add" "--detach"
                                                  target branch)))
       (user-error "git worktree add failed for %s: %s"
                   (abbreviate-file-name target)
                   (string-trim (buffer-string))))))
 
-(defun pi-coding-agent//unique-name (base taken)
+(defun pilish//unique-name (base taken)
   "Return BASE, or BASE-2/-3/… when BASE is already in TAKEN."
   (let ((name base) (n 1))
     (while (member name taken)
@@ -3411,28 +3411,28 @@ message when the worktree cannot be created."
             name (format "%s-%d" base n)))
     name))
 
-(defun pi-coding-agent//worktree-session (repo suffix)
+(defun pilish//worktree-session (repo suffix)
   "Create a worktree of REPO at ROOT/SUFFIX and start a pi session in it.
-The repo's mainline branch (see `pi-coding-agent//git-default-branch')
+The repo's mainline branch (see `pilish//git-default-branch')
 is fetched best-effort and checked out — detached at the
 remote-tracking tip when the branch comes from origin, attached when
 it is a free local branch.  Then a fresh pi session named SUFFIX
 starts in the worktree: own perspective, pi window layout."
-  (let* ((root (pi-coding-agent//workspace-root))
-         (branch (or (pi-coding-agent//git-default-branch repo)
+  (let* ((root (pilish//workspace-root))
+         (branch (or (pilish//git-default-branch repo)
                      (user-error "No mainline branch (origin/main, origin/master, main, master) found in %s"
                                  (abbreviate-file-name repo))))
          (target (expand-file-name suffix root)))
-    (pi-coding-agent//git-fetch-branch repo branch)
-    (pi-coding-agent//create-worktree repo target branch)
-    (pi-coding-agent//start-fresh-session target suffix)))
+    (pilish//git-fetch-branch repo branch)
+    (pilish//create-worktree repo target branch)
+    (pilish//start-fresh-session target suffix)))
 
-(defun pi-coding-agent/new-worktree-session ()
+(defun pilish/new-worktree-session ()
   "Create a fresh git worktree and start a new pi session in it.
 
 Prompts for a git repository — re-prompting until the chosen
 directory is inside one — then for a suffix naming the worktree
-directory under `pi-coding-agent/workspace-root' (default ~/work).
+directory under `pilish/workspace-root' (default ~/work).
 The repo's mainline branch (origin/main, else origin/master, else
 the local main/master) is fetched best-effort and checked out in the
 worktree — detached at the remote-tracking tip when the branch comes
@@ -3440,27 +3440,27 @@ from origin, attached when it is a free local branch.  The new pi
 session (own perspective, pi window layout) is named after the
 suffix."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((repo (pi-coding-agent//read-git-repo
+  (let* ((repo (pilish//read-git-repo
                 "Git repository for the worktree: "
-                (pi-coding-agent//context-directory)))
-         (suffix (pi-coding-agent//read-worktree-suffix
-                  (pi-coding-agent//workspace-root))))
-    (pi-coding-agent//worktree-session repo suffix)))
+                (pilish//context-directory)))
+         (suffix (pilish//read-worktree-suffix
+                  (pilish//workspace-root))))
+    (pilish//worktree-session repo suffix)))
 
-(defun pi-coding-agent//workspace-session (repos name)
+(defun pilish//workspace-session (repos name)
   "Create workspace ROOT/NAME with worktrees of REPOS, then a pi session.
 Creates ROOT/NAME/repos and one worktree per repository — its
-mainline branch (see `pi-coding-agent//git-default-branch'), fetched
+mainline branch (see `pilish//git-default-branch'), fetched
 best-effort — named after the repository's directory (uniquified
 with -2/-3/… on collisions), detached at the remote-tracking tip when
 the branch comes from origin, attached when it is a free local
 branch.  Then starts a fresh pi session named NAME in the workspace
 directory: own perspective, pi window layout.  REPOS must be
 non-empty and NAME must not exist under ROOT yet."
-  (let* ((root (pi-coding-agent//workspace-root))
+  (let* ((root (pilish//workspace-root))
          (ws-dir (expand-file-name name root))
          (repos-dir (expand-file-name "repos" ws-dir))
          taken)
@@ -3470,47 +3470,47 @@ non-empty and NAME must not exist under ROOT yet."
       (user-error "Workspace %s already exists" ws-dir))
     (make-directory repos-dir t)
     (dolist (repo repos)
-      (let* ((subdir (pi-coding-agent//unique-name
+      (let* ((subdir (pilish//unique-name
                       (file-name-nondirectory (directory-file-name repo))
                       taken))
-             (branch (or (pi-coding-agent//git-default-branch repo)
+             (branch (or (pilish//git-default-branch repo)
                          (user-error "No mainline branch (origin/main, origin/master, main, master) found in %s — workspace left incomplete"
                                      (abbreviate-file-name repo)))))
         (push subdir taken)
-        (pi-coding-agent//git-fetch-branch repo branch)
-        (pi-coding-agent//create-worktree repo
+        (pilish//git-fetch-branch repo branch)
+        (pilish//create-worktree repo
                                           (expand-file-name subdir repos-dir)
                                           branch)))
-    (pi-coding-agent//start-fresh-session ws-dir name)))
+    (pilish//start-fresh-session ws-dir name)))
 
-(defun pi-coding-agent/new-workspace-session ()
+(defun pilish/new-workspace-session ()
   "Create a fresh workspace with git worktrees and start a new pi session.
 
 Prompts for one or more git repositories — re-prompting until each
 chosen directory is inside one; empty input finishes the list — then
 for the workspace name.  Creates ROOT/NAME/repos (ROOT =
-`pi-coding-agent/workspace-root', default ~/work) with one worktree
+`pilish/workspace-root', default ~/work) with one worktree
 per repository (its mainline branch, fetched best-effort) named
 after the repository's directory.  The new pi session (own
 perspective, pi window layout) is named after the workspace."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((repos (pi-coding-agent//read-git-repos
+  (let* ((repos (pilish//read-git-repos
                  (format "Git repositories for the workspace (%s marks, RET confirms): "
-                         pi-coding-agent/repo-mark-key)))
+                         pilish/repo-mark-key)))
          (name (string-trim
                 (read-string "Workspace name: " nil
-                             'pi-coding-agent-workspace-name-history))))
+                             'pilish-workspace-name-history))))
     (when (string-empty-p name)
       (user-error "No workspace name given"))
-    (pi-coding-agent//workspace-session repos name)))
+    (pilish//workspace-session repos name)))
 
 ;; ---------------------------------------------------------------------
 ;; Close and delete session
 
-(defun pi-coding-agent//exclusive-buffers (persp)
+(defun pilish//exclusive-buffers (persp)
   "Buffers of PERSP not present in any other real perspective.
 Common buffers (injected into every perspective) and buffers shared
 with other perspectives are spared.  Note: the nil perspective is nil
@@ -3525,20 +3525,20 @@ be excluded from the other-perspective check."
                                 others))
                   (safe-persp-buffers persp))))
 
-(defun pi-coding-agent//skip-kill-confirmation-for (buf)
+(defun pilish//skip-kill-confirmation-for (buf)
   "Suppress the package's kill confirmation for BUFFER's session process.
 The input buffer also carries the package's kill-buffer query (it
 resolves the process through its chat link), so both pi buffer types
 need the skip flag before an intentional teardown."
   (let ((proc (with-current-buffer buf
-                (or (and (derived-mode-p 'pi-coding-agent-chat-mode
-                                        'pi-coding-agent-input-mode)
-                         (pi-coding-agent--get-process))
+                (or (and (derived-mode-p 'pilish-chat-mode
+                                        'pilish-input-mode)
+                         (pilish--get-process))
                     (get-buffer-process buf)))))
     (when (processp proc)
-      (pi-coding-agent--skip-process-kill-confirmation proc))))
+      (pilish--skip-process-kill-confirmation proc))))
 
-(defun pi-coding-agent//capture-buffer-specs (persp)
+(defun pilish//capture-buffer-specs (persp)
   "Capture PERSP's buffers as persp savelist specs via the save dispatch.
 Pi chat/input buffers are excluded: the open path re-creates them."
   (let (specs)
@@ -3552,48 +3552,48 @@ Pi chat/input buffers are excluded: the open path re-creates them."
             (push spec specs)))))
     (nreverse specs)))
 
-(defun pi-coding-agent//update-entry-buffers (persp-name persp)
+(defun pilish//update-entry-buffers (persp-name persp)
   "Refresh the registry entry's captured buffer specs for PERSP."
-  (when-let* ((entry (pi-coding-agent//registry-entry persp-name)))
+  (when-let* ((entry (pilish//registry-entry persp-name)))
     (setcdr entry (plist-put (cdr entry) :buffers
-                             (pi-coding-agent//capture-buffer-specs persp)))
-    (pi-coding-agent//registry-save)))
+                             (pilish//capture-buffer-specs persp)))
+    (pilish//registry-save)))
 
-(defun pi-coding-agent//on-before-switch (&rest _)
+(defun pilish//on-before-switch (&rest _)
   "Capture the leaving perspective's buffers (switch-away checkpoint)."
   (when (bound-and-true-p persp-mode)
     (let* ((persp (get-current-persp))
            (name (safe-persp-name persp)))
-      (when (pi-coding-agent//registry-entry name)
-        (pi-coding-agent//update-entry-buffers name persp)))))
+      (when (pilish//registry-entry name)
+        (pilish//update-entry-buffers name persp)))))
 
-(defun pi-coding-agent//on-before-kill (persp)
+(defun pilish//on-before-kill (persp)
   "Capture a perspective's buffers before it is killed externally."
   (let ((name (safe-persp-name persp)))
-    (when (pi-coding-agent//registry-entry name)
-      (pi-coding-agent//update-entry-buffers name persp))))
+    (when (pilish//registry-entry name)
+      (pilish//update-entry-buffers name persp))))
 
-(defun pi-coding-agent//on-kill-emacs ()
+(defun pilish//on-kill-emacs ()
   "Capture all live pi perspectives' buffers and save the registry."
   (when (bound-and-true-p persp-mode)
-    (dolist (entry pi-coding-agent//registry)
+    (dolist (entry pilish//registry)
       (when-let* ((persp (persp-get-by-name (car entry)))
                   ((persp-p persp)))
-        (pi-coding-agent//update-entry-buffers (car entry) persp))))
-  (pi-coding-agent//registry-save))
+        (pilish//update-entry-buffers (car entry) persp))))
+  (pilish//registry-save))
 
-(defun pi-coding-agent//persp-pi-session-p (name)
+(defun pilish//persp-pi-session-p (name)
   "Return non-nil when perspective NAME is associated with a pi session.
 Counts a registry entry (the session mapping, resolved lazily for
 fresh sessions) or a pi chat buffer in the perspective (sessions
-started outside the registry flow, e.g. `pi-coding-agent/
+started outside the registry flow, e.g. `pilish/
 open-named-session')."
-  (or (pi-coding-agent//registry-entry name)
+  (or (pilish//registry-entry name)
       (when-let* ((persp (persp-get-by-name name))
                   ((perspective-p persp)))
-        (pi-coding-agent//chat-buffer-in-persp persp))))
+        (pilish//chat-buffer-in-persp persp))))
 
-(defun pi-coding-agent//ordered-persp-names ()
+(defun pilish//ordered-persp-names ()
   "Return real perspective names in persp's display order.
 The nil (default) perspective is excluded: it cannot host a pi
 session and `persp-contain-buffer-p' is always true for it."
@@ -3601,75 +3601,75 @@ session and `persp-contain-buffer-p' is always true for it."
                       (perspective-p (persp-get-by-name name)))
                     (persp-names-current-frame-fast-ordered)))
 
-(defun pi-coding-agent//active-pi-buffer-p (buf)
+(defun pilish//active-pi-buffer-p (buf)
   "Return non-nil when BUF is a pi chat buffer with a live process."
   (and (buffer-live-p buf)
        (with-current-buffer buf
-         (derived-mode-p 'pi-coding-agent-chat-mode))
-       (let ((proc (buffer-local-value 'pi-coding-agent--process buf)))
+         (derived-mode-p 'pilish-chat-mode))
+       (let ((proc (buffer-local-value 'pilish--process buf)))
          (and (processp proc) (process-live-p proc)))))
 
-(defun pi-coding-agent//active-chat-buffers ()
+(defun pilish//active-chat-buffers ()
   "Return active pi chat buffers, most recently used first."
-  (cl-remove-if-not #'pi-coding-agent//active-pi-buffer-p (buffer-list)))
+  (cl-remove-if-not #'pilish//active-pi-buffer-p (buffer-list)))
 
-(defun pi-coding-agent//session-entry-by-file ()
+(defun pilish//session-entry-by-file ()
   "Return a hash table mapping session file paths to metadata entries."
   (let ((table (make-hash-table :test 'equal)))
-    (dolist (entry (pi-coding-agent//session-entries))
+    (dolist (entry (pilish//session-entries))
       (puthash (plist-get entry :file) entry table))
     table))
 
-(defun pi-coding-agent//session-base-label (entry)
+(defun pilish//session-base-label (entry)
   "Base candidate label for session ENTRY: \"title · abbrev-path\"."
   (when entry
-    (let* ((title (pi-coding-agent//entry-title entry))
+    (let* ((title (pilish//entry-title entry))
            (cwd (plist-get entry :cwd))
            (abbrev (and (stringp cwd)
                         (abbreviate-file-name (directory-file-name cwd)))))
       (if abbrev (format "%s · %s" title abbrev) title))))
 
-(defun pi-coding-agent//chat-buffer-dir (buf)
+(defun pilish//chat-buffer-dir (buf)
   "Return the abbreviated session directory of chat buffer BUF, or nil.
 Used to annotate named-session labels, whose perspective name is the
 bare session name and carries no directory."
   (when (buffer-live-p buf)
     (let ((dir (condition-case nil
                    (with-current-buffer buf
-                     (pi-coding-agent--chat-session-directory))
+                     (pilish--chat-session-directory))
                  (error nil))))
       (when (and (stringp dir) (not (string-empty-p dir)))
         (abbreviate-file-name (directory-file-name dir))))))
 
-(defun pi-coding-agent//registry-label-locked-p (persp-name)
+(defun pilish//registry-label-locked-p (persp-name)
   "Return non-nil when perspective PERSP-NAME has a label-locked registry entry.
 Label-locked marks named sessions (their perspective name is the bare
 session name) and user-renamed perspectives — in both cases the
 perspective name alone does not carry the session's directory, so the
 session list appends it."
-  (when-let* ((entry (pi-coding-agent//registry-entry persp-name)))
+  (when-let* ((entry (pilish//registry-entry persp-name)))
     (plist-get (cdr entry) :label-locked)))
 
-(defun pi-coding-agent//chat-buffer-label (buf by-file)
+(defun pilish//chat-buffer-label (buf by-file)
   "Display label for pi chat buffer BUF.
 The perspective's name when BUF belongs to one — with the session's
 directory appended for named (label-locked) perspectives, whose name
 is the bare session name — else the session's \"title · path\" label,
 else the buffer name.  BY-FILE maps session files to metadata entries."
-  (or (when-let* ((persp (pi-coding-agent//persp-containing-buffer buf))
+  (or (when-let* ((persp (pilish//persp-containing-buffer buf))
                   (name (safe-persp-name persp)))
-        (if (pi-coding-agent//registry-label-locked-p name)
-            (if-let* ((dir (pi-coding-agent//chat-buffer-dir buf)))
+        (if (pilish//registry-label-locked-p name)
+            (if-let* ((dir (pilish//chat-buffer-dir buf)))
                 (format "%s · %s" name dir)
               name)
           name))
-      (pi-coding-agent//session-base-label
-       (gethash (plist-get (buffer-local-value 'pi-coding-agent--state buf)
+      (pilish//session-base-label
+       (gethash (plist-get (buffer-local-value 'pilish--state buf)
                            :session-file)
                 by-file))
       (buffer-name buf)))
 
-(defun pi-coding-agent//persp-for-close (buf)
+(defun pilish//persp-for-close (buf)
   "Resolve the perspective to close for pi chat buffer BUF.
 Prefers the current perspective when it displays BUF (a chat buffer
 can be shared by several perspectives of one directory); otherwise
@@ -3679,10 +3679,10 @@ the first real perspective containing it."
      ((and (perspective-p current)
            (memq buf (safe-persp-buffers current)))
       (safe-persp-name current))
-     ((when-let* ((persp (pi-coding-agent//persp-containing-buffer buf)))
+     ((when-let* ((persp (pilish//persp-containing-buffer buf)))
         (safe-persp-name persp))))))
 
-(defun pi-coding-agent//default-close-candidate ()
+(defun pilish//default-close-candidate ()
   "Return (CANDIDATE . TARGET) defaulting the session pickers.
 The current perspective's session: its active pi chat buffer when it
 has one (TARGET (:buffer BUF)); without an active pi buffer, its
@@ -3691,20 +3691,20 @@ perspective has no session."
   (let* ((persp (get-current-persp))
          (name (safe-persp-name persp))
          (chat (and (perspective-p persp)
-                    (pi-coding-agent//chat-buffer-in-persp persp))))
+                    (pilish//chat-buffer-in-persp persp))))
     (cond
-     ((and chat (pi-coding-agent//active-pi-buffer-p chat))
-      (cons (pi-coding-agent//chat-buffer-label
-             chat (pi-coding-agent//session-entry-by-file))
+     ((and chat (pilish//active-pi-buffer-p chat))
+      (cons (pilish//chat-buffer-label
+             chat (pilish//session-entry-by-file))
             (list :buffer chat)))
-     ((pi-coding-agent//persp-pi-session-p name)
+     ((pilish//persp-pi-session-p name)
       (cons name (list :persp name :opened t :count 0
                        :modified (current-time)))))))
 
-(defun pi-coding-agent//read-close-target (&optional include-closed action)
+(defun pilish//read-close-target (&optional include-closed action)
   "Prompt for a pi session; return a target plist.
 LIVE candidates are the active pi chat buffers — the perspective is
-resolved at close time (`pi-coding-agent//persp-for-close'), not
+resolved at close time (`pilish//persp-for-close'), not
 when listing; when INCLUDE-CLOSED, closed sessions follow (their
 file is deleted).  The picker's default is the current
 perspective's session — its active pi chat buffer, or its registered
@@ -3714,7 +3714,7 @@ groups (separate sources under helm, header rows otherwise).
 ACTION is the verb used in the prompt and error (default \"Close\").
 Returns (:buffer BUF), (:entry ENTRY), or (:persp NAME).
 
-The list is built by the same `pi-coding-agent//session-targets'
+The list is built by the same `pilish//session-targets'
 logic as the switch pickers, scoped with REMOTE-SCOPE t: every
 host's sessions are offered (close/delete must reach a dead remote
 session), with remote closed files scanned only over established
@@ -3722,11 +3722,11 @@ connections, exactly like the switch list does for its host.  The
 single listing difference besides that scope is that the current
 session is NOT excluded: it is the picker's default."
   (let* ((action (or action "Close"))
-         (groups (pi-coding-agent//session-targets
+         (groups (pilish//session-targets
                   nil include-closed nil nil t))
          (live (car groups))
          (closed (cdr groups))
-         (default (pi-coding-agent//default-close-candidate)))
+         (default (pilish//default-close-candidate)))
     (when (and default (not (assoc (car default) live)))
       ;; Default without an active buffer: replace any same-labelled
       ;; closed candidate (the same session) and offer it in the
@@ -3736,7 +3736,7 @@ session is NOT excluded: it is the picker's default."
       (push default live))
     (if (and (null live) (null closed))
         (user-error "No open pi sessions to %s" (downcase action))
-      (let ((choice (pi-coding-agent//pick-session
+      (let ((choice (pilish//pick-session
                      live closed (format "%s pi session: " action)
                      (car default) t)))
         (cond
@@ -3745,28 +3745,28 @@ session is NOT excluded: it is the picker's default."
          ((assoc choice closed) (cdr (assoc choice closed)))
          (t (user-error "No session selected")))))))
 
-(defun pi-coding-agent//close-target-persp (target)
-  "Resolve TARGET from `pi-coding-agent//read-close-target' to a
+(defun pilish//close-target-persp (target)
+  "Resolve TARGET from `pilish//read-close-target' to a
 perspective name to close."
   (cond
    ((plist-get target :buffer)
-    (or (pi-coding-agent//persp-for-close (plist-get target :buffer))
+    (or (pilish//persp-for-close (plist-get target :buffer))
         (user-error "The selected session belongs to no perspective")))
    ((plist-get target :persp) (plist-get target :persp))
    (t (user-error "Invalid close target"))))
 
-(defun pi-coding-agent//choose-session-to-close ()
+(defun pilish//choose-session-to-close ()
   "Resolve the perspective name to close.
 The current perspective's session when it has one (registry entry or
 pi chat buffer); otherwise the active pi sessions are listed and the
 perspective is resolved from the chosen buffer at close time."
   (let ((name (safe-persp-name (get-current-persp))))
-    (if (pi-coding-agent//persp-pi-session-p name)
+    (if (pilish//persp-pi-session-p name)
         name
-      (pi-coding-agent//close-target-persp
-       (pi-coding-agent//read-close-target nil "Close")))))
+      (pilish//close-target-persp
+       (pilish//read-close-target nil "Close")))))
 
-(defun pi-coding-agent//switch-to-next-persp (closed-name persp-order)
+(defun pilish//switch-to-next-persp (closed-name persp-order)
   "Switch to the next perspective after closing CLOSED-NAME.
 PERSP-ORDER is the ordered perspective list from before the close.
 Prefers the next perspective after CLOSED-NAME (wrapping) that is
@@ -3778,7 +3778,7 @@ the default perspective remains."
                     (append (nthcdr (1+ pos) persp-order)
                             (cl-subseq persp-order 0 pos))
                   (cl-remove closed-name persp-order :test #'equal)))
-         (with-pi (cl-remove-if-not #'pi-coding-agent//persp-pi-session-p
+         (with-pi (cl-remove-if-not #'pilish//persp-pi-session-p
                                     persp-order))
          (next (or (cl-find-if (lambda (name) (member name with-pi)) order)
                    (car order))))
@@ -3786,7 +3786,7 @@ the default perspective remains."
                (not (string= next (safe-persp-name (get-current-persp)))))
       (persp-switch next))))
 
-(defun pi-coding-agent//delete-session-file (file)
+(defun pilish//delete-session-file (file)
   "Delete session FILE: move it to the OS trash, else delete it.
 Mirrors pi's own TUI delete: the `trash' command is used when
 available, falling back to a permanent unlink — the session is
@@ -3805,8 +3805,8 @@ reached from a delete), and without a trash on that host — or for a
 local system without the CLI — the permanent unlink remains."
   (if (file-exists-p file)
       (let* ((default-directory (file-name-directory file))
-             (trash (if (pi-coding-agent--remote-prefix-for-path file)
-                        (and (pi-coding-agent//tramp-connection-alive-p file)
+             (trash (if (pilish--remote-prefix-for-path file)
+                        (and (pilish//tramp-connection-alive-p file)
                              (executable-find "trash" t))
                       (executable-find "trash")))
              (status (and trash
@@ -3837,7 +3837,7 @@ local system without the CLI — the permanent unlink remains."
              (abbreviate-file-name file))
     nil))
 
-(defun pi-coding-agent//remote-stderr-fifo (stderr)
+(defun pilish//remote-stderr-fifo (stderr)
   "Return the remote fifo TRAMP created for stderr buffer STDERR, or nil.
 TRAMP's `make-process' with a stderr buffer creates a remote named
 pipe and a separate `cat' process reading it; the pipe's local name
@@ -3850,7 +3850,7 @@ nil for a local session (or when the stderr buffer/process is gone)."
                 (local (and (consp cmd) (stringp (nth 1 cmd)) (nth 1 cmd))))
       (tramp-make-tramp-file-name vec local))))
 
-(defun pi-coding-agent//close-session-in-persp (name &optional delete)
+(defun pilish//close-session-in-persp (name &optional delete)
   "Close the pi session of perspective NAME: process, buffers, persp.
 Confirms first.  Kills the pi process (when the perspective has its
 own chat buffer), then the perspective's exclusive buffers (standard
@@ -3867,16 +3867,16 @@ Otherwise the registry entry (mapping and captured buffer specs)
 persists, so reopening the session from the list restores its
 workspace."
   (let* ((persp (persp-get-by-name name))
-         (entry (pi-coding-agent//registry-entry name))
+         (entry (pilish//registry-entry name))
          (buffers (and (perspective-p persp)
-                       (pi-coding-agent//exclusive-buffers persp)))
+                       (pilish//exclusive-buffers persp)))
          (chat (cl-find-if (lambda (buf)
                              (with-current-buffer buf
-                               (derived-mode-p 'pi-coding-agent-chat-mode)))
+                               (derived-mode-p 'pilish-chat-mode)))
                            buffers)))
     (when (and delete
                (perspective-p persp)
-               (pi-coding-agent//chat-buffer-in-persp persp)
+               (pilish//chat-buffer-in-persp persp)
                (null chat))
       (user-error "Cannot delete: session '%s' is shared with another \
 perspective" name))
@@ -3890,13 +3890,13 @@ perspective" name))
     ;; deleted session's registry entry is dropped below).
     (when (and entry (not delete))
       (setcdr entry (plist-put (cdr entry) :buffers
-                               (pi-coding-agent//capture-buffer-specs persp)))
-      (pi-coding-agent//registry-save))
+                               (pilish//capture-buffer-specs persp)))
+      (pilish//registry-save))
     ;; Resolve the session file for the delete while the chat buffer
     ;; is still alive.  The chat buffer's settled file is the ground
     ;; truth: a named session started inside the perspective
-    ;; (`pi-coding-agent/open-named-session' -> the package's
-    ;; `pi-coding-agent') moves the live file without a registry
+    ;; (`pilish/open-named-session' -> the package's
+    ;; `pilish') moves the live file without a registry
     ;; update, so the registry entry can point at an older session's
     ;; file — resolving it first made the delete report "no session
     ;; file to delete" when that old file was already gone (or
@@ -3907,12 +3907,12 @@ perspective" name))
     (let ((file-to-delete
            (and delete
                 (or (and chat
-                         (pi-coding-agent//plain-string
+                         (pilish//plain-string
                           (plist-get (buffer-local-value
-                                      'pi-coding-agent--state chat)
+                                      'pilish--state chat)
                                      :session-file)))
                     (and entry
-                         (pi-coding-agent//registry-fill-session-file
+                         (pilish//registry-fill-session-file
                           name (cdr entry)))))))
       ;; Teardown, fail open: a session whose file or directory no
       ;; longer exists must still be removed.  An unexpected error in
@@ -3925,15 +3925,15 @@ perspective" name))
             ;; Stop the pi process first (killing its chat buffer must
             ;; not trigger a process query).
             (when chat
-              (let* ((proc (buffer-local-value 'pi-coding-agent--process chat))
+              (let* ((proc (buffer-local-value 'pilish--process chat))
                      (stderr (and (processp proc)
                                   (process-get proc
-                                               'pi-coding-agent-stderr-buf)))
-                     (remote-fifo (pi-coding-agent//remote-stderr-fifo stderr)))
+                                               'pilish-stderr-buf)))
+                     (remote-fifo (pilish//remote-stderr-fifo stderr)))
                 (when (processp proc)
                   ;; Suppress the package's own kill confirmation (the
                   ;; chat-buffer kill below would otherwise prompt).
-                  (pi-coding-agent--skip-process-kill-confirmation proc)
+                  (pilish--skip-process-kill-confirmation proc)
                   ;; For a remote (TRAMP) process, `delete-process' runs
                   ;; the process sentinel synchronously, and that sentinel
                   ;; (including TRAMP's own :after cleanup) performs
@@ -3956,7 +3956,7 @@ perspective" name))
             ;; user already confirmed the close).
             (dolist (buf buffers)
               (when (buffer-live-p buf)
-                (pi-coding-agent//skip-kill-confirmation-for buf)
+                (pilish//skip-kill-confirmation-for buf)
                 (kill-buffer buf))))
         (error
          (message "pi: error tearing down session '%s': %s — continuing"
@@ -3973,19 +3973,19 @@ perspective" name))
       (when delete
         (when file-to-delete
           (condition-case err
-              (pi-coding-agent//delete-session-file file-to-delete)
+              (pilish//delete-session-file file-to-delete)
             (error
              (message "pi: failed to delete session file %s: %s — the \
 session may still appear in the session list"
                       (abbreviate-file-name file-to-delete)
                       (error-message-string err)))))
-        (pi-coding-agent//registry-remove name)
-        (pi-coding-agent//registry-save)))
+        (pilish//registry-remove name)
+        (pilish//registry-save)))
     ;; Close the perspective; frames showing it switch to the default
     ;; perspective (the caller then switches to the next pi persp).
     (persp-kill (list name) t)))
 
-(defun pi-coding-agent/close-session ()
+(defun pilish/close-session ()
   "Close a pi session and its perspective.
 Closes the current perspective's session when it has one; otherwise
 lists the open sessions for the user to pick one.  Stops the pi
@@ -3996,46 +3996,46 @@ perspective that has a pi session (or the next perspective when none
 does).  The workspace is remembered in the registry, so reopening the
 session from the list restores it."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((name (pi-coding-agent//choose-session-to-close))
-         (persp-order (pi-coding-agent//ordered-persp-names)))
-    (pi-coding-agent//close-session-in-persp name nil)
-    (pi-coding-agent//switch-to-next-persp name persp-order)))
+  (let* ((name (pilish//choose-session-to-close))
+         (persp-order (pilish//ordered-persp-names)))
+    (pilish//close-session-in-persp name nil)
+    (pilish//switch-to-next-persp name persp-order)))
 
-(defun pi-coding-agent//delete-closed-session (entry)
+(defun pilish//delete-closed-session (entry)
   "Delete closed session ENTRY (no active pi buffer loads its file).
 Deletes the session file (OS trash first, permanent unlink as
 fallback) and drops any registry entry.  When a perspective is still
 registered for the session, it is torn down like an active session
-via `pi-coding-agent//close-session-in-persp' (single confirmation,
+via `pilish//close-session-in-persp' (single confirmation,
 buffers included).  Returns the perspective name that was closed, or
 nil."
-  (let* ((file (pi-coding-agent//plain-string (plist-get entry :file)))
-         (persp-name (and file (pi-coding-agent//registry-persp-name-for-file file)))
+  (let* ((file (pilish//plain-string (plist-get entry :file)))
+         (persp-name (and file (pilish//registry-persp-name-for-file file)))
          (persp (and persp-name (persp-get-by-name persp-name))))
     (if (perspective-p persp)
         (progn
-          (pi-coding-agent//close-session-in-persp persp-name t)
+          (pilish//close-session-in-persp persp-name t)
           persp-name)
       (unless (y-or-n-p (format "Delete closed session '%s'? "
-                                (pi-coding-agent//entry-title entry)))
+                                (pilish//entry-title entry)))
         (user-error "Aborted"))
       (when file
         (condition-case err
-            (pi-coding-agent//delete-session-file file)
+            (pilish//delete-session-file file)
           (error
            (message "pi: failed to delete session file %s: %s — the \
 session may still appear in the session list"
                     (abbreviate-file-name file)
                     (error-message-string err)))))
       (when persp-name
-        (pi-coding-agent//registry-remove persp-name)
-        (pi-coding-agent//registry-save))
+        (pilish//registry-remove persp-name)
+        (pilish//registry-save))
       persp-name)))
 
-(defun pi-coding-agent/delete-session ()
+(defun pilish/delete-session ()
   "Delete a pi session: remove it from the session list.
 Always prompts — the current session is the default — offering both
 active sessions (live pi chat buffers; the perspective is resolved
@@ -4044,38 +4044,38 @@ list is the shared session-targets logic with remote scope t: every
 host's live and closed sessions are offered, remote closed files
 scanned only over established connections.  Under
 helm the two groups are separate sections, active first.  An active
-session is torn down like `pi-coding-agent/close-session', then its
+session is torn down like `pilish/close-session', then its
 file is deleted — moved to the OS trash via the `trash' command when
 available, otherwise deleted permanently, the same behavior as pi's
 own TUI delete — and its registry entry dropped; a closed session is
 deleted the same way, dropping any registry entry (a dead
 perspective still registered for it is torn down too)."
   (interactive)
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (let* ((target (pi-coding-agent//read-close-target t "Delete"))
-         (persp-order (pi-coding-agent//ordered-persp-names)))
+  (let* ((target (pilish//read-close-target t "Delete"))
+         (persp-order (pilish//ordered-persp-names)))
     (cond
      ((plist-get target :entry)
-      (let ((closed (pi-coding-agent//delete-closed-session
+      (let ((closed (pilish//delete-closed-session
                      (plist-get target :entry))))
         (when closed
-          (pi-coding-agent//switch-to-next-persp closed persp-order))))
+          (pilish//switch-to-next-persp closed persp-order))))
      ((or (plist-get target :buffer) (plist-get target :persp))
-      (let ((persp-name (pi-coding-agent//close-target-persp target)))
-        (pi-coding-agent//close-session-in-persp persp-name t)
-        (pi-coding-agent//switch-to-next-persp persp-name persp-order)))
+      (let ((persp-name (pilish//close-target-persp target)))
+        (pilish//close-session-in-persp persp-name t)
+        (pilish//switch-to-next-persp persp-name persp-order)))
      (t (user-error "Invalid delete target")))))
 
 ;; ---------------------------------------------------------------------
 ;; Emacs bridge entry (called by the pi bridge extension via emacsclient)
 ;;
 ;; pi sessions started by this Emacs frontend load an extension
-;; (pi-bridge-extension.ts, wired through `pi-coding-agent-extra-args')
+;; (pi-bridge-extension.ts, wired through `pilish-extra-args')
 ;; that registers tools driving the hosting Emacs.  The extension
 ;; shells out to `emacsclient -e' with a base64-encoded JSON request;
-;; the layer ensures an Emacs server is running (`pi-coding-agent/
+;; the layer ensures an Emacs server is running (`pilish/
 ;; enable-bridge') and exports the socket path to pi processes as
 ;; PI_EMACS_SERVER so emacsclient targets exactly this Emacs instance.
 ;;
@@ -4090,42 +4090,42 @@ perspective still registered for it is torn down too)."
 ;; dynamically.  The package may evaluate its own defvar/defcustom
 ;; for these names lazily inside the bridge extent (first load), which
 ;; is only legal while the binding is dynamic.
-(defvar pi-coding-agent-essential-grammar-action)
-(defvar pi-coding-agent--grammar-prompt-done)
+(defvar pilish-essential-grammar-action)
+(defvar pilish--grammar-prompt-done)
 
-(defun pi-coding-agent//open-session-request (dir &optional name prompt)
+(defun pilish//open-session-request (dir &optional name prompt)
   "Open a fresh pi session at DIR as its own perspective and switch to it.
 
-Non-interactive twin of `pi-coding-agent/start-new-session': DIR is
+Non-interactive twin of `pilish/start-new-session': DIR is
 mandatory, NAME opens a named (parallel) session that bypasses the
 live-unnamed-session refusal and is labelled with NAME only
 (label-locked).  PROMPT (optional string) is sent as the fresh
 session's first user message through the standard
-`pi-coding-agent--send-prompt' path once the process is up; pi queues
+`pilish--send-prompt' path once the process is up; pi queues
 or handles it, and send failures are surfaced in the chat buffer.
-Runs the standard flow via `pi-coding-agent//
+Runs the standard flow via `pilish//
 start-fresh-session' (create+switch perspective, fresh pi process,
 registry entry, pi window layout).  Returns the plist (:ok t :persp
 NAME :directory DIR); signals an error when the request is invalid or
 the launch fails (rolling back the fresh perspective)."
-  (require 'pi-coding-agent)
+  (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
   (unless (and (stringp dir) (not (string-empty-p dir)))
     (user-error "No directory given"))
   (let* ((dir (file-name-as-directory
-               (pi-coding-agent--route-preserving-expand-file-name dir))))
+               (pilish--route-preserving-expand-file-name dir))))
     (unless (file-directory-p dir)
       (user-error "Not a directory: %s" dir))
-    (let ((chat (pi-coding-agent//start-fresh-session dir name)))
+    (let ((chat (pilish//start-fresh-session dir name)))
       (when (and (stringp prompt) (not (string-empty-p prompt)))
         (with-current-buffer chat
-          (pi-coding-agent--send-prompt prompt)))
+          (pilish--send-prompt prompt)))
       (let ((persp-name (safe-persp-name (get-current-persp))))
         (message "pi: opened session in %s (perspective %s)" dir persp-name)
         (list :ok t :persp persp-name :directory dir)))))
 
-(defun pi-coding-agent/open-session-at-directory-bridge (b64)
+(defun pilish/open-session-at-directory-bridge (b64)
   "Bridge entry invoked via `emacsclient -e' by the pi bridge extension.
 
 B64 is a base64-encoded JSON request object `{directory, name,
@@ -4149,14 +4149,14 @@ their normal prompting."
              ;; emacsclient: never ask.  'warn keeps the session
              ;; usable (chat buffer degrades to plain text) and defers
              ;; installation to an interactive open / M-x
-             ;; pi-coding-agent-install-grammars.
-             (pi-coding-agent-essential-grammar-action 'warn)
-             (pi-coding-agent--grammar-prompt-done t))
+             ;; pilish-install-grammars.
+             (pilish-essential-grammar-action 'warn)
+             (pilish--grammar-prompt-done t))
         (when (eq name :null)
           (setq name nil))
         (when (eq prompt :null)
           (setq prompt nil))
-        (json-encode (pi-coding-agent//open-session-request dir name prompt)))
+        (json-encode (pilish//open-session-request dir name prompt)))
     (error
      (json-encode (list :ok :json-false
                         :error (error-message-string err))))))
@@ -4168,27 +4168,27 @@ their normal prompting."
 ;; saved/restored with the perspective (e.g. auto-resume restarts) while
 ;; all other buffer types are handled by their own owners.
 
-(defun pi-coding-agent//persp-save-handler (buffer)
+(defun pilish//persp-save-handler (buffer)
   "Save pi chat/input BUFFER as a persp savelist spec, else nil."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (cond
-       ((derived-mode-p 'pi-coding-agent-chat-mode)
-        (let* ((dir (pi-coding-agent--chat-session-directory))
-               (launch (pi-coding-agent--chat-session-name))
-               (file (plist-get pi-coding-agent--state :session-file)))
+       ((derived-mode-p 'pilish-chat-mode)
+        (let* ((dir (pilish--chat-session-directory))
+               (launch (pilish--chat-session-name))
+               (file (plist-get pilish--state :session-file)))
           (when (and dir (stringp file) (not (string-empty-p file)))
             (list 'def-buffer-pi-chat (buffer-name) dir launch file))))
-       ((derived-mode-p 'pi-coding-agent-input-mode)
-        (let* ((chat (pi-coding-agent--get-chat-buffer))
+       ((derived-mode-p 'pilish-input-mode)
+        (let* ((chat (pilish--get-chat-buffer))
                (dir (and chat (with-current-buffer chat
-                                (pi-coding-agent--chat-session-directory))))
+                                (pilish--chat-session-directory))))
                (launch (and chat (with-current-buffer chat
-                                  (pi-coding-agent--chat-session-name)))))
+                                  (pilish--chat-session-name)))))
           (when dir
             (list 'def-buffer-pi-input (buffer-name) dir launch))))))))
 
-(defun pi-coding-agent//persp-load-handler (spec)
+(defun pilish//persp-load-handler (spec)
   "Restore a pi chat/input SPEC by re-opening the session, else nil."
   (when (and (listp spec)
              (memq (car spec) '(def-buffer-pi-chat def-buffer-pi-input)))
@@ -4201,14 +4201,14 @@ their normal prompting."
                   (file (nth 4 spec)))
              (when (and (stringp dir) (file-directory-p dir)
                         (stringp file) (file-exists-p file))
-               (pi-coding-agent//revive-session nil file launch))))
+               (pilish//revive-session nil file launch))))
           ('def-buffer-pi-input
            (let* ((name (nth 1 spec))
                   (dir (nth 2 spec))
                   (launch (nth 3 spec)))
              (or (get-buffer name)
                  (when (and (stringp dir) (file-directory-p dir))
-                   (pi-coding-agent--get-or-create-buffer :input dir launch))))))
+                   (pilish--get-or-create-buffer :input dir launch))))))
       (error
        (message "pi: failed to restore pi buffer: %s"
                 (error-message-string err))
@@ -4217,20 +4217,20 @@ their normal prompting."
 ;; ---------------------------------------------------------------------
 ;; Registration
 
-(pi-coding-agent//registry-load)
+(pilish//registry-load)
 
 (with-eval-after-load 'persp-mode
   ;; Our save/load handlers must run before persp's default `*'-prefixed
   ;; skip, hence the front position.
-  (add-to-list 'persp-save-buffer-functions #'pi-coding-agent//persp-save-handler)
-  (add-to-list 'persp-load-buffer-functions #'pi-coding-agent//persp-load-handler)
-  (add-hook 'persp-renamed-functions #'pi-coding-agent//on-persp-renamed)
-  (add-hook 'persp-before-switch-functions #'pi-coding-agent//on-before-switch)
-  (add-hook 'persp-before-kill-functions #'pi-coding-agent//on-before-kill))
+  (add-to-list 'persp-save-buffer-functions #'pilish//persp-save-handler)
+  (add-to-list 'persp-load-buffer-functions #'pilish//persp-load-handler)
+  (add-hook 'persp-renamed-functions #'pilish//on-persp-renamed)
+  (add-hook 'persp-before-switch-functions #'pilish//on-before-switch)
+  (add-hook 'persp-before-kill-functions #'pilish//on-before-kill))
 
-(add-hook 'kill-emacs-hook #'pi-coding-agent//on-kill-emacs)
+(add-hook 'kill-emacs-hook #'pilish//on-kill-emacs)
 
-(defun pi-coding-agent//bridge-start-process (orig-fn directory)
+(defun pilish//bridge-start-process (orig-fn directory)
   "Around-advice exporting the Emacs server socket to pi processes.
 
 Sets PI_EMACS_SERVER (the emacsclient server file) in the pi process
@@ -4238,7 +4238,7 @@ environment so the bridge extension can target exactly this Emacs
 instance with `emacsclient -s' — correct with daemons or several
 Emacs running.  No-op when the bridge is disabled or no server is
 configured (emacsclient then falls back to default socket discovery)."
-  (if (not (bound-and-true-p pi-coding-agent/enable-bridge))
+  (if (not (bound-and-true-p pilish/enable-bridge))
       (funcall orig-fn directory)
     (let* ((server-file (and (boundp 'server-socket-dir)
                              (boundp 'server-name)
@@ -4252,11 +4252,11 @@ configured (emacsclient then falls back to default socket discovery)."
               process-environment)))
       (funcall orig-fn directory))))
 
-(defun pi-coding-agent//remote-spawn-start-process (orig-fn directory)
+(defun pilish//remote-spawn-start-process (orig-fn directory)
   "Around-advice making every remote pi spawn independent of the remote PATH.
 
 The TRAMP spawn shell is a non-interactive login shell (rc files are
-skipped on purpose, see `pi-coding-agent/start-remote-session'), so a
+skipped on purpose, see `pilish/start-remote-session'), so a
 user-installed pi is invisible to it in two ways: even with the mapped
 absolute pi path, the `#!/usr/bin/env node' shebang resolves `node'
 through PATH and dies with exit 127 (\"env: node: No such file or
@@ -4265,59 +4265,59 @@ that exist only locally (the Emacs bridge) make the remote pi abort
 with \"Extension path does not exist\".
 
 When DIRECTORY is remote and its host has a verified executable
-mapping, rebind `pi-coding-agent-executable' to the PATH-independent
-spawn (`pi-coding-agent//remote-spawn-executable') and drop local-only
-`-e' pairs (`pi-coding-agent//remote-extra-args') — covering every
+mapping, rebind `pilish-executable' to the PATH-independent
+spawn (`pilish//remote-spawn-executable') and drop local-only
+`-e' pairs (`pilish//remote-extra-args') — covering every
 entry point that spawns a remote pi (session list opens, `a i s',
 revivals) without each having to bind the values itself.  Local
 directories and hosts without a mapping spawn exactly as before
 (fail-open)."
-  (let* ((entry (pi-coding-agent//remote-executable-entry-for directory))
-         (pi-coding-agent-executable
+  (let* ((entry (pilish//remote-executable-entry-for directory))
+         (pilish-executable
           (if entry
-              (pi-coding-agent//remote-spawn-executable entry)
-            pi-coding-agent-executable))
-         (pi-coding-agent-extra-args
+              (pilish//remote-spawn-executable entry)
+            pilish-executable))
+         (pilish-extra-args
           (if entry
-              (pi-coding-agent//remote-extra-args
+              (pilish//remote-extra-args
                (file-remote-p directory 'host))
-            pi-coding-agent-extra-args)))
+            pilish-extra-args)))
     (funcall orig-fn directory)))
 
-(defun pi-coding-agent//install-package-advices ()
+(defun pilish//install-package-advices ()
   "Install the layer's advices on package commands.
 
 Idempotent (removes before adding), so layer reloads (`SPC f e R')
 do not double-fire the advices."
   ;; Keep the perspective label in sync when the session is renamed.
-  (advice-remove 'pi-coding-agent-set-session-name
-                 #'pi-coding-agent//after-set-session-name)
-  (advice-add 'pi-coding-agent-set-session-name
-              :after #'pi-coding-agent//after-set-session-name)
+  (advice-remove 'pilish-set-session-name
+                 #'pilish//after-set-session-name)
+  (advice-add 'pilish-set-session-name
+              :after #'pilish//after-set-session-name)
   ;; Keep the registry mapping + perspective label in sync when a
   ;; package command switches the live session to another session file.
-  (dolist (cmd '(pi-coding-agent
-                 pi-coding-agent-new-session
-                 pi-coding-agent-resume-session
-                 pi-coding-agent--execute-fork
-                 pi-coding-agent-open-session-file
-                 pi-coding-agent-compact))
-    (advice-remove cmd #'pi-coding-agent//sync-registry-after-session-change)
-    (advice-add cmd :after #'pi-coding-agent//sync-registry-after-session-change))
+  (dolist (cmd '(pilish
+                 pilish-new-session
+                 pilish-resume-session
+                 pilish--execute-fork
+                 pilish-open-session-file
+                 pilish-compact))
+    (advice-remove cmd #'pilish//sync-registry-after-session-change)
+    (advice-add cmd :after #'pilish//sync-registry-after-session-change))
   ;; Export the Emacs server socket to pi processes (bridge channel).
-  (advice-remove 'pi-coding-agent--start-process
-                 #'pi-coding-agent//bridge-start-process)
-  (advice-add 'pi-coding-agent--start-process
-              :around #'pi-coding-agent//bridge-start-process)
+  (advice-remove 'pilish--start-process
+                 #'pilish//bridge-start-process)
+  (advice-add 'pilish--start-process
+              :around #'pilish//bridge-start-process)
   ;; Make every remote pi spawn PATH-independent (node shebang) and
   ;; free of local-only `-e' extensions, whatever entry point
   ;; triggered the spawn.
-  (advice-remove 'pi-coding-agent--start-process
-                 #'pi-coding-agent//remote-spawn-start-process)
-  (advice-add 'pi-coding-agent--start-process
-              :around #'pi-coding-agent//remote-spawn-start-process))
+  (advice-remove 'pilish--start-process
+                 #'pilish//remote-spawn-start-process)
+  (advice-add 'pilish--start-process
+              :around #'pilish//remote-spawn-start-process))
 
-(with-eval-after-load 'pi-coding-agent
-  (pi-coding-agent//install-package-advices))
+(with-eval-after-load 'pilish
+  (pilish//install-package-advices))
 
 ;;; funcs.el ends here

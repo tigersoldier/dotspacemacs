@@ -18,7 +18,7 @@
 ;; Both are implemented through persp-mode's public save/load dispatch
 ;; (`persp-save-buffer-functions' / `persp-load-buffer-functions'), so
 ;; other layers can register their own buffer types into the same
-;; pipeline.  In particular the pi-coding-agent layer registers its own
+;; pipeline.  In particular the pilish layer registers its own
 ;; chat/input handlers at the front of those lists and does not depend on
 ;; this layer.
 ;;

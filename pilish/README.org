@@ -1,7 +1,7 @@
-* pi-coding-agent layer
+* pilish layer
 
 This layer installs and configures the official
-[[https://github.com/dnouri/pi-coding-agent][pi-coding-agent]] Emacs frontend
+[[https://github.com/dnouri/pilish][pilish]] Emacs frontend
 (MELPA) for the [[https://pi.dev][pi coding agent]]. It provides a two-window
 interface for AI-assisted coding: a chat buffer with rendered markdown and a
 separate prompt composition buffer, backed by a =pi --mode rpc= subprocess.
@@ -21,18 +21,18 @@ The layer adds =~/.local/bin=, =~/bin= and =/usr/local/bin= to
 finds it even without the interactive shell's PATH.
 
 Tree-sitter grammars for markdown are installed automatically on first
-session start (or manually via =pi-coding-agent-install-grammars=).
+session start (or manually via =pilish-install-grammars=).
 
 ** What it does
 
-- Declares the =pi-coding-agent= package (its dependencies =transient=,
+- Declares the =pilish= package (its dependencies =transient=,
   =md-ts-mode= and =markdown-table-wrap= are pulled in by package.el).
 - Keeps the package's own behavior: sessions are per-project (one
   process per directory, optionally named for parallel sessions),
   Evil keybindings load automatically when Evil is present, and the
   built-in =C-c= bindings in chat/input buffers are unchanged.
 - Adds Spacemacs leader keybindings (see below).
-- Sets =pi-coding-agent-project-trust-policy= to =approve=, so
+- Sets =pilish-project-trust-policy= to =approve=, so
   project-local =.pi= prompts, skills, settings, themes, and
   extensions are available in RPC mode (which has no interactive
   trust prompt).
@@ -61,7 +61,7 @@ status glyph (● live / ○ closed), message count, and age; titles
 collapse newlines to single spaces so every session is exactly one
 row.
 
-- =SPC a i i= (=pi-coding-agent/switch-session=) — list all pi
+- =SPC a i i= (=pilish/switch-session=) — list all pi
   sessions (the current one is excluded) grouped into sections: the
   local machine's live sessions (●) under =Live sessions=, one
   section per remote host with sessions — named after the host, the
@@ -79,19 +79,19 @@ row.
   runs another session, the reopened one is opened side-by-side under
   its recorded name (or a generated name for an unnamed session) rather
   than reusing the live session's buffers.  Sort orders are configurable:
-  =pi-coding-agent/session-sort-opened= (default =dir-then-name=
-  — directory, then title) and =pi-coding-agent/session-sort-closed=
+  =pilish/session-sort-opened= (default =dir-then-name=
+  — directory, then title) and =pilish/session-sort-closed=
   (default =chrono= — newest first).  Scope: local sessions are always
   listed; a remote host joins the listing whenever the layer knows it
   runs pi sessions — hosts with verified executables in
-  =pi-coding-agent/remote-executables=, hosts of active pi chat
+  =pilish/remote-executables=, hosts of active pi chat
   buffers, and the current session's host.  Listing a remote host is
   best effort and never blocks: its live chat buffers come from local
   state and its closed files are scanned only over an
   already-established TRAMP connection; a disconnected host is probed
   in the background and contributes no section to this listing — its
   sessions reappear in a later listing once it answers.
-- =SPC a i I= (=pi-coding-agent/switch-session-in-dir=) — switch
+- =SPC a i I= (=pilish/switch-session-in-dir=) — switch
   between the current directory's pi sessions, applying the pi window
   layout afterwards.  The directory is the session's own directory
   inside pi chat/input buffers, the terminal's working directory in
@@ -100,7 +100,7 @@ row.
   live (●) first, then closed (○), with the same section boundary,
   live sorted by directory then title, closed newest first; the
   current session is excluded.
-- =SPC a i n= (=pi-coding-agent/start-new-session=) — start a brand
+- =SPC a i n= (=pilish/start-new-session=) — start a brand
   new session: always prompts for the directory (the default follows
   the layout's directory logic — terminal cwd, session dir inside pi
   buffers, buffer dir elsewhere).  When the directory has existing
@@ -115,9 +115,9 @@ row.
   refused when the directory already runs a live unnamed session (then
   a name is required for the parallel session).  With no existing
   sessions a fresh unnamed session starts directly.
-- =SPC a i m= (=pi-coding-agent/start-remote-session=) — start a new
+- =SPC a i m= (=pilish/start-remote-session=) — start a new
   session on a remote host, the same flow as =SPC a i n= but with the
-  directory on a host from the ssh config (=pi-coding-agent/ssh-config-file=,
+  directory on a host from the ssh config (=pilish/ssh-config-file=,
   default =~/.ssh/config=; =Include= directives are followed,
   wildcard patterns and =Match= blocks skipped).  Only host
   *aliases* are offered — `Host' entries whose block declares a
@@ -133,7 +133,7 @@ row.
   otherwise.  The pi process itself runs on the remote host through
   TRAMP (the package starts it over ssh), so the host needs the pi
   CLI installed and reachable via =ssh HOST=.
-- =SPC a i d= (=pi-coding-agent/close-session=) — close a pi session:
+- =SPC a i d= (=pilish/close-session=) — close a pi session:
   the current perspective's session when it has one, otherwise the
   live sessions are listed (active pi chat buffers; the perspective
   is resolved from the chosen buffer).  Stops the pi process, kills
@@ -143,7 +143,7 @@ row.
   perspective that has a pi session (or the next perspective when
   none does).  The workspace is remembered, so reopening the session
   from the list restores its buffers.
-- =SPC a i D= (=pi-coding-agent/delete-session=) — delete a session
+- =SPC a i D= (=pilish/delete-session=) — delete a session
   and remove it from the session list.  Always prompts — the current
   session is the default — offering both live sessions (active pi
   chat buffers) and closed sessions, live first with a section
@@ -162,24 +162,24 @@ row.
   active session is refused while its chat buffer is shared with
   another perspective (the file would move out from under a live
   process).
-- =SPC a i w= (=pi-coding-agent/new-worktree-session=) — create a
+- =SPC a i w= (=pilish/new-worktree-session=) — create a
   fresh git worktree and start a pi session in it.  Picks a git
   repository via helm (known repos from the context directory,
   =projectile-known-projects=, and one level under each
-  =pi-coding-agent/repo-roots= entry are offered; any path can be
+  =pilish/repo-roots= entry are offered; any path can be
   typed — re-prompting until it is inside a repository), then
   prompts for a suffix naming the worktree directory under
-  =pi-coding-agent/workspace-root= (default =~/work=).  The repo's
+  =pilish/workspace-root= (default =~/work=).  The repo's
   mainline branch (=origin/main=, else =origin/master=, else the
   local =main=/=master=) is fetched best-effort (timeout-capped,
   failures ignored) and checked out in the worktree — detached at
   the remote-tracking tip when the branch comes from origin,
   attached when it is a free local branch.  The new pi session (own
   perspective, pi window layout) is named after the suffix.
-- =SPC a i W= (=pi-coding-agent/new-workspace-session=) — create a
+- =SPC a i W= (=pilish/new-workspace-session=) — create a
   workspace with git worktrees and start a pi session in it.  Picks
   one or more git repositories via helm multi-select
-  (=pi-coding-agent/repo-mark-key=, default =C-;=, marks several;
+  (=pilish/repo-mark-key=, default =C-;=, marks several;
   =RET= confirms; same candidates as above, any path can be typed),
   then prompts for the workspace name.  Creates
   =«root»/«name»/repos= with one worktree per repository (mainline
@@ -187,7 +187,7 @@ row.
   repository's directory (uniquified with =-2=/-3=/… on
   collisions).  The new pi session (own perspective, pi window
   layout) is named after the workspace.
-- =SPC a i N= — reset the current session (=pi-coding-agent-new-session=,
+- =SPC a i N= — reset the current session (=pilish-new-session=,
   moved from =n=).  The perspective is kept, the chat buffer is cleared,
   and the pi process switches to a new JSONL session file; the registry
   mapping and the perspective label (back to the =New session= placeholder
@@ -224,7 +224,7 @@ on =dotspacemacs-auto-resume-layouts=:
 
 Session metadata (perspective ↔ session file mapping, captured buffer
 specs) is stored in the registry file under
-=spacemacs-cache-directory= =/pi-coding-agent/registry.el= (runtime
+=spacemacs-cache-directory= =/pilish/registry.el= (runtime
 state, not dotfiles).  The registry fails open: if it is missing or
 corrupt, sessions still list and open from the JSONL files — only the
 workspace-buffer memory is lost.
@@ -232,7 +232,7 @@ workspace-buffer memory is lost.
 ** Optional: the =my-persp= layer
 
 A small private layer (=private/my-persp=, listed before
-=pi-coding-agent=) that enhances persp-mode generically, with zero
+=pilish=) that enhances persp-mode generically, with zero
 coupling to this layer:
 
 - Common buffers (=*scratch*=, =*Messages*=; configurable via
@@ -285,11 +285,11 @@ instance that owns the session (safe with daemons / multiple Emacs).
 
 Configuration:
 
-- =pi-coding-agent/enable-bridge= (default =t=) — master switch:
+- =pilish/enable-bridge= (default =t=) — master switch:
   adds the extension to every pi command and starts the Emacs server
   if none is running (independent of =dotspacemacs-enable-server=;
   daemons always serve).  Set to =nil= to disable.
-- The extension is added via =pi-coding-agent-extra-args= =(-e ...)=;
+- The extension is added via =pilish-extra-args= =(-e ...)=;
   only sessions started after loading the layer get the tools.
 
 Notes:
@@ -304,22 +304,22 @@ Notes:
 
 ** Window layout
 
-The layer ships a purpose window layout (=pi-coding-agent.window-layout=,
+The layer ships a purpose window layout (=pilish.window-layout=,
 loadable with =SPC a i l=):
 
 #+begin_example
 +-------------------------+-------------------------+
-| pi-coding-agent-chat    |                         |
+| pilish-chat    |                         |
 | (70% height)            | any                     |
 +-------------------------+ buffer                 |
-| pi-coding-agent-input   |                         |
+| pilish-input   |                         |
 | (30% height)            |                         |
 +-------------------------+-------------------------+
 #+end_example
 
-The left column (chat + input) takes =pi-coding-agent/layout-width-ratio=
+The left column (chat + input) takes =pilish/layout-width-ratio=
 of the frame width (default =0.5=); the right =edit= pane takes the rest.
-=pi-coding-agent/layout= builds the layout from that variable at apply
+=pilish/layout= builds the layout from that variable at apply
 time, so changing it takes effect on the next =SPC a i l=.
 
 - The chat and input buffers have dedicated purposes (=pi-chat= /
@@ -328,19 +328,19 @@ time, so changing it takes effect on the next =SPC a i l=.
 - The right pane uses the =edit= purpose and is not dedicated, so it
   can hold any buffer — and since file-visiting buffers classify as
   =edit=, the fill loop fills it with an existing buffer instead of
-  creating a dummy.  =pi-coding-agent/layout= restores the buffer you
+  creating a dummy.  =pilish/layout= restores the buffer you
   were in before the command to that pane; when the command is run
   from a pi buffer, it shows the most recently used non-pi buffer
   instead (and drops window-purpose's dummy placeholders).
 - The layer directory is registered in =purpose-layout-dirs=, so the
-  static default layout (=pi-coding-agent.window-layout=, kept in sync
+  static default layout (=pilish.window-layout=, kept in sync
   with the variable's default) is also available via
   =M-x purpose-load-window-layout=.
-- =pi-coding-agent/layout= refreshes the purpose tables first and
+- =pilish/layout= refreshes the purpose tables first and
   re-asserts the session buffers in their panes, so it works even
   after layer reloads (=SPC f e R=) that leave purpose-mode's compiled
   tables stale.
-- =pi-coding-agent/layout= never starts a new pi process when a
+- =pilish/layout= never starts a new pi process when a
   session already exists: it reuses the current directory's session,
   falling back to the most recently used live session.  Only when no
   session exists at all does it start one, choosing the directory as
@@ -378,63 +378,63 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 
 | Key        | Command                              | Description                    |
 |------------+--------------------------------------+--------------------------------|
-| =i=        | =pi-coding-agent/switch-session=     | List sessions (local live, per-host remote, then closed) |
-| =I=        | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
-| =p=        | =pi-coding-agent=                    | Start or focus session         |
-| =S=        | =pi-coding-agent/open-named-session= | Start named (parallel) session |
-| =l=        | =pi-coding-agent/layout=             | Apply window layout             |
-| =n=        | =pi-coding-agent/start-new-session=  | New session or open existing (asks dir) |
-| =m=        | =pi-coding-agent/start-remote-session= | New session on an ssh-config alias (TRAMP) |
-| =N=        | =pi-coding-agent-new-session=        | Reset / new session            |
-| =d=        | =pi-coding-agent/close-session=      | Close session + workspace      |
-| =D=        | =pi-coding-agent/delete-session=     | Delete (prompts; default: current session) |
-| =r=        | =pi-coding-agent-reload=             | Restart the pi process         |
-| =s=        | =pi-coding-agent-open-session-file=  | Open a JSONL session file      |
-| =t=        | =pi-coding-agent-toggle=             | Show/hide session windows      |
-| =g=        | =pi-coding-agent-install-grammars=   | Grammar status/install         |
-| =?=        | =pi-coding-agent-menu=               | Full transient menu            |
+| =i=        | =pilish/switch-session=     | List sessions (local live, per-host remote, then closed) |
+| =I=        | =pilish/switch-session-in-dir= | Switch current dir's sessions (with layout) |
+| =p=        | =pilish=                    | Start or focus session         |
+| =S=        | =pilish/open-named-session= | Start named (parallel) session |
+| =l=        | =pilish/layout=             | Apply window layout             |
+| =n=        | =pilish/start-new-session=  | New session or open existing (asks dir) |
+| =m=        | =pilish/start-remote-session= | New session on an ssh-config alias (TRAMP) |
+| =N=        | =pilish-new-session=        | Reset / new session            |
+| =d=        | =pilish/close-session=      | Close session + workspace      |
+| =D=        | =pilish/delete-session=     | Delete (prompts; default: current session) |
+| =r=        | =pilish-reload=             | Restart the pi process         |
+| =s=        | =pilish-open-session-file=  | Open a JSONL session file      |
+| =t=        | =pilish-toggle=             | Show/hide session windows      |
+| =g=        | =pilish-install-grammars=   | Grammar status/install         |
+| =?=        | =pilish-menu=               | Full transient menu            |
 
 Major-mode (=,= / =SPC m p= in chat/input buffers; in the chat
-buffer =t= is already =pi-coding-agent-toggle=, so templates live on
+buffer =t= is already =pilish-toggle=, so templates live on
 =, T= there):
 
 | Key | Command                              | Description                                    |
 |-----+--------------------------------------+------------------------------------------------|
-| =i= | =pi-coding-agent/switch-session=     | List sessions (local live, per-host remote, then closed) |
-| =I= | =pi-coding-agent/switch-session-in-dir= | Switch current dir's sessions (with layout) |
-| =c= | =pi-coding-agent-run-command=        | Run a pi slash command by name (+ args)        |
-| =s= | =pi-coding-agent-skills-menu=        | Skills: letter runs, Shift+letter edits source |
-| =t= | =pi-coding-agent-templates-menu=     | Prompt templates (input mode; =, T= in chat)   |
-| =T= | =pi-coding-agent-templates-menu=     | Prompt templates (chat mode only)              |
-| =e= | =pi-coding-agent-extensions-menu=    | Extension commands                             |
-| =p= | =pi-coding-agent-menu=               | Full transient menu                            |
-| =P= | =pi-coding-agent/open-named-session= | Start named (parallel) session                 |
-| =m= | =pi-coding-agent/start-remote-session= | New session on an ssh-config alias (TRAMP)      |
-| =n= | =pi-coding-agent-new-session=        | Reset / new session (chat only)                |
-| =r= | =pi-coding-agent-reload=             | Restart the pi process (chat only)             |
-| =t= | =pi-coding-agent-toggle=             | Show/hide session windows (chat only)          |
+| =i= | =pilish/switch-session=     | List sessions (local live, per-host remote, then closed) |
+| =I= | =pilish/switch-session-in-dir= | Switch current dir's sessions (with layout) |
+| =c= | =pilish-run-command=        | Run a pi slash command by name (+ args)        |
+| =s= | =pilish-skills-menu=        | Skills: letter runs, Shift+letter edits source |
+| =t= | =pilish-templates-menu=     | Prompt templates (input mode; =, T= in chat)   |
+| =T= | =pilish-templates-menu=     | Prompt templates (chat mode only)              |
+| =e= | =pilish-extensions-menu=    | Extension commands                             |
+| =p= | =pilish-menu=               | Full transient menu                            |
+| =P= | =pilish/open-named-session= | Start named (parallel) session                 |
+| =m= | =pilish/start-remote-session= | New session on an ssh-config alias (TRAMP)      |
+| =n= | =pilish-new-session=        | Reset / new session (chat only)                |
+| =r= | =pilish-reload=             | Restart the pi process (chat only)             |
+| =t= | =pilish-toggle=             | Show/hide session windows (chat only)          |
 
 ** Configuration
 
 Package options are set in the =init= function in =packages.el=:
 
-- =pi-coding-agent-evil-integration= — load Evil keybindings (default =t=)
-- =pi-coding-agent-project-trust-policy= — =approve= (default) /
+- =pilish-evil-integration= — load Evil keybindings (default =t=)
+- =pilish-project-trust-policy= — =approve= (default) /
   =default= / =no-approve=
-- =pi-coding-agent-input-window-height= — height of the input window
-  (set it in =config.el= or via =M-x customize-group pi-coding-agent=)
+- =pilish-input-window-height= — height of the input window
+  (set it in =config.el= or via =M-x customize-group pilish=)
 
 Layer option (defined in =config.el=):
 
-- =pi-coding-agent/layout-width-ratio= — fraction of the frame width
+- =pilish/layout-width-ratio= — fraction of the frame width
   taken by the pi left column (chat + input), default =0.5=.  Set it
   in =dotspacemacs/user-config=, e.g.
   #+begin_src emacs-lisp
-  (setq pi-coding-agent/layout-width-ratio 0.4)
+  (setq pilish/layout-width-ratio 0.4)
   #+end_src
-  or via =M-x customize-group pi-coding-agent=, then re-apply with
+  or via =M-x customize-group pilish=, then re-apply with
   =SPC a i l=.
-- =pi-coding-agent/remote-connect-timeout= — seconds allowed for the
+- =pilish/remote-connect-timeout= — seconds allowed for the
   initial TRAMP connection of =SPC a i m= (default =20=; an ssh
   =ConnectTimeout= is passed, so an unreachable host fails with a
   clear error instead of hanging on =Opening connection ...=).  Set

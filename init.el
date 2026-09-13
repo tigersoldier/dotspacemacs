@@ -81,7 +81,7 @@ values."
      (terraform :variables terraform-auto-format-on-save t)
      spacemacs-layouts
      my-persp
-     pi-coding-agent
+     pilish
      )
    ;; List of additional packages that will be installed without being
    ;; wrapped in a layer. If you need some configuration for these
@@ -551,7 +551,7 @@ This function is called at the very end of Spacemacs initialization."
                  web-completion-data web-mode wgrep which-key window-numbering
                  winum with-editor wolfram-mode ws-butler xterm-color yaml-mode
                  yapfify yasnippet))
-   '(pi-coding-agent/remote-executables
+   '(pilish/remote-executables
      '(("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
        ("dev-server"
         "/home/caibin2/.local/share/pi-node/node-v22.23.2-linux-x64/bin/pi"

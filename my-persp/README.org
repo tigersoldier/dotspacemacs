@@ -2,7 +2,7 @@
 
 Optional generic enhancements for the =spacemacs-layouts= (persp-mode)
 layer.  Fully optional: nothing depends on this layer, and the
-=pi-coding-agent= layer works without it.
+=pilish= layer works without it.
 
 ** Features
 
@@ -27,7 +27,7 @@ persp-mode's save/load is a public dispatch
 buffer type is classified by its own handler.  This layer replaces the
 default `*'-prefixed skip filter (which would swallow terminal
 buffers) with a terminal-aware one and appends its own terminal
-handlers.  The =pi-coding-agent= layer registers its chat/input
+handlers.  The =pilish= layer registers its chat/input
 handlers at the front of the same dispatch, so the two layers compose
 without knowing about each other.
 
@@ -35,12 +35,12 @@ without knowing about each other.
 
 Add both layers to =dotspacemacs-configuration-layers= in
 =~/.emacs.d/private/init.el=, with =my-persp= before
-=pi-coding-agent=:
+=pilish=:
 
 #+begin_src emacs-lisp
    spacemacs-layouts
    my-persp
-   pi-coding-agent
+   pilish
 #+end_src
 
 ** Configuration
