@@ -1,10 +1,16 @@
 * pilish layer
 
-This layer installs and configures the official
+This layer installs and configures the
 [[https://github.com/dnouri/pilish][pilish]] Emacs frontend
-(MELPA) for the [[https://pi.dev][pi coding agent]]. It provides a two-window
+for the [[https://pi.dev][pi coding agent]]. It provides a two-window
 interface for AI-assisted coding: a chat buffer with rendered markdown and a
 separate prompt composition buffer, backed by a =pi --mode rpc= subprocess.
+
+Without a local checkout symlinked into =pilish/local/pilish=, the package
+is installed with quelpa from this config's fork
+([[https://github.com/tigersoldier/pi-coding-agent][tigersoldier/pi-coding-agent]],
+branch =downstream=), which carries fixes not yet released upstream; the
+local checkout wins when present (see =pilish/packages.el=).
 
 ** Prerequisites
 
@@ -26,7 +32,9 @@ session start (or manually via =pilish-install-grammars=).
 ** What it does
 
 - Declares the =pilish= package (its dependencies =transient=,
-  =md-ts-mode= and =markdown-table-wrap= are pulled in by package.el).
+  =md-ts-mode= and =markdown-table-wrap= are pulled in by package.el);
+  without a local checkout the package itself comes from the fork's
+  =downstream= branch via quelpa.
 - Keeps the package's own behavior: sessions are per-project (one
   process per directory, optionally named for parallel sessions),
   Evil keybindings load automatically when Evil is present, and the

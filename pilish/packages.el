@@ -11,18 +11,20 @@
 
 ;;; Commentary:
 ;;
-;; This layer wraps the `pilish' Emacs frontend (the renamed
-;; `pi-coding-agent' package, https://github.com/dnouri/pilish) for the
+;; This layer wraps the `pilish' Emacs frontend — the renamed
+;; `pi-coding-agent' package, https://github.com/dnouri/pilish — for the
 ;; pi coding agent (https://pi.dev). It provides a two-window interface
 ;; for AI-assisted coding: a chat buffer with rendered markdown and a
 ;; separate prompt composition buffer, backed by a `pi --mode rpc'
 ;; subprocess.
 ;;
 ;; The package is loaded from a local checkout when one is symlinked
-;; into `local/pilish' (see `pilish-packages' below); otherwise the
-;; released package is used.  Because local packages do not get
-;; generated autoloads, `pilish/init-pilish' explicitly requires the
-;; package.
+;; into `local/pilish' (see `pilish-packages' below); otherwise it is
+;; installed with `quelpa' from this config's fork
+;; (https://github.com/tigersoldier/pi-coding-agent, branch
+;; `downstream'), which carries fixes not yet released upstream.
+;; Because local packages do not get generated autoloads,
+;; `pilish/init-pilish' explicitly requires the package.
 ;;
 ;; The package is self-contained: it auto-loads its Evil integration
 ;; when Evil is present, checks for the `pi' binary and tree-sitter
@@ -46,39 +48,56 @@
 The symlink is gitignored and created per device.  This is the single
 place that decides whether Emacs runs the in-tree checkout: when the
 checkout is present the layer loads it with `:location local', otherwise
-it falls back to the released package."
+it installs `pilish--source-recipe'."
   (let ((dir (expand-file-name "local/pilish" pilish--packages-layer-dir)))
     (when (file-exists-p (expand-file-name "pilish.el" dir))
       dir)))
+
+(defconst pilish--source-recipe
+  '(recipe :fetcher github
+           :repo "tigersoldier/pi-coding-agent"
+           :branch "downstream"
+           ;; Mirror the MELPA recipe's file selection: the package is
+           ;; multi-file and reads `assets/pilish-logo.svg' at runtime.
+           :files (:defaults ("assets" "assets/pilish-logo.svg")))
+  "Quelpa recipe for the pilish fork this config tracks.
+The fork (https://github.com/tigersoldier/pi-coding-agent) carries
+fixes that are not released on MELPA yet; its `downstream' branch is
+the integration branch of those fixes.  Used only when no local
+checkout is symlinked into `local/pilish'.")
 
 (defconst pilish-packages
   (append
    (if (pilish//local-checkout-directory)
        ;; Development setup: load the checkout symlinked into `local/pilish'.
        '((pilish :location local))
-     ;; Fallback for devices without a checkout: use the released package.
-     ;; Warn rather than silently running a different pilish than the one
-     ;; being edited.
+     ;; Fallback for devices without a checkout: install the fork's
+     ;; `downstream' branch via quelpa.  Warn rather than silently
+     ;; running a different pilish than the one being edited.
      (progn
        (display-warning
         'pilish
         (format (concat "No local pilish checkout at %s; "
-                        "falling back to the released package")
-                (expand-file-name "local/pilish" pilish--packages-layer-dir))
+                        "installing pilish from %s (branch %s)")
+                (expand-file-name "local/pilish" pilish--packages-layer-dir)
+                (plist-get (cdr pilish--source-recipe) :repo)
+                (plist-get (cdr pilish--source-recipe) :branch))
         :warning)
-       '(pilish)))
-   ;; Hard dependencies the local checkout requires.  `pilish' is not
-   ;; installed through package.el here, so its `Package-Requires' do not
+       `((pilish :location ,pilish--source-recipe))))
+   ;; Hard dependencies the package requires, whether it comes from the
+   ;; local checkout or the recipe above.  A local checkout is not
+   ;; installed through package.el, so its `Package-Requires' do not
    ;; activate these; declaring them keeps Spacemacs from treating them as
-   ;; unused and puts their directories on `load-path'.  When the fallback
-   ;; above is used, package.el would activate them anyway.
+   ;; unused and puts their directories on `load-path'.  Quelpa installs
+   ;; the recipe through package.el and would activate them anyway, but
+   ;; declaring them keeps both sources equivalent.
    '(md-ts-mode markdown-table-wrap))
   "Packages declared by the pilish layer.
 The checkout symlinked into `local/pilish' wins (see
-`pilish//local-checkout-directory'); otherwise the released package is
-used and a warning is emitted, so the config keeps working on devices
-where the checkout does not exist without silently losing the local
-one.")
+`pilish//local-checkout-directory'); otherwise `pilish--source-recipe'
+installs the fork's `downstream' branch and a warning is emitted, so
+the config keeps working on devices where the checkout does not exist
+without silently losing the local one.")
 
 (defun pilish/init-md-ts-mode ()
   "Keep md-ts-mode activated as a pilish dependency.
@@ -93,11 +112,12 @@ Nothing to configure; it is used by the table renderer."
 (defun pilish/init-pilish ()
   "Initialize pilish.
 
-When `pilish-packages' selected the local checkout, Spacemacs does not
-generate autoloads for it, so this init function explicitly requires
-the package after setting options.  It also makes this layer the owner
-of the package (a package declared without an init function is treated
-as unused by Spacemacs and removed under `used-only' install policy)."
+Local packages get no generated autoloads, so this init function
+explicitly requires the package after setting options (idempotent for
+the quelpa fallback, whose autoloads already exist).  It also makes
+this layer the owner of the package (a package declared without an
+init function is treated as unused by Spacemacs and removed under
+`used-only' install policy)."
   ;; Evil integration: Spacemacs uses the Vim editing style, so load
   ;; the package's Evil keybindings automatically on session setup
   ;; (this is the package default; made explicit here for clarity).

@@ -19,9 +19,12 @@ git; push straight to `origin/master` (no PR flow, no CI).
   expect the running Emacs to re-save the file and race hand edits.
 - `pilish/` — the largest and most active custom layer. Wraps the
   `pilish` Emacs frontend (the renamed `pi-coding-agent` package).
-  The package is loaded from a local checkout symlinked into
-  `pilish/local/pilish` (gitignored per device; see `pilish/packages.el`),
-  not from MELPA.  Requires Emacs 29.1+ (tree-sitter) and the `pi` CLI.
+  On a development device the package is loaded from a local checkout
+  symlinked into `pilish/local/pilish` (gitignored per device); without
+  that checkout it is installed with quelpa from
+  `tigersoldier/pi-coding-agent` branch `downstream` — never from MELPA
+  (see `pilish/packages.el`).  Requires Emacs 29.1+ (tree-sitter) and
+  the `pi` CLI.
 - Other layers: `my-persp/`, `markdown-it/` (its preview shells out to
   `render.cjs`), `myconfigs/`, `bazel/`, `templates/` (yasnippet),
   `layouts/` (window-purpose layouts), `snippets/`.
