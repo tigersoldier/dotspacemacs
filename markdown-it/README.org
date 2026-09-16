@@ -24,6 +24,13 @@ npm install -g markdown-it highlight.js
   - =hljs= class on =<pre>=
   - VS Code's language quirks (=shell=→=sh=, =tsx=→=jsx=, =c#=→=cs=, …)
 - =markdown-command-needs-filename= is =nil=, so previews work on unsaved buffers.
+- Local images are copied into a per-document temporary asset directory
+  (relative directory structure preserved) and rewritten to absolute
+  =file://= URLs. =markdown-preview= writes its HTML to a random temp file in
+  =temporary-file-directory=, so relative image paths would not resolve
+  there. Rewriting happens on the rendered HTML, so both Markdown
+  =![alt](path)= and raw HTML =<img src="path">= (plus =srcset= and =poster=)
+  are handled; remote/data/scheme URLs and missing files are left as-is.
 - Mermaid diagrams: =```mermaid= fences are emitted as =<pre class="mermaid">=
   and rendered to SVG in the browser by mermaid.js (loaded from CDN in the
   preview header, like the stylesheets)
@@ -57,3 +64,16 @@ M-x markdown-it/set-css
 
 - =markdown-preview= (=SPC m c p=) — render and open in browser
 - =markdown-export= (=SPC m c e=) — write =.html= next to the =.md=
+
+** Local images
+
+Preview HTML is written to a temporary file, so relative image paths have to
+be made resolvable. =markdown-it--render= (the value of =markdown-command=,
+a function rather than a command string so it can see the source buffer)
+copies every local image referenced by the document into
+=<temporary-file-directory>/markdown-it-assets-*/<hash-of-doc-dir>/=
+and rewrites the reference to the copy's absolute =file://= URL. The relative
+directory structure is preserved (e.g. =media/foo.png= stays at
+=.../<hash>/media/foo.png=); =..= segments are mapped to =__parent__= so
+copies never escape the temp root. Different documents get different hash
+subdirectories, so identical relative paths cannot collide.
