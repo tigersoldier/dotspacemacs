@@ -27,8 +27,10 @@ git; push straight to `origin/master` (no PR flow, no CI).
   `pilish/local/pilish` (see `pilish/packages.el`).  Requires Emacs
   29.1+ (tree-sitter) and the `pi` CLI.
 - Other layers: `my-persp/`, `markdown-it/` (its preview shells out to
-  `render.cjs`), `myconfigs/`, `bazel/`, `templates/` (yasnippet),
-  `layouts/` (window-purpose layouts), `snippets/`.
+  `render.cjs`), `myconfigs/`, `purpose-fix/` (a `set-window-buffer` guard
+  that keeps window-purpose-dedicated windows on their own purpose for
+  callers that bypass purpose — see its README), `bazel/`, `templates/`
+  (yasnippet), `layouts/` (window-purpose layouts), `snippets/`.
 - Installed packages live in `~/.emacs.d/elpa/develop/<pkg>-<version>/` —
   **outside this repo**; never add package sources here.  `pilish` is the
   exception: it comes from the local checkout symlink, not from an ELPA

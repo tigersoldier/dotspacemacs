@@ -76,6 +76,7 @@ values."
      myconfigs
      bazel
      spacemacs-purpose
+     purpose-fix
      templates
      kubernetes
      (terraform :variables terraform-auto-format-on-save t)

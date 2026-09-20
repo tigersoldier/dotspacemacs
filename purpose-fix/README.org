@@ -1,0 +1,152 @@
+* purpose-fix layer
+
+Generic fixes for window-purpose, for callers that bypass it.  The
+layer is not specific to any purpose or any other layer: it applies to
+every window-purpose-dedicated window, so it also covers layouts such
+as the =2edit-panel= layout in =~/.emacs.d/private/layouts/=.
+
+** The problem
+
+window-purpose routes buffers through =display-buffer= and its advised
+=switch-to-buffer=/=pop-to-buffer=: a purpose-dedicated window refuses a
+buffer of a different purpose, because
+=purpose-display--frame-usable-windows= and
+=purpose-display-maybe-same-window= check window-purpose's own
+=purpose-dedicated= window parameter.  Callers that never go through
+those functions still can take a dedicated window over, and they leave
+the focus behind while doing it:
+
+- Spacemacs' helm action =spacemacs//helm-open-buffers-in-windows= (the
+  =RET= action of =helm-find-files=, remapped whenever the =winum= layer
+  package is used) maps the opened buffers onto windows by =winum=
+  number, starting with the *current* window, calling =set-window-buffer=
+  on each.  Started from a dedicated window, the first file was put into
+  that window; the guard diverted it to a fitting window, but the user
+  was left in the unchanged window, staring at nothing happening while
+  the file opened somewhere else.
+
+** The fix
+
+=purpose-fix//keep-dedicated-window= is an around-advice on
+=set-window-buffer=.  It diverts a buffer whose purpose differs from the
+purpose-dedicated window's purpose to
+=purpose-fix//target-window= — preferring a window already showing the
+buffer, then a free window whose purpose matches the buffer's, then any
+window that is not dedicated to a different purpose — and, when the
+diverted window was the selected one, selects the target.  The
+"selected window" rule is what makes the focus follow the buffer: only
+the selected window makes a buffer something the user is looking at, and
+=set-window-buffer= never selects a window, so the caller cannot correct
+that itself.
+
+Details that matter:
+
+- *Only purpose dedication is judged*, the same rule the package's own
+  display functions apply, so a buffer of the window's own purpose still
+  takes the window over.  window-purpose's placeholder buffers need no
+  special case either: =purpose-buffer-purpose= resolves
+  =*pu-dummy-PURPOSE-*= to its purpose.
+- *Callers that own window assignment are exempt*:
+  =purpose-set-window-properties= (used by the layout code, which walks
+  and re-purposes every window of the frame), the
+  =purpose-set-window-purpose= command, and =window-state-put= — the path
+  persp-mode takes to restore a perspective's window state — bind
+  =purpose-fix--suspended= around their work.  All three install buffers
+  the caller picked, so judging them would divert the caller's own
+  buffers and scramble what it is installing.  The window-state case is
+  the subtle one: =window-state-put= reuses the frame's existing windows
+  and repurposes them in place, so a window still carries its
+  *pre-restore* purpose when the state's buffer is set into it.  Judging
+  that buffer by the old purpose diverts it, leaves a duplicate of the
+  old buffer behind and produces a half-restored frame — which is what
+  happened to =SPC a i i= (=pilish/switch-session=): it switches
+  perspective and lets persp restore that perspective's window state, and
+  the diverted session buffers turned the restored layout into a
+  different one until =SPC a i l= rebuilt it.
+- *The guard fails open*: with no better window on the frame the buffer
+  stays in the window it was handed to, exactly as before.
+- *Side windows are never targets*: popups (=window-side=), e.g. the
+  =popl=/=popr=/=popt=/=popb= windows of =spacemacs-purpose-popwin=,
+  must not become the home of a diverted buffer.
+- *Idempotent installation*: =purpose-fix//install-advices= is called
+  from the layer's config.el and again via =with-eval-after-load
+  'window-purpose=, because layer config runs before package
+  initialization.  A reload (=SPC f e R=) reapplies it without a
+  restart.  The installer also drops the =pilish//keep-session-window=
+  advice left behind by the pre-2026 configuration, which used to live
+  in the =pilish= layer (a reload keeps advices from the previous load,
+  and that function no longer exists).
+
+** Why a layer of its own
+
+The fix is window-purpose behavior, not pi behavior: it is about the
+=purpose-dedicated= parameter, and it applies to any layout whose
+windows the package dedicates (=2edit-panel=, =pilish.window-layout=,
+user layouts).  Living in =pilish= it would not run for anyone not using
+pi, would keep a window-management concern inside a frontend layer, and
+would have to be rekeyed from pilish's own window marker to purpose
+dedication anyway.
+
+Rejected alternatives:
+
+- *Emacs window dedication* (=set-window-dedicated-p ... t= or ='side=)
+  instead of an advice.  Strong dedication turns the same direct
+  =set-window-buffer= into "Window is dedicated" (an error, not a
+  diversion) and needs more machinery — advices on the package's display
+  functions plus a =switch-to-buffer-in-dedicated-window= override — to
+  keep the package's own display working; soft =side= still lets
+  =switch-to-buffer=/=set-window-buffer= replace the window.
+- *A =display-buffer-alist= entry* matching the protected windows by
+  name.  =switch-to-buffer= and =set-window-buffer= do not consult the
+  alist, so it would fix nothing here, and it would duplicate
+  window-purpose's purpose routing.
+- *Dedicating only the purposes the user cares about* (e.g. pi-chat /
+  pi-input, or a layer-set window marker).  That is the pre-2026 pilish
+  version of this guard: it needed a second rule ("a session buffer may
+  enter a session window") to survive the layout code, and it protected
+  nothing outside the pi layout.  Keying on purpose dedication plus the
+  explicit exemption for the package's own assignment functions covers
+  every layout with one rule.
+
+** Installation
+
+Add the layer to =dotspacemacs-configuration-layers= in
+=~/.emacs.d/private/init.el=, after =spacemacs-purpose=:
+
+#+begin_src emacs-lisp
+'(...
+  spacemacs-purpose
+  purpose-fix
+  ...)
+#+end_src
+
+The layer declares its dependency on =spacemacs-purpose=, so
+window-purpose is configured before it.
+
+** Verifying a change
+
+The behavior is easiest to check from a live Emacs (=emacsclient -e=),
+with the window configuration saved and restored around the probe:
+
+- *Diversion and focus*: select a purpose-dedicated window, then
+  =(spacemacs//helm-open-buffers-in-windows (list (find-file-noselect
+  FILE)))=, and check that FILE's window is the selected one and that
+  the dedicated window still shows its own buffer.
+- *Background diversion stays silent*: hand a foreign buffer to a
+  dedicated window that is *not* selected and check that the selected
+  window does not change.
+- *Layouts still apply*: run the layout (e.g. =pilish/layout= or
+  =(purpose-set-window-layout ...)=) and compare the window geometry
+  with the guard installed and removed — it must be identical, since
+  =purpose-set-window-properties= is exempt.
+- *Re-purposing still works*: =(purpose-set-window-purpose 'edit)= in a
+  dedicated window must change that window's purpose instead of being
+  diverted.
+- *Perspective switches survive*: with two perspectives whose window
+  states are canonical, =SPC a i i= (=pilish/switch-session=) must restore
+  the target perspective's layout verbatim — no buffer sitting in a
+  window of another purpose, no duplicated session buffer.  Note that
+  =a i i= never builds the layout: it restores the perspective's saved
+  window state, which persp captured when that perspective was last
+  left, so a state saved while the frame was garbled stays garbled until
+  =SPC a i l= rebuilds it (the next switch away then saves the good one).

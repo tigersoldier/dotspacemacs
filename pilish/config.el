@@ -28,7 +28,7 @@ happens before this file (and the rest of the layer) is loaded."
 (defcustom pilish/layout-width-ratio 0.5
   "Fraction of the frame width taken by the pi left column (chat + input).
 Used by `pilish/layout' when applying the window layout; the
-right edit pane takes the remaining width.  Must be between 0 and 1."
+right edit window takes the remaining width.  Must be between 0 and 1."
   :type 'number
   :group 'pilish)
 
@@ -72,7 +72,7 @@ this key instead (C-; is deliberately undefined in `helm-map')."
 ;; window-purpose integration
 ;;
 ;; The layer ships a window layout (pilish.window-layout) with
-;; dedicated chat/input panes and a free pane for any buffer.  The
+;; dedicated chat/input windows and a free window for any buffer.  The
 ;; layout directory is registered below, and the package's modes are
 ;; mapped to the layout's purposes so buffers are routed to the right
 ;; windows.  These defcustoms may not be bound yet (the dotfile's

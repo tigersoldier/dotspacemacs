@@ -342,18 +342,29 @@ loadable with =SPC a i l=):
 #+end_example
 
 The left column (chat + input) takes =pilish/layout-width-ratio=
-of the frame width (default =0.5=); the right =edit= pane takes the rest.
+of the frame width (default =0.5=); the right =edit= window takes the rest.
 =pilish/layout= builds the layout from that variable at apply
 time, so changing it takes effect on the next =SPC a i l=.
 
 - The chat and input buffers have dedicated purposes (=pi-chat= /
   =pi-input=) mapped from the package's modes in =config.el=, so they
-  are always routed to the left panes.
-- The right pane uses the =edit= purpose and is not dedicated, so it
+  are always routed to the left windows.  The windows are
+  =:purpose-dedicated=, so =display-buffer= and window-purpose's advised
+  =switch-to-buffer=/=pop-to-buffer= (=find-file=, =C-x b=, =C-x 4 b=,
+  help, magit, compilation, ...) route new buffers to the general (edit)
+  window and leave the session windows alone.  Callers that hand a
+  buffer straight to =set-window-buffer= (Spacemacs' helm action
+  =spacemacs//helm-open-buffers-in-windows=, which maps opened files
+  onto windows by number) are covered by the =purpose-fix= layer's
+  guard, which applies the same purpose rule to that path — for any
+  =purpose-dedicated= window, and moving the focus to the window the
+  buffer ends up in when it was headed for the selected one.  See that
+  layer's README for the details and the rejected alternatives.
+- The right window uses the =edit= purpose and is not dedicated, so it
   can hold any buffer — and since file-visiting buffers classify as
   =edit=, the fill loop fills it with an existing buffer instead of
   creating a dummy.  =pilish/layout= restores the buffer you
-  were in before the command to that pane; when the command is run
+  were in before the command to that window; when the command is run
   from a pi buffer, it shows the most recently used non-pi buffer
   instead (and drops window-purpose's dummy placeholders).
 - The layer directory is registered in =purpose-layout-dirs=, so the
@@ -361,7 +372,7 @@ time, so changing it takes effect on the next =SPC a i l=.
   with the variable's default) is also available via
   =M-x purpose-load-window-layout=.
 - =pilish/layout= refreshes the purpose tables first and
-  re-asserts the session buffers in their panes, so it works even
+  re-asserts the session buffers in their windows, so it works even
   after layer reloads (=SPC f e R=) that leave purpose-mode's compiled
   tables stale.
 - =pilish/layout= never starts a new pi process when a

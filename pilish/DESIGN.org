@@ -723,3 +723,53 @@ host instead of mixed into the live/closed lists.
   (skip vs. persp's default empty-buffer fallback).
 - Label placeholder ("New session") updates to the first-message snippet via
   the lazy scan sync after the first prompt.
+
+** D17. Chat/input windows stay put via window-purpose (2026)
+
+=find-file= (=SPC f f=), =C-x b=, and friends in a pi chat/input window
+used to replace that window's session buffer with the newly opened
+buffer.  The windows now stay on their session buffers and the new buffer
+lands in the general (edit) window.
+
+- The routing is window-purpose's own: the layout marks the chat and
+  input windows =:purpose-dedicated t=.  window-purpose's
+  =purpose-display--frame-usable-windows= (=display-buffer=) and
+  =purpose-display-maybe-same-window= (the advised
+  =switch-to-buffer=/=pop-to-buffer=) both refuse a purpose-dedicated
+  window whose purpose differs from the buffer's, so every routed
+  command goes to the general window.  There is no Emacs window
+  dedication.
+- One path bypasses purpose entirely: a caller that hands a buffer
+  straight to =set-window-buffer= on a window it picked itself.
+  Spacemacs' helm action =spacemacs//helm-open-buffers-in-windows= does
+  exactly that — it maps buffers onto windows by =winum= number, calling
+  =set-window-buffer= on each — which is what put the opened file into
+  the input window.  This is generic window-purpose behavior, not pi
+  behavior, so the guard that covers it now lives in the =purpose-fix=
+  layer (=purpose-fix//keep-dedicated-window=).  It keys on
+  window-purpose's own =purpose-dedicated= window parameter — the same
+  rule the package's display functions apply — and exempts the callers
+  that own window assignment: the package's
+  =purpose-set-window-properties=/=purpose-set-window-purpose= and
+  =window-state-put=, which persp-mode uses to restore a perspective's
+  window state when a session is switched to (=SPC a i i=).  Those
+  assign buffers in place, so a window still carries its pre-restore
+  purpose while the state's buffer is being set and judging it by that
+  purpose would scramble the restored layout.
+  It diverts a foreign buffer to a fitting window and, when the buffer
+  was headed for the *selected* window, moves the focus with it
+  (=set-window-buffer= cannot select a window, so a caller that bypasses
+  purpose would otherwise leave the user in an unchanged window while
+  the buffer opens elsewhere).  See the layer's README for the full
+  rationale and the rejected alternatives.
+- Rejected: Emacs window dedication (=set-window-dedicated-p ... t= or
+  ='side=).  Strong dedication turns that same direct
+  =set-window-buffer= into "Window is dedicated" and then needs more
+  machinery (advices on the package's display functions plus a
+  =switch-to-buffer-in-dedicated-window= override) to keep the package's
+  own display working; soft =side= still lets
+  =switch-to-buffer=/=set-window-buffer= replace the window.
+- Rejected: a =display-buffer-alist= entry avoiding the pi buffers by
+  name.  It would not affect =switch-to-buffer=/=set-window-buffer=
+  (which do not consult the alist) and would duplicate window-purpose's
+  purpose routing.
