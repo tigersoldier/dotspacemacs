@@ -561,6 +561,11 @@ This function is called at the very end of Spacemacs initialization."
    '(purpose-layout-dirs '("~/.emacs.d/private/layouts/"))
    '(purpose-user-mode-purposes
      '((magit-status-mode . edit) (term-mode . panel) (compilation-mode . panel)
+       ;; vterm ships as purpose `terminal' in the shell layer's *extended*
+       ;; config; the user config above is consulted first, so this pulls
+       ;; vterm buffers into the panel window of `purpose-default-layout-file'
+       ;; (2edit-panel) together with term/compilation/*Help*.
+       (vterm-mode . panel)
        (dired-mode . edit) (magit-revision-mode . edit)))
    '(purpose-user-name-purposes '(("*Help*" . panel)))
    '(safe-local-variable-values
