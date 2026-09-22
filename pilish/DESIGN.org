@@ -773,3 +773,52 @@ lands in the general (edit) window.
   name.  It would not affect =switch-to-buffer=/=set-window-buffer=
   (which do not consult the alist) and would duplicate window-purpose's
   purpose routing.
+
+** D18. The Default pseudo-perspective is not a perspective (2026)
+
+persp-mode 4.0 (MELPA 20260830.105) represents the default perspective —
+Spacemacs names it =Default=, =persp-nil-name= — as a =persp-nil-persp=
+structure.  Through 2025 it *was* nil, which is what the layer's
+perspective queries were written against: =persp-get-by-name= answered
+nil for that name, =perspective-p= rejected it, and only the
+nil-tolerant =persp-p= accepted it.  Now the lookup returns the
+structure and =perspective-p= accepts it, while =persp-contain-buffer-p=
+still answers t for it whatever the buffer — so "which perspectives are
+there?" questions started counting =Default= as one, and "does another
+perspective share this buffer?" started answering yes.
+
+That made =pilish//exclusive-buffers= — the buffers only this
+perspective has — nil for every perspective, because =Default= claimed
+them all.  Two commands read that list for their safety:
+
+- =SPC a i D= (=pilish/delete-session=) refuses a session whose chat
+  buffer is shared with another perspective (the session file would move
+  out from under a live process); with an empty list every session
+  looked shared, so every delete was refused.
+- =SPC a i d= (=pilish/close-session=) stops the pi process and kills
+  the session's buffers before killing the perspective.  With nothing
+  "exclusive" it skipped both and killed the perspective, orphaning a
+  live pi process together with its chat/input buffers.
+
+Rule: the default pseudo-perspective is not a perspective.  Where the
+question is "is this a perspective that can own a pi session, or
+another perspective that might share a buffer", ask
+=pilish//real-persp-p= instead of =perspective-p=:
+=pilish//exclusive-buffers= (the other-perspective check),
+=pilish//persp-containing-buffer=, =pilish//ordered-persp-names= (which
+supplies "the next perspective" after a close), =pilish//persp-for-close=
+and the session list's =exclude-current= gate.  The predicate compares
+=safe-persp-name= against =persp-nil-name=, which holds for both
+representations (in the old one the lookup answers nil, failing the
+=persp= test first) and for a renamed default perspective.  Sites that
+gate on =pilish//chat-buffer-in-persp= need no change: the
+pseudo-perspective hosts no pi session.
+
+Rejected: pinning persp-mode to the old version.  The structure is
+upstream's design (=persp-nil-persp=, the =persp-persp-*= accessors),
+and the layer's assumption was version-specific rather than a promise
+the package ever made.
+
+The rest of 4.0's renames (=get-current-persp= → =persp-get-current=,
+=safe-persp-name= → =persp-name=, ...) keep obsolete aliases that the
+layer still calls; that part is cosmetic and can migrate separately.

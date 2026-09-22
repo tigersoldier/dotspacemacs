@@ -896,19 +896,32 @@ renames done via the /name slash command)."
 ;; transition not ready, layer's own open flow which already registry-
 ;; put the file) and no-registry-entry paths are no-ops.
 
+(defun pilish//real-persp-p (persp)
+  "Return non-nil when PERSP is a real perspective, not the default one.
+Through persp-mode 2025 the default (\"Default\") pseudo-perspective was
+nil itself, so `persp-get-by-name' answered nil for `persp-nil-name' and
+the `perspective-p' predicate rejected it.  persp-mode 4.0 (2026-08)
+keeps a `persp-nil-persp' structure instead, which `persp-get-by-name'
+returns and `perspective-p' accepts, while `persp-contain-buffer-p'
+stays unconditionally true for it.  Membership questions (\"does another
+perspective show this buffer?\") and perspective listings must skip it
+by name — `persp-nil-name' is kept in sync with the structure's name, so
+the comparison survives a rename."
+  (and persp
+       (perspective-p persp)
+       (not (equal (safe-persp-name persp) persp-nil-name))))
+
 (defun pilish//persp-containing-buffer (buf)
   "Return the first live perspective containing BUFFER, or nil.
-The nil (Default) pseudo-perspective must be excluded explicitly:
-`persp-get-by-name' returns nil for it, `persp-p' treats nil as a valid
-perspective, and `safe-persp-buffers' of nil is the full buffer list —
-with the nil-tolerant `persp-p' predicate, `Default' (first in
-`persp-names') would match every buffer and the function would always
-return nil.  The strict `perspective-p' predicate excludes it."
+The default (\"Default\") pseudo-perspective never counts, even though
+persp-mode answers t for any buffer asked about it (see
+`pilish//real-persp-p'): the test below asks each perspective's own
+buffer list, so only a real perspective showing BUFFER matches."
   (when (bound-and-true-p persp-mode)
     (when-let* ((name (cl-find-if
                        (lambda (name)
                          (let ((persp (persp-get-by-name name)))
-                           (and (perspective-p persp)
+                           (and (pilish//real-persp-p persp)
                                 (memq buf (safe-persp-buffers persp)))))
                        (persp-names))))
       (persp-get-by-name name))))
@@ -1551,7 +1564,7 @@ group's order inside the per-host sections it rebuilds
          (seen (make-hash-table :test 'equal))
          (current-persp (get-current-persp))
          (current-buffers (and exclude-current
-                               (perspective-p current-persp)
+                               (pilish//real-persp-p current-persp)
                                (safe-persp-buffers current-persp)))
          (current-file (and exclude-current
                             (pilish//current-session-file)))
@@ -3685,12 +3698,14 @@ perspective, pi window layout) is named after the workspace."
 (defun pilish//exclusive-buffers (persp)
   "Buffers of PERSP not present in any other real perspective.
 Common buffers (injected into every perspective) and buffers shared
-with other perspectives are spared.  Note: the nil perspective is nil
-itself and `persp-contain-buffer-p' is always true for it, so it must
-be excluded from the other-perspective check."
+with other perspectives are spared.  The default (\"Default\")
+pseudo-perspective is not \"another perspective\":
+`persp-contain-buffer-p' answers t for it whatever the buffer, so
+counting it would make every buffer look shared — and would empty this
+list (see `pilish//real-persp-p')."
   (let ((others (delq persp
                       (cl-remove-if-not
-                       (lambda (p) (and p (perspective-p p)))
+                       #'pilish//real-persp-p
                        (mapcar #'persp-get-by-name (persp-names))))))
     (cl-remove-if (lambda (buf)
                     (cl-find-if (lambda (p) (persp-contain-buffer-p buf p))
@@ -3767,10 +3782,12 @@ open-named-session')."
 
 (defun pilish//ordered-persp-names ()
   "Return real perspective names in persp's display order.
-The nil (default) perspective is excluded: it cannot host a pi
-session and `persp-contain-buffer-p' is always true for it."
+The default (\"Default\") pseudo-perspective is excluded (see
+`pilish//real-persp-p'): it cannot host a pi session, and counting it
+would let it stand in for \"the next perspective\" after a session is
+closed."
   (cl-remove-if-not (lambda (name)
-                      (perspective-p (persp-get-by-name name)))
+                      (pilish//real-persp-p (persp-get-by-name name)))
                     (persp-names-current-frame-fast-ordered)))
 
 (defun pilish//active-pi-buffer-p (buf)
@@ -3845,10 +3862,12 @@ else the buffer name.  BY-FILE maps session files to metadata entries."
   "Resolve the perspective to close for pi chat buffer BUF.
 Prefers the current perspective when it displays BUF (a chat buffer
 can be shared by several perspectives of one directory); otherwise
-the first real perspective containing it."
+the first real perspective containing it.  The default (\"Default\")
+pseudo-perspective is never a candidate: closing it would tear down
+the workspace that is not a session's (see `pilish//real-persp-p')."
   (let ((current (get-current-persp)))
     (cond
-     ((and (perspective-p current)
+     ((and (pilish//real-persp-p current)
            (memq buf (safe-persp-buffers current)))
       (safe-persp-name current))
      ((when-let* ((persp (pilish//persp-containing-buffer buf)))
