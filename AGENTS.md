@@ -116,10 +116,29 @@ emacs --batch -Q -L . \
 ```
 
 Check for read/syntax errors and *new* warnings only. `*.elc` is
-gitignored — delete it after compiling. For behavioral checks, a headless
-`emacs --batch -l test.el` harness with stubs for the package functions and
-persp-mode works well (see the remote-scope work in git history for the
-pattern). Reload the running config with `SPC f e R` after layer edits.
+gitignored — delete it after compiling.
+
+That recipe suppresses free-variable warnings, which hides one whole
+class of breakage: an unescaped `"` inside a docstring ends the string
+early, and the remaining prose is read as body forms (e.g. `("does
+another` turns *does* and *another* into variables).  Compile once with
+warnings on after editing docstrings and look for free-variable names
+that are not real variables — the `grep -v` drops the expected package
+and package-config globals:
+
+```sh
+emacs --batch -Q -L . \
+  -L ~/.emacs.d/private/pilish/local/pilish \
+  --eval '(progn (setq byte-compile-warnings t)
+                 (byte-compile-file "pilish/funcs.el"))' 2>&1 \
+  | grep "free variable" \
+  | grep -v "purpose-\|pilish/\|pilish--\|spacemacs-\|persp-\|helm-\|tramp\|window-\|cl-"
+```
+
+For behavioral checks, a headless `emacs --batch -l test.el` harness with
+stubs for the package functions and persp-mode works well (see the
+remote-scope work in git history for the pattern).  Reload the running
+config with `SPC f e R` after layer edits.
 
 ## Commit style
 
