@@ -328,7 +328,20 @@ remaining path, callers that hand a buffer straight to
   ;; reloaded with `SPC f e R' after startup, the purpose-mode hook
   ;; that normally refreshes them never re-fires).
   (pilish//ensure-purpose-config)
-  (purpose-set-window-layout (pilish//window-layout-plist))
+  ;; window-purpose sizes layout nodes top-down and can transiently
+  ;; target the frame's root window, which `window-resize' refuses
+  ;; outright ("Cannot resize the root window of a frame") — fatal on
+  ;; fixed-size terminal frames (e.g. daemon sessions reached via
+  ;; `emacsclient -e', whose root window the terminal owns).
+  ;; `pilish//purpose-set-size-root-safe' turns those calls into
+  ;; no-ops, and if the layout still fails, the raw-split fallback
+  ;; below keeps a fresh session alive instead of rolling it back.
+  (condition-case layout-error
+      (purpose-set-window-layout (pilish//window-layout-plist))
+    (error
+     (message "pilish: purpose layout failed (%s); using raw split fallback"
+              (error-message-string layout-error))
+     (pilish//fallback-pi-layout chat input saved-buffer restrict-to-persp)))
   ;; Re-assert the session buffers in their windows and focus the input
   ;; window.  The purpose fill loop usually does this, but doing it
   ;; explicitly guarantees the windows show the current session's
@@ -373,6 +386,94 @@ remaining path, callers that hand a buffer straight to
           (kill-buffer buf))))
     (when (and input (get-buffer-window input nil))
       (select-window (get-buffer-window input nil)))))
+
+;; ---------------------------------------------------------------------
+;; Root-window-safe layout sizing
+;;
+;; `window-resize' raises "Cannot resize the root window of a frame"
+;; whenever its target is the frame's root window — even for a delta of
+;; zero — because resizing the root means resizing the frame itself.
+;; On fixed-size terminal frames the frame cannot grow or shrink at
+;; all, so a root-targeted resize is always fatal there.  Both sizing
+;; paths that can reach the root are neutered: window-purpose's layout
+;; sizer (used by `pilish//apply-pi-layout') and the pi input pane
+;; rebalancer (on `window-size-change-functions').  Skipping is safe:
+;; every size target is frame-relative, so the root always matches its
+;; target up to rounding.
+
+(defun pilish//root-window-p (window)
+  "Return non-nil when WINDOW is its frame's root window."
+  (and (windowp window)
+       (eq window (frame-root-window (window-frame window)))))
+
+(defun pilish//purpose-set-size-root-safe (orig width height &optional window)
+  "Root-window-safe `:around' advice for `purpose--set-size'.
+Skip the resize when the target WINDOW is the frame's root window;
+otherwise call ORIG unchanged.  See the Root-window-safe layout
+sizing comment above."
+  (unless (pilish//root-window-p (or window (selected-window)))
+    (funcall orig width height window)))
+
+(advice-add 'purpose--set-size :around #'pilish//purpose-set-size-root-safe)
+
+(defun pilish//rebalance-input-window-root-safe (orig chat-win input-win)
+  "Root-window-safe `:around' advice for `pilish--rebalance-input-window'.
+Skip the resize when the INPUT-WIN pane is the frame's root window;
+otherwise call ORIG unchanged.  See the Root-window-safe layout
+sizing comment above."
+  (unless (pilish//root-window-p input-win)
+    (funcall orig chat-win input-win)))
+
+(advice-add 'pilish--rebalance-input-window
+            :around #'pilish//rebalance-input-window-root-safe)
+
+(defun pilish//fallback-pi-layout (chat input saved-buffer
+                                        &optional restrict-to-persp)
+  "Arrange the pi session with raw splits, no window-purpose layout.
+Fallback for when `purpose-set-window-layout' errors: chat buffer
+above the input buffer on the left (split at
+`pilish/layout-width-ratio' of the frame width), and the right window
+holding SAVED-BUFFER when usable, else the most recently used non-pi
+buffer (restricted to the current perspective when RESTRICT-TO-PERSP
+is non-nil).  CHAT and INPUT fall back to the current pi-chat/
+pi-input purpose buffers when nil, like `pilish//apply-pi-layout'."
+  (let ((chat (or chat
+                  (car (pilish//non-dummy-buffers-with-purpose 'pi-chat))))
+        (input (or input
+                   (car (pilish//non-dummy-buffers-with-purpose 'pi-input)))))
+    (delete-other-windows)
+    (let* ((left (selected-window))
+           ;; Left column takes `pilish/layout-width-ratio' of the
+           ;; frame width; the negative SIZE gives it to the original
+           ;; window, the edit pane gets the rest.
+           (right (split-window left
+                                (- (round (* pilish/layout-width-ratio
+                                             (window-total-width left))))
+                                'right))
+           (chat-win left)
+           (input-height (min (max window-min-height
+                                   (round (* (- 1 pilish/layout-width-ratio)
+                                             (window-total-height left))))
+                              (- (window-total-height left)
+                                 window-min-height)))
+           (input-win (split-window left input-height 'below)))
+      (when chat
+        (set-window-buffer chat-win chat)
+        (set-window-dedicated-p chat-win t))
+      (when input
+        (set-window-buffer input-win input)
+        (set-window-dedicated-p input-win t))
+      (set-window-dedicated-p right nil)
+      (set-window-buffer
+       right (if (and (buffer-live-p saved-buffer)
+                      (not (with-current-buffer saved-buffer
+                             (derived-mode-p 'pilish-chat-mode
+                                             'pilish-input-mode))))
+                 saved-buffer
+               (or (pilish//most-recent-non-pi-buffer restrict-to-persp)
+                   (window-buffer right))))
+      (when (and input (get-buffer-window input nil))
+        (select-window (get-buffer-window input nil))))))
 
 ;; ---------------------------------------------------------------------
 ;; Session management
