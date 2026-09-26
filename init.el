@@ -48,6 +48,7 @@ values."
          go-use-golangci-lint nil)
      (python :variables
              python-backend 'lsp
+             python-lsp-server 'pyright
              python-formatter 'yapf)
      (rust :variables rust-backend 'lsp)
      (c-c++ :variables c-c++-backend 'lsp-clangd)
@@ -378,6 +379,10 @@ you should place your code here."
   ;; Spacemacs sets `company-transformers' which messes up the candidate order
   ;; provided by LSP. Unset it.
   (setq company-transformers nil)
+  ;; Spacemacs only starts the Python backend from `python-mode-local-vars-hook';
+  ;; Emacs 30 also opens .py files in `python-ts-mode'. Run after dir-locals
+  ;; so project-specific backend settings are available before starting LSP.
+  (add-hook 'python-ts-mode-local-vars-hook #'spacemacs//python-setup-backend)
   ;; Machine-local configuration, managed in the caibin-docs repo.
   (let ((local-config "~/.spacemacs.d/local.el"))
     (when (file-exists-p local-config)
