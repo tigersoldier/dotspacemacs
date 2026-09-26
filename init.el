@@ -554,9 +554,7 @@ This function is called at the very end of Spacemacs initialization."
                  yapfify yasnippet))
    '(pilish/remote-executables
      '(("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
-       ("dev-server"
-        "/home/caibin2/.local/share/pi-node/node-v22.23.2-linux-x64/bin/pi"
-        . "/home/caibin2/.local/share/pi-node/node-v22.23.2-linux-x64/bin/node")
+       ("dev-server" "/home/caibin2/.local/bin/pi-gateway")
        ("tigerbox" "/home/tiger/.local/bin/pi" . "/bin/node")))
    '(purpose-default-layout-file "~/.emacs.d/private/layouts/2edit-panel.window-layout")
    '(purpose-layout-dirs '("~/.emacs.d/private/layouts/"))
