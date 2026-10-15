@@ -987,6 +987,71 @@ drift case handled by `pilish//switch-to-session'."
 ;; ---------------------------------------------------------------------
 ;; Session scanning and the switch-session list
 
+(defun pilish//remote-session-local-copy (file)
+  "Copy large remote session FILE locally with a bounded scp subprocess.
+Return the temporary filename, which the caller must delete, or nil on
+failure.  TRAMP's inline gzip/base64 transfer can lose its exit marker
+on large JSONL files, making the session invisible to the picker; scp
+uses the ssh-config host alias and transfers out of band.  BatchMode
+avoids a second password prompt, and the subprocess deadline prevents
+a stuck transfer from freezing Emacs like a TRAMP wait would."
+  (let* ((host (file-remote-p file 'host))
+         (path (file-remote-p file 'localname))
+         (timeout (max 1 (or pilish/remote-connect-timeout 20)))
+         (tmp (make-temp-file "pilish-session-scan-"))
+         (errbuf (generate-new-buffer " *pi-session-scp*"))
+         (success nil)
+         proc)
+    (unwind-protect
+        (condition-case err
+            (let ((default-directory temporary-file-directory))
+              (setq proc (make-process
+                          :name "pi-session-scp" :buffer nil :stderr errbuf
+                          :connection-type 'pipe :noquery t
+                          :command (list "scp" "-q" "-B" "-o"
+                                         (format "ConnectTimeout=%d" timeout)
+                                         "--" (concat host ":" path) tmp)))
+              (let ((deadline (+ (float-time) timeout)))
+                (while (and (process-live-p proc)
+                            (< (float-time) deadline))
+                  (accept-process-output proc 0.1)))
+              (if (and (not (process-live-p proc))
+                       (zerop (process-exit-status proc)))
+                  (setq success t)
+                (message "pi: scp of %s failed or exceeded %ds: %s"
+                         file timeout
+                         (with-current-buffer errbuf (string-trim (buffer-string))))))
+          (file-error
+           (message "pi: cannot copy %s: %s" file (error-message-string err))))
+      (when (and proc (process-live-p proc)) (delete-process proc))
+      (when (buffer-live-p errbuf) (kill-buffer errbuf))
+      (unless success (delete-file tmp)))
+    (and success tmp)))
+
+(defun pilish//read-remote-session-info (orig-fn file &optional search-text)
+  "Read large remote session FILE without TRAMP's inline file transfer.
+Around-advice for `pilish-jsonl-read-session-info': the package calls
+this scanner again when it opens a picked session (to validate its cwd
+and refresh its name).  Those reads otherwise try to insert the whole
+remote JSONL through TRAMP and can fail or hang on large histories.
+Use the same bounded scp copy as the layer's picker, preserving the
+original path and mtime in the scanner result; never pass the temporary
+path to pi's `switch_session' RPC.  Local and small remote files keep
+the package's original behavior."
+  (let* ((remote (pilish--remote-prefix-for-path file))
+         (attrs (and remote (file-attributes file)))
+         (large (and attrs
+                     (> (file-attribute-size attrs) (* 512 1024)))))
+    (if (not large)
+        (funcall orig-fn file search-text)
+      (when-let* ((copy (pilish//remote-session-local-copy file)))
+        (unwind-protect
+            (progn
+              (set-file-times copy (file-attribute-modification-time attrs))
+              (when-let* ((info (funcall orig-fn copy search-text)))
+                (plist-put info :path file)))
+          (delete-file copy))))))
+
 (defun pilish//session-scan-info (file)
   "Return package-scanned session info for FILE, or nil.
 Delegates to the installed package's canonical session scanner and
@@ -1028,7 +1093,10 @@ Metadata uses the layer's dialect — (:modified-time TIME :first-message
 TEXT :message-count COUNT :session-name NAME :cwd DIR) — parsed with
 the package's canonical session scanner (see
 `pilish//session-scan-info'; :modified-time comes from
-FILE's own mtime, matching the oldest scanner's behavior).  Fail-open:
+FILE's own mtime, matching the oldest scanner's behavior).  Large
+remote files are copied out of band via bounded scp first: TRAMP's
+inline gzip/base64 transfer can fail on megabyte-sized histories.
+Fail-open:
 a vanished or unreadable FILE — e.g. one whose directory no longer
 exists — yields nil with a message instead of an error, so session
 listing and deletion never abort on stale or missing session files.
@@ -1053,7 +1121,14 @@ disconnected remote file falls back to its stale cache entry
          ;; touch the file.
          ((and remote (not connected) cached) (cdr cached))
          (connected
-          (let* ((info (pilish//session-scan-info file))
+          (let* ((large-remote (and remote attrs
+                                    (> (file-attribute-size attrs) (* 512 1024))))
+                 (copy (and large-remote
+                            (pilish//remote-session-local-copy file)))
+                 (info (unwind-protect
+                           (and (or (not large-remote) copy)
+                                (pilish//session-scan-info (or copy file)))
+                         (when copy (delete-file copy))))
                  (meta (and info
                             (plist-put (copy-sequence info)
                                        :modified-time mtime))))
@@ -1340,8 +1415,19 @@ boundary."
 DIR is compared expanded and with a trailing slash, matching the
 normalization `pilish--session-file-cwd-or-error' applies to
 recorded cwds.  ROOT overrides the scanned session root (see
-`pilish//session-entries')."
-  (let ((dir (pilish//normalized-dir dir)))
+`pilish//session-entries').  On a remote host, scan only pi's
+per-cwd directory: recursively walking the entire remote session
+tree can block the picker for minutes on hosts with many sessions."
+  (let* ((dir (pilish//normalized-dir dir))
+         (root (if (and root
+                        (equal (pilish--remote-prefix-for-path dir)
+                               (pilish--remote-prefix-for-path root))
+                        (pilish--remote-prefix-for-path root)
+                        (fboundp 'pilish-jsonl-session-dir-for-cwd))
+                   (file-name-as-directory
+                    (pilish-jsonl-session-dir-for-cwd
+                     (file-remote-p dir 'localname) root))
+                 root)))
     (cl-remove-if-not
      (lambda (entry)
        (let ((cwd (plist-get entry :cwd)))
@@ -1391,25 +1477,20 @@ buffer — see `pilish//opened-session-files')."
                     :modified (plist-get meta :modified-time)
                     :opened (pilish//file-in-opened-p file opened))
               entries)))
-    ;; Drop cache entries for deleted files — only within the scanned
-    ;; ROOT's scope: a local scan cannot see remote files (their
-    ;; sessions live on their hosts), so it must not evict their cached
-    ;; metadata, and a remote scan conversely must not evict local
-    ;; entries.  Without the scope check, every disconnected-host
-    ;; listing would wipe the remote cache (forcing a full re-read once
-    ;; the host answers again).
-    (maphash (lambda (file _)
-               (unless (member file files)
-                 (let ((file-remote
-                        (pilish--remote-prefix-for-path file)))
-                   (when (if remote-p
-                             (and file-remote
-                                  (equal file-remote
-                                         (pilish--remote-prefix-for-path
-                                          root)))
-                           (not file-remote))
-                     (remhash file pilish//session-cache)))))
-             pilish//session-cache)
+    ;; Evict only files under the scanned ROOT.  Directory-scoped
+    ;; remote pickers scan a single per-cwd subtree; evicting by host
+    ;; alone would discard every other project's cached metadata.
+    (let ((root-prefix (file-name-as-directory
+                        (if remote-p root (expand-file-name root)))))
+      (maphash (lambda (file _)
+                 (when (and (not (member file files))
+                            (equal (pilish--remote-prefix-for-path file)
+                                   remote-p)
+                            (string-prefix-p root-prefix
+                                             (if remote-p file
+                                               (expand-file-name file))))
+                   (remhash file pilish//session-cache)))
+               pilish//session-cache))
     (nreverse entries)))
 
 (defun pilish//disambiguated-label (label n file)
@@ -2647,7 +2728,8 @@ layout; typing a new session name — or picking the \"✚ New
 session\" candidate and entering one — starts a fresh named
 session; an empty name starts an unnamed session, refused when the
 directory already runs a live unnamed session.  With no existing
-sessions a fresh unnamed session is started directly."
+sessions a fresh unnamed session is started directly.  For remote
+directories, scan the selected host's session root as `a i m' does."
   (interactive)
   (require 'pilish)
   (unless (bound-and-true-p persp-mode)
@@ -2656,7 +2738,8 @@ sessions a fresh unnamed session is started directly."
          (dir (read-directory-name "Start new pi session in directory: "
                                    default-dir default-dir t))
          (dir (pilish--route-preserving-expand-file-name dir))
-         (choice (pilish//new-session-choice dir)))
+         (choice (pilish//new-session-choice
+                  dir (pilish//remote-session-root dir))))
     (pcase choice
       (`(existing . ,target)
        (pilish//open-or-switch-target target))
@@ -4514,7 +4597,14 @@ do not double-fire the advices."
   (advice-remove 'pilish--start-process
                  #'pilish//remote-spawn-start-process)
   (advice-add 'pilish--start-process
-              :around #'pilish//remote-spawn-start-process))
+              :around #'pilish//remote-spawn-start-process)
+  ;; The package rereads a selected session's full JSONL through TRAMP
+  ;; before and after switch_session; reuse the picker's bounded scp
+  ;; path so large remote histories can actually be resumed.
+  (advice-remove 'pilish-jsonl-read-session-info
+                 #'pilish//read-remote-session-info)
+  (advice-add 'pilish-jsonl-read-session-info
+              :around #'pilish//read-remote-session-info))
 
 (with-eval-after-load 'pilish
   (pilish//install-package-advices))

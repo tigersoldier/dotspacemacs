@@ -822,3 +822,71 @@ the package ever made.
 The rest of 4.0's renames (=get-current-persp= → =persp-get-current=,
 =safe-persp-name= → =persp-name=, ...) keep obsolete aliases that the
 layer still calls; that part is cosmetic and can migrate separately.
+
+** D19. Scope remote new-session scans to pi's per-cwd directory (2026)
+
+After =SPC a i m= selects a directory, its existing-session picker
+used to recurse through the remote host's *entire* session tree before
+filtering by cwd.  On dev-server (pi-gateway) this tree had 691 JSONL
+files in 951 directories; even enumeration alone took over 38 seconds
+through TRAMP, versus about 2 seconds for pi-beelink's 51 files.
+This is independent of the executable: pi-gateway answers RPC normally.
+
+For a directory-scoped *remote* picker, use the package's canonical
+=pilish-jsonl-session-dir-for-cwd= to target the selected cwd's pi
+session directory.  Still check each file's recorded cwd: forks or
+other files in that subtree need not belong to the chosen directory.
+Keep the full-root scan for the global session lists and the original
+local behavior; when the canonical helper is unavailable, fall back
+to the original scan rather than hiding existing sessions.  Restrict
+metadata-cache eviction to files under the scanned root, not every
+file on that host, so browsing one project does not invalidate the
+other projects' cache entries.
+
+Rejected: skipping the existing-session picker on gateway hosts.  It
+would make the command fast by hiding that project's resumable sessions
+and tie session discovery to the executable rather than the directory.
+A global remote session list can still be expensive on large hosts;
+this decision only addresses the directory-scoped new-session path.
+
+A second obstacle surfaced after narrowing the scan: TRAMP's inline
+=gzip | base64= read of dev-server's megabyte-sized JSONL files lost
+its exit marker, so the existing-session list was empty even after
+enumeration finished.  For remote files larger than 512 KiB, copy
+with =scp= to a private temporary file, then run the same canonical
+package parser locally; preserve the remote file's mtime for the
+cache.  The local subprocess uses BatchMode and a wall-clock deadline,
+so it cannot prompt again or enter TRAMP's untimeoutable wait.  The
+temporary file is deleted even when parsing fails; an unsuccessful
+copy fails open (the session is not listed).  Smaller files still use
+TRAMP.  Rejected: implementing a second JSONL parser with remote
+=grep=/=head= commands, which would diverge from the package's
+session-info semantics.
+
+=SPC a i n= can also select a TRAMP directory.  Pass that directory's
+remote session root to the same picker, as =a i m= does; without ROOT,
+the picker defaults to the local session root and finds no remote
+closed sessions.  Local directories continue to use the local root.
+
+** D20. Reuse bounded remote reads while reopening sessions (2026)
+
+A remote session appearing in the picker did not mean it could be
+opened.  Before Pi receives =switch_session=, the pilish package
+validates the selected file's cwd with
+=pilish-jsonl-read-session-info=; after the switch it reads the file
+again for its name.  Both calls insert the entire JSONL through
+TRAMP.  On dev-server, even a 1.7 MiB session failed with "Tramp:
+Inserting ...failed" during this step, after selection.  D19's
+bounded copy only covered the layer's discovery scanner.
+
+Advise the package's canonical =pilish-jsonl-read-session-info= for
+large remote files to parse the same bounded scp copy used by the
+picker.  Restore the source path and mtime in the parsed result before
+returning; pi's =switch_session= still receives the original remote
+process-local path, never the temporary copy.  Delete the copy even
+when parsing fails.  Local and small remote files still use the
+package's scanner directly.  The advice is installed idempotently
+alongside the other package advices, so reloading the layer does not
+stack copies.  Rejected: changing only the cwd reader or dropping the
+package's metadata checks: the post-switch name refresh has the same
+TRAMP failure and these checks guard against invalid session files.

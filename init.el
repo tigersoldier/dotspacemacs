@@ -418,7 +418,8 @@ This function is called at the very end of Spacemacs initialization."
    '(auto-save-default nil)
    '(clang-format-style "Google")
    '(connection-local-criteria-alist
-     '(((:machine "pi-beelink") pi-beelink-vars)
+     '(((:machine "dev-server") dev-server-vars)
+       ((:machine "pi-beelink") pi-beelink-vars)
        ((:application tramp :protocol "kubernetes")
         tramp-kubernetes-connection-local-default-profile)
        ((:application tramp :machine "Cresta-MBP-M2D5V4X3D1")
@@ -431,7 +432,8 @@ This function is called at the very end of Spacemacs initialization."
        ((:application tramp) tramp-connection-local-default-system-profile
         tramp-connection-local-default-shell-profile)))
    '(connection-local-profile-alist
-     '((pi-beelink-vars (company-gtags--executable-connection))
+     '((dev-server-vars (company-gtags--executable-connection))
+       (pi-beelink-vars (company-gtags--executable-connection))
        (tramp-kubernetes-connection-local-default-profile
         (tramp-config-check . tramp-kubernetes--current-context-data)
         (tramp-extra-expand-args 97
@@ -558,19 +560,14 @@ This function is called at the very end of Spacemacs initialization."
                  winum with-editor wolfram-mode ws-butler xterm-color yaml-mode
                  yapfify yasnippet))
    '(pilish/remote-executables
-     '(("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
-       ("dev-server" "/home/caibin2/.local/bin/pi-gateway")
+     '(("dev-server" "/home/caibin2/.local/bin/pi-gateway")
+       ("pi-beelink" "/home/pi/.local/bin/pi" . "/bin/node")
        ("tigerbox" "/home/tiger/.local/bin/pi" . "/bin/node")))
    '(purpose-default-layout-file "~/.emacs.d/private/layouts/2edit-panel.window-layout")
    '(purpose-layout-dirs '("~/.emacs.d/private/layouts/"))
    '(purpose-user-mode-purposes
      '((magit-status-mode . edit) (term-mode . panel) (compilation-mode . panel)
-       ;; vterm ships as purpose `terminal' in the shell layer's *extended*
-       ;; config; the user config above is consulted first, so this pulls
-       ;; vterm buffers into the panel window of `purpose-default-layout-file'
-       ;; (2edit-panel) together with term/compilation/*Help*.
-       (vterm-mode . panel)
-       (dired-mode . edit) (magit-revision-mode . edit)))
+       (vterm-mode . panel) (dired-mode . edit) (magit-revision-mode . edit)))
    '(purpose-user-name-purposes '(("*Help*" . panel)))
    '(safe-local-variable-values
      '((eval puthash "GOPACKAGESPRINTDRIVERERRORS" "true" lsp-go-env)
