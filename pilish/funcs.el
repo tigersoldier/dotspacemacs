@@ -528,20 +528,20 @@ turns each into a TRAMP directory (/ssh:HOST:~)."
 (defcustom pilish/remote-executables nil
   "Per-host mapping of verified remote pi and node executables.
 Alist of (HOST . (PI-PATH . NODE-PATH)): PI-PATH is the absolute
-path of the pi binary on that remote host, NODE-PATH the node
-binary that pi's shebang (`#!/usr/bin/env node') resolves through —
-nil when node only needs to be found through PATH.  The mapping is
-filled in automatically by `pilish/start-remote-session'
-once the executables have been located and verified working on the
-host (the user is asked to locate them when the search fails), and
-is consulted again on later sessions to skip the search.  Sessions
-started through `pilish/start-remote-session' — and every
-remote spawn of `pilish--start-process' (see
-`pilish//remote-spawn-start-process') — bind
-`pilish-executable' to a wrapper that exports NODE-PATH's
+path of the pi launcher on that remote host; NODE-PATH is the
+runtime reported by the pi process itself (the official managed
+installer may prepend its private Node to PATH), nil when it could
+not be probed.  The mapping is filled in automatically by
+`pilish/start-remote-session' once the executables have been located
+and verified working on the host (the user is asked to locate pi
+when the search fails), and is consulted again on later sessions to
+skip the search.  Sessions started through
+`pilish/start-remote-session' — and every remote spawn of
+`pilish--start-process' (see `pilish//remote-spawn-start-process') —
+bind `pilish-executable' to a wrapper that exports NODE-PATH's
 directory into the spawn PATH, making the pi spawn independent of
-the remote PATH (both for finding pi and for resolving pi's
-`#!/usr/bin/env node' shebang)."
+the remote PATH.  The managed Pi launcher still takes precedence
+when it prepends its own installer-managed Node directory."
   :type '(alist :key-type (string :tag "host")
                 :value-type (cons (string :tag "pi executable")
                                   (choice (string :tag "node executable")
@@ -1415,25 +1415,31 @@ boundary."
 DIR is compared expanded and with a trailing slash, matching the
 normalization `pilish--session-file-cwd-or-error' applies to
 recorded cwds.  ROOT overrides the scanned session root (see
-`pilish//session-entries').  On a remote host, scan only pi's
-per-cwd directory: recursively walking the entire remote session
-tree can block the picker for minutes on hosts with many sessions."
+`pilish//session-entries').  Remote hosts use pi's per-cwd session
+directory; the SDK lists that directory directly, with a TRAMP scan
+fallback, instead of walking the host-wide sessions tree."
   (let* ((dir (pilish//normalized-dir dir))
-         (root (if (and root
-                        (equal (pilish--remote-prefix-for-path dir)
-                               (pilish--remote-prefix-for-path root))
-                        (pilish--remote-prefix-for-path root)
+         (prefix (pilish--remote-prefix-for-path dir))
+         (root (if (and root prefix
+                        (equal prefix (pilish--remote-prefix-for-path root))
                         (fboundp 'pilish-jsonl-session-dir-for-cwd))
                    (file-name-as-directory
                     (pilish-jsonl-session-dir-for-cwd
                      (file-remote-p dir 'localname) root))
-                 root)))
+                 root))
+         (root-prefix (and root (pilish--remote-prefix-for-path root)))
+         (remote-result (and prefix root-prefix
+                             (equal prefix root-prefix)
+                             (pilish//remote-session-entries prefix root)))
+         (entries (if remote-result
+                      (cdr remote-result)
+                    (pilish//session-entries root))))
     (cl-remove-if-not
      (lambda (entry)
        (let ((cwd (plist-get entry :cwd)))
          (and (stringp cwd)
               (equal (pilish//normalized-dir cwd) dir))))
-     (pilish//session-entries root))))
+     entries)))
 
 (defun pilish//file-in-opened-p (file opened)
   "Return non-nil when FILE is one of the opened session files OPENED.
@@ -1572,11 +1578,10 @@ REMOTE-SCOPE follows `pilish//session-targets'' convention:
 a TRAMP prefix string scopes to that one host, `t' (the close/delete
 scope) to every host with an active pi chat buffer plus the current
 session's host, and a list of TRAMP prefixes to exactly those hosts.
-Each host's root is scanned only over an already-established
+Each host is listed only over an already-established
 connection (`pilish//remote-scan-root': a disconnected host
 gets a background probe and contributes nothing instead of blocking).
-nil when DIR is given — directory-scoped lists come from their own
-root — or when REMOTE-SCOPE admits no remote host (nil or `local`)."
+nil when DIR is given — directory-scoped entries are handled by the caller — or when REMOTE-SCOPE admits no remote host (nil or `local`)."
   (when (null dir)
     (let ((prefixes (pilish//remote-scope-prefixes remote-scope)))
       (apply #'append
@@ -1584,7 +1589,12 @@ root — or when REMOTE-SCOPE admits no remote host (nil or `local`)."
                    (mapcar
                     (lambda (prefix)
                       (let ((root (pilish//remote-scan-root prefix)))
-                        (and root (pilish//session-entries root))))
+                        (when root
+                          (let ((result
+                                 (pilish//remote-session-entries prefix)))
+                            (if result
+                                (cdr result)
+                              (pilish//session-entries root))))))
                     prefixes))))))
 
 (defun pilish//session-targets (&optional dir include-closed
@@ -3020,6 +3030,219 @@ already-established connection, so a dead connection fails fast."
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 
+(defconst pilish//remote-pi-preload-source
+  (concat
+   "\"use strict\";\n"
+   "import fs from \"node:fs\";\n"
+   "import path from \"node:path\";\n"
+   "import { pathToFileURL } from \"node:url\";\n"
+   "if (process.env.PILISH_REMOTE_PRELOAD_ACTIVE !== \"1\") {\n"
+   "  process.env.PILISH_REMOTE_PRELOAD_ACTIVE = \"1\";\n"
+   "  const emit = (value) => {\n"
+   "    fs.writeSync(1, \"PILISH_PI_RESULT:\" + JSON.stringify(value) + \"\\n\");\n"
+   "    process.exit(0);\n"
+   "  };\n"
+   "  const fail = (error) => {\n"
+   "    const detail = error && error.stack ? error.stack : String(error);\n"
+   "    fs.writeSync(2, \"PILISH_PI_ERROR:\" + detail.replace(/\\n/g, \"\\\\n\") + \"\\n\");\n"
+   "    process.exit(1);\n"
+   "  };\n"
+   "  const runtime = { execPath: process.execPath, version: process.version, managedRoot: process.env.PI_MANAGED_INSTALL_ROOT || null };\n"
+   "  const realPath = (value) => { try { return fs.realpathSync(value); } catch (_) { return value; } };\n"
+   "  runtime.realExecPath = realPath(process.execPath);\n"
+   "  if (process.env.PILISH_REMOTE_PI_MODE !== \"sessions\") {\n"
+   "    emit({ runtime });\n"
+   "  } else {\n"
+   "    const packageName = \"@earendil-works/pi-coding-agent\";\n"
+   "    const candidates = [];\n"
+   "    const managedRoot = process.env.PI_MANAGED_INSTALL_ROOT;\n"
+   "    if (managedRoot) {\n"
+   "      try {\n"
+   "        const version = fs.readFileSync(path.join(managedRoot, \"current-version\"), \"utf8\").trim();\n"
+   "        candidates.push(path.join(managedRoot, \"releases\", version, \"node_modules\", \"@earendil-works\", \"pi-coding-agent\"));\n"
+   "      } catch (_) {}\n"
+   "    }\n"
+   "    if (process.argv[1]) {\n"
+   "      const entry = realPath(process.argv[1]);\n"
+   "      let dir = path.dirname(entry);\n"
+   "      try { if (fs.statSync(entry).isDirectory()) dir = entry; } catch (_) {}\n"
+   "      for (;;) {\n"
+   "        candidates.push(dir);\n"
+   "        if (path.basename(dir) === \".bin\") candidates.push(path.join(path.dirname(dir), \"@earendil-works\", \"pi-coding-agent\"));\n"
+   "        if (path.basename(dir) === \"node_modules\") candidates.push(path.join(dir, \"@earendil-works\", \"pi-coding-agent\"));\n"
+   "        const parent = path.dirname(dir);\n"
+   "        if (parent === dir) break;\n"
+   "        dir = parent;\n"
+   "      }\n"
+   "    }\n"
+   "    let packageRoot = null;\n"
+   "    let packageJson = null;\n"
+   "    for (const candidate of candidates) {\n"
+   "      try {\n"
+   "        const json = JSON.parse(fs.readFileSync(path.join(candidate, \"package.json\"), \"utf8\"));\n"
+   "        if (json.name === packageName) { packageRoot = candidate; packageJson = json; break; }\n"
+   "      } catch (_) {}\n"
+   "    }\n"
+   "    if (!packageRoot) throw new Error(\"could not locate the installed Pi package from its running executable\");\n"
+   "    const rootExport = typeof packageJson.exports === \"string\" ? packageJson.exports : packageJson.exports && packageJson.exports[\".\"];\n"
+   "    const importPath = typeof rootExport === \"string\" ? rootExport : rootExport && rootExport.import ? rootExport.import : packageJson.module || packageJson.main;\n"
+   "    if (typeof importPath !== \"string\") throw new Error(\"Pi package has no importable public entry point\");\n"
+   "    await (async () => {\n"
+   "      const api = await import(pathToFileURL(path.resolve(packageRoot, importPath)).href);\n"
+   "      const manager = api.SessionManager;\n"
+   "      if (!manager || typeof manager.listAll !== \"function\") throw new Error(\"this Pi version does not export SessionManager.listAll\");\n"
+   "      const sessionDir64 = process.env.PILISH_REMOTE_PI_SESSION_DIR_B64;\n"
+   "      let sessions;\n"
+   "      if (sessionDir64) {\n"
+   "        const sessionDir = Buffer.from(sessionDir64, \"base64\").toString(\"utf8\");\n"
+   "        sessions = await manager.listAll(sessionDir);\n"
+   "      } else {\n"
+   "        sessions = await manager.listAll();\n"
+   "      }\n"
+   "      const rows = sessions.map((info) => {\n"
+   "        const modifiedMs = info.modified instanceof Date ? info.modified.getTime() : Date.parse(info.modified);\n"
+   "        return { path: info.path, cwd: info.cwd || null, name: info.name || null, firstMessage: info.firstMessage || null, messageCount: info.messageCount, modifiedMs: Number.isFinite(modifiedMs) ? modifiedMs : null };\n"
+   "      });\n"
+   "      emit({ runtime, sessions: rows });\n"
+   "    })().catch(fail);\n"
+   "  }\n"
+   "}\n")
+  "ESM preload run inside the selected pi executable's own Node process.
+For session scans it imports the installed public SDK entry point and
+serializes only picker metadata, never `allMessagesText'.")
+
+(defun pilish//remote-pi-run-script (pi-path node-path mode session-dir)
+  "Build the remote shell script that runs PI-PATH with PRELOAD mode MODE."
+  (let* ((node-dir (and (stringp node-path)
+                        (not (string-empty-p node-path))
+                        (file-name-directory node-path)))
+         (session-dir-local
+          (and session-dir
+               (file-remote-p (pilish//normalized-dir session-dir) 'localname)))
+         (session-dir64 (and (stringp session-dir-local)
+                             (base64-encode-string
+                              (encode-coding-string session-dir-local 'utf-8-unix) t))))
+    (concat
+     "tmpdir=$(mktemp -d /tmp/pilish-pi.XXXXXX) || exit 1\n"
+     "trap 'rm -rf \"$tmpdir\"' 0 HUP INT TERM\n"
+     (format "printf %%s %s > \"$tmpdir/preload.mjs\"\n"
+             (shell-quote-argument pilish//remote-pi-preload-source))
+     (or (and node-dir
+              (format "PATH=%s:$PATH; export PATH\n"
+                      (shell-quote-argument
+                       (directory-file-name node-dir))))
+         "")
+     (format "PILISH_REMOTE_PI_MODE=%s; export PILISH_REMOTE_PI_MODE\n"
+             (shell-quote-argument mode))
+     (or (and session-dir64
+              (format "PILISH_REMOTE_PI_SESSION_DIR_B64=%s; export PILISH_REMOTE_PI_SESSION_DIR_B64\n"
+                      session-dir64))
+         "")
+     "NODE_OPTIONS=\"--import=$tmpdir/preload.mjs${NODE_OPTIONS:+ $NODE_OPTIONS}\"; export NODE_OPTIONS\n"
+     (format "%s --version\n" (tramp-shell-quote-argument pi-path))
+     "status=$?\nrm -rf \"$tmpdir\"\ntrap - 0 HUP INT TERM\nexit \"$status\"\n")))
+
+(defun pilish//remote-pi-run (prefix pi-path node-path mode &optional session-dir)
+  "Run PI-PATH on remote PREFIX with a one-shot Node preload.
+MODE is `probe' (report the exact Node runtime used by pi) or
+`sessions' (use Pi's SessionManager.listAll and return compact session
+metadata).  SESSION-DIR, when non-nil, limits listAll to that remote
+project folder.  The preload exits before pi's CLI starts; PI-PATH's
+own launcher therefore supplies the same Node and environment as a real
+Pi invocation.  Returns the parsed response hash-table, or nil."
+  (let* ((default-directory (file-name-as-directory (concat prefix "~")))
+         (script (pilish//remote-pi-run-script pi-path node-path mode session-dir))
+         (result (condition-case err
+                     (pilish//remote-shell-run script)
+                   (error
+                    (message "pi: remote command on %s failed: %s"
+                             (or (file-remote-p prefix 'host) prefix)
+                             (error-message-string err))
+                    nil)))
+         (output (cdr-safe result))
+         (position (and (stringp output)
+                        (string-match
+                         "PILISH_PI_RESULT:\\([^\n\r]*\\)" output))))
+    (when (and (numberp (car-safe result))
+               (zerop (car result))
+               position)
+      (condition-case err
+          (json-parse-string (match-string 1 output)
+                             :object-type 'hash-table
+                             :array-type 'list
+                             :null-object nil
+                             :false-object nil)
+        (error
+         (message "pi: invalid remote SessionManager response from %s: %s"
+                  (or (file-remote-p prefix 'host) prefix)
+                  (error-message-string err))
+         nil)))))
+
+(defun pilish//remote-record-node-path (host pi-path node-path)
+  "Persist NODE-PATH reported by PI-PATH on HOST when it changed."
+  (when (and (stringp host) (stringp pi-path)
+             (stringp node-path) (file-name-absolute-p node-path))
+    (let ((old (assoc-string host pilish/remote-executables t)))
+      (unless (and old (equal (cadr old) pi-path)
+                   (equal (cddr old) node-path))
+        (setq pilish/remote-executables
+              (cons (cons host (cons pi-path node-path))
+                    (assoc-delete-all host pilish/remote-executables)))
+        (customize-save-variable 'pilish/remote-executables
+                                 pilish/remote-executables)))))
+
+(defun pilish//remote-session-record-entry (prefix record opened)
+  "Convert one Pi SessionInfo RECORD into a layer session entry.
+PREFIX anchors Pi's native remote paths; OPENED is the local list of
+session files currently loaded by active chat buffers."
+  (let* ((path (gethash "path" record))
+         (file (and (stringp path)
+                    (cond
+                     ((pilish--remote-prefix-for-path path) path)
+                     ((or (file-name-absolute-p path)
+                          (string-prefix-p "~/" path))
+                      (concat prefix path))
+                     (t (expand-file-name
+                         path (concat prefix "~/.pi/agent/sessions/"))))))
+         (cwd (gethash "cwd" record))
+         (modified-ms (gethash "modifiedMs" record)))
+    (when file
+      (list :file file
+            :cwd (and (stringp cwd) (not (string-empty-p cwd))
+                      (pilish//entry-cwd file cwd))
+            :first-message (gethash "firstMessage" record)
+            :name (gethash "name" record)
+            :count (gethash "messageCount" record)
+            :modified (and (numberp modified-ms)
+                           (seconds-to-time (/ (float modified-ms) 1000.0)))
+            :opened (pilish//file-in-opened-p file opened)))))
+
+(defun pilish//remote-session-entries (prefix &optional session-dir)
+  "Return (t . ENTRIES) from Pi on PREFIX, or nil when unavailable.
+The SDK's `SessionManager.listAll' does filesystem discovery and
+metadata parsing on the remote host, then this process receives only
+picker fields.  SESSION-DIR, when non-nil, limits listAll to one
+project folder without creating it.  PREFIX must already have an
+established TRAMP connection and a verified pi executable mapping."
+  (let* ((root (concat prefix "~/.pi/agent/sessions/"))
+         (entry (pilish//remote-executable-entry-for root)))
+    (when entry
+      (let* ((payload (pilish//remote-pi-run prefix (car entry) (cdr entry)
+                                             "sessions" session-dir))
+             (records (and payload (gethash "sessions" payload)))
+             (opened (pilish//opened-session-files)))
+        (when payload
+          (when-let* ((runtime (gethash "runtime" payload))
+                      (node-path (gethash "execPath" runtime)))
+            (pilish//remote-record-node-path
+             (file-remote-p root 'host) (car entry) node-path))
+          (cons t
+                (delq nil
+                      (mapcar (lambda (record)
+                                (pilish//remote-session-record-entry
+                                 prefix record opened))
+                              records))))))))
+
 (defun pilish//remote-ask-executable (host name)
   "Ask the user to locate executable NAME on remote HOST.
 Completes over the remote file system, then verifies the chosen
@@ -3067,8 +3290,8 @@ searched, and finally the user is asked to locate the binary
 interactively.  A candidate is only accepted after it has been
 verified working by running it remotely; the mapping for HOST is
 then updated and persisted with `customize-save-variable'.
-Returns (PI-PATH . NODE-PATH); NODE-PATH is nil when node is only
-needed through PATH."
+Returns (PI-PATH . NODE-PATH); NODE-PATH is the runtime path reported
+by Pi, falling back to a discovered path or nil."
   (let* ((root (format "/ssh:%s:" host))
          (home (and home (directory-file-name home)))
          (remote (lambda (p) (concat root p)))
@@ -3089,7 +3312,8 @@ needed through PATH."
         (when (and (string-prefix-p "/" found) (file-executable-p (funcall remote found)))
           (setq pi-path found))))
     (unless pi-path
-      (dolist (dir (delq nil (list (and home (concat home "/.local/bin"))
+      (dolist (dir (delq nil (list (and home (concat home "/.pi/agent/bin"))
+                                   (and home (concat home "/.local/bin"))
                                    (and home (concat home "/bin"))
                                    "/usr/local/bin" "/opt/homebrew/bin")))
         (when (and (not pi-path)
@@ -3103,8 +3327,17 @@ needed through PATH."
         (if (file-executable-p answer)
             (setq pi-path (or (file-remote-p answer 'localname) answer))
           (message "Not an executable: %s" answer))))
-    ;; 4. node: pi's `#!/usr/bin/env node' shebang resolves it through
-    ;; PATH; record where it lives when it is not on the default PATH.
+    ;; 4. Prefer the official installer's managed Node path, then PATH
+    ;; and common locations.  The actual pi runtime is probed below.
+    (unless node-path
+      (let* ((found (cdr (pilish//remote-shell-run
+                          "printf '%s\\n' \"${XDG_DATA_HOME:-$HOME/.local/share}/pi-node/current/bin/node\""))))
+        (when (and (stringp found)
+                   (string-prefix-p "/" found)
+                   (file-executable-p (funcall remote found)))
+          (setq node-path found))))
+    ;; A legacy install may not have a managed Node; prefer the PATH
+    ;; candidate as its shebang will resolve it directly.
     (unless node-path
       (let ((found (pilish//remote-shell-run "command -v node 2>/dev/null")))
         (when (and (eq (car found) 0) (string-prefix-p "/" (cdr found)))
@@ -3127,6 +3360,14 @@ needed through PATH."
         (unless (pilish//remote-verify-pi host pi-path node-path)
           (user-error "pi at %s on %s still does not run (node: %s) - check `ssh %s' and install pi + node"
                       pi-path host (or node-path "missing") host))))
+    ;; Probe process.execPath from inside the exact pi invocation.  The
+    ;; managed launcher can prepend its private Node, so command -v may
+    ;; report a different runtime or none at all.
+    (when-let* ((probe (pilish//remote-pi-run root pi-path node-path "probe"))
+                (runtime (gethash "runtime" probe))
+                (actual-node (gethash "execPath" runtime))
+                ((stringp actual-node)))
+      (setq node-path actual-node))
     ;; 6. Persist the verified mapping for this host.
     (setq pilish/remote-executables
           (cons (cons host (cons pi-path node-path))
@@ -4610,3 +4851,4 @@ do not double-fire the advices."
   (pilish//install-package-advices))
 
 ;;; funcs.el ends here
+(declare-function pilish//remote-session-entries nil (prefix &optional dir))

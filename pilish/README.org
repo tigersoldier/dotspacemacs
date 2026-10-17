@@ -103,7 +103,7 @@ row.
   =pilish/remote-executables=, hosts of active pi chat
   buffers, and the current session's host.  Listing a remote host is
   best effort and never blocks: its live chat buffers come from local
-  state and its closed files are scanned only over an
+  state and its closed files are listed by Pi's SDK, when available, over an
   already-established TRAMP connection; a disconnected host is probed
   in the background and contributes no section to this listing — its
   sessions reappear in a later listing once it answers.
