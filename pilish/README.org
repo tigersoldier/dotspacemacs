@@ -405,7 +405,11 @@ Inside a pi buffer:
 - =C-c C-p= — open the transient menu
 - =C-c C-r= — resume a session
 - =C-c C-k= — abort current operation
-- =TAB= / =@= — path completion / file references in the input buffer
+- =TAB= — Pilish's native completion-at-point command; its UI follows
+  Emacs's configured completion frontend (Helm in this Spacemacs setup)
+- Typing an initial =/= opens Company command choices; fuzzy matching and
+  argument completion are provided by the layer's Company integration
+- =@= — literal prompt text; it does not open a project-file list
 
 ** Key bindings
 

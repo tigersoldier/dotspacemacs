@@ -24,6 +24,114 @@
 ;; `-e' extensions.  Same lexical-binding caveat as above.
 (defvar pilish-extra-args)
 (declare-function tramp-make-tramp-file-name "tramp")
+(declare-function pilish//remote-session-entries nil (prefix &optional dir))
+(declare-function company-mode "company")
+(declare-function company-begin-backend "company")
+(declare-function company--match-from-capf-face "company")
+(declare-function pilish--file-reference-capf "pilish-input")
+(declare-function pilish--maybe-complete-at "pilish-input")
+(defvar company-backends)
+(defvar company-minimum-prefix-length)
+(defvar company-idle-delay)
+(defvar completion-at-point-functions)
+
+(defvar-local pilish//company-capf-current-data nil
+  "CAPF data most recently read by `pilish//company-capf'.")
+
+(defun pilish//company-capf-find-data ()
+  "Return the first valid Pilish CAPF result at point."
+  (catch 'data
+    (dolist (capf completion-at-point-functions)
+      (when (functionp capf)
+        (let ((result (condition-case nil
+                          (funcall capf)
+                        (error nil))))
+          (when (and (consp result)
+                     (integer-or-marker-p (nth 0 result))
+                     (integer-or-marker-p (nth 1 result))
+                     (<= (nth 0 result) (point) (nth 1 result))
+                     (consp (nthcdr 2 result)))
+            (throw 'data result)))))))
+
+(defun pilish//company-capf-prefix ()
+  "Return the prefix and suffix from the active Pilish CAPF."
+  (setq pilish//company-capf-current-data
+        (pilish//company-capf-find-data))
+  (when pilish//company-capf-current-data
+    (let ((start (nth 0 pilish//company-capf-current-data))
+          (end (nth 1 pilish//company-capf-current-data)))
+      (list (buffer-substring-no-properties start (point))
+            (buffer-substring-no-properties (point) end)
+            (plist-get (nthcdr 3 pilish//company-capf-current-data)
+                       :company-prefix-length)))))
+
+(defun pilish//company-capf-candidates (prefix suffix)
+  "Return fuzzy-matched CAPF candidates for PREFIX and SUFFIX."
+  (when pilish//company-capf-current-data
+    (let* ((data pilish//company-capf-current-data)
+           (start (nth 0 data))
+           (end (nth 1 data))
+           (table (nth 2 data))
+           (predicate (plist-get (nthcdr 3 data) :predicate))
+           ;; Flex fails on an empty query.  Use basic matching for the
+           ;; initial slash popup, then return to the buffer's flex style.
+           (completion-styles (if (string-empty-p prefix)
+                                  '(basic)
+                                completion-styles))
+           (metadata (completion-metadata
+                      (buffer-substring-no-properties start end)
+                      table predicate))
+           (candidates (completion-all-completions
+                        (concat prefix (or suffix ""))
+                        table predicate (length prefix) metadata))
+           (last-cell (last candidates))
+           (sort-function (cdr (assq 'display-sort-function metadata))))
+      ;; The final cdr from `completion-all-completions' is a base size.
+      (when last-cell
+        (setcdr last-cell nil))
+      (when (functionp sort-function)
+        (setq candidates (funcall sort-function candidates)))
+      candidates)))
+
+(defun pilish//company-capf (command &optional arg &rest rest)
+  "Dispatch Company COMMAND, ARG, and REST using Pilish's fuzzy CAPF data."
+  (pcase command
+    (`interactive (company-begin-backend 'pilish//company-capf))
+    (`prefix (pilish//company-capf-prefix))
+    (`candidates (pilish//company-capf-candidates arg (car rest)))
+    (`annotation
+     (let ((annotation
+            (plist-get (nthcdr 3 pilish//company-capf-current-data)
+                       :annotation-function)))
+       (when (functionp annotation)
+         (funcall annotation arg))))
+    (`kind
+     (let ((kind (plist-get (nthcdr 3 pilish//company-capf-current-data)
+                            :company-kind)))
+       (if (functionp kind) (funcall kind arg) kind)))
+    (`match (company--match-from-capf-face arg))
+    (`ignore-case completion-ignore-case)
+    (`sorted t)
+    (`duplicates t)
+    (`no-cache t)
+    (`init nil)))
+
+(defun pilish//configure-input-completion ()
+  "Apply layer-specific completion behavior in the current input buffer."
+  (require 'company)
+  (remove-hook 'completion-at-point-functions
+               #'pilish--file-reference-capf t)
+  (setq-local company-backends '(pilish//company-capf))
+  (setq-local completion-styles '(flex))
+  ;; Let Company auto-start on the empty prefix after `/'.  Its own idle
+  ;; callback performs the post-command render after collecting candidates.
+  (setq-local company-minimum-prefix-length 0)
+  (setq-local company-idle-delay 0)
+  (company-mode 1)
+  ;; Company now triggers from its post-command hook; neither the package's
+  ;; delayed trigger nor the former layer timer should start a second session.
+  (remove-hook 'post-self-insert-hook #'pilish--maybe-complete-at t)
+  (remove-hook 'post-self-insert-hook 'pilish//maybe-complete-at t))
 
 ;; Absolute path to this layer's directory (resolved from funcs.el's
 ;; path). Used for the window layout file and PATH setup.
@@ -4851,4 +4959,3 @@ do not double-fire the advices."
   (pilish//install-package-advices))
 
 ;;; funcs.el ends here
-(declare-function pilish//remote-session-entries nil (prefix &optional dir))

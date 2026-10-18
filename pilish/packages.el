@@ -27,11 +27,9 @@
 ;; generated autoloads, `pilish/init-pilish' explicitly requires the
 ;; package.
 ;;
-;; The package is self-contained: it auto-loads its Evil integration
-;; when Evil is present, checks for the `pi' binary and tree-sitter
-;; grammars at session start, and manages its own keymaps. This layer
-;; only declares the package and adds Spacemacs-style leader
-;; keybindings.
+;; The package handles RPC, rendering, and session behavior. This layer
+;; declares its dependencies, configures Company completion for the input
+;; buffer, and adds Spacemacs-style leader keybindings.
 ;;
 ;; Requirements:
 ;;   - Emacs 29.1 or later (tree-sitter support required)
@@ -102,14 +100,14 @@ and an actual checkout at `local/pilish' are required."
        '((pilish :location local))
      ;; Default: install the fork's `downstream' branch via quelpa.
      `((pilish :location ,pilish--source-recipe)))
-   ;; Hard dependencies the package requires, whether it comes from the
-   ;; local checkout or the recipe above.  A local checkout is not
-   ;; installed through package.el, so its `Package-Requires' do not
+   ;; Dependencies used by the package or this layer, whether the package
+   ;; comes from the local checkout or the recipe above.  A local checkout
+   ;; is not installed through package.el, so its `Package-Requires' do not
    ;; activate these; declaring them keeps Spacemacs from treating them as
    ;; unused and puts their directories on `load-path'.  Quelpa installs
    ;; the recipe through package.el and would activate them anyway, but
    ;; declaring them keeps both sources equivalent.
-   '(md-ts-mode markdown-table-wrap))
+   '(md-ts-mode markdown-table-wrap company))
   "Packages declared by the pilish layer.
 When `pilish/use-local-checkout' is set (gitignored `local/config.el')
 and `local/pilish' is a checkout, that checkout is loaded; otherwise
@@ -123,6 +121,10 @@ Nothing to configure; the mode is used by `pilish-chat-mode'."
 (defun pilish/init-markdown-table-wrap ()
   "Keep markdown-table-wrap activated as a pilish dependency.
 Nothing to configure; it is used by the table renderer."
+  nil)
+
+(defun pilish/init-company ()
+  "Keep Company activated for the pilish input-buffer completion layer."
   nil)
 
 (defun pilish/init-pilish ()

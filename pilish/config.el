@@ -123,4 +123,11 @@ its perspective and switching to it)."
   (unless (server-running-p)
     (server-start)))
 
+;; Keep Company integration in the layer: the package owns the CAPFs and
+;; keymap, while this layer chooses how Company consumes the CAPFs.
+;; `with-eval-after-load' also covers package initialization ordering when
+;; pilish has already been loaded.
+(with-eval-after-load 'pilish
+  (add-hook 'pilish-input-mode-hook #'pilish//configure-input-completion))
+
 ;;; config.el ends here
