@@ -101,12 +101,18 @@ row.
   listed; a remote host joins the listing whenever the layer knows it
   runs pi sessions — hosts with verified executables in
   =pilish/remote-executables=, hosts of active pi chat
-  buffers, and the current session's host.  Listing a remote host is
-  best effort and never blocks: its live chat buffers come from local
-  state and its closed files are listed by Pi's SDK, when available, over an
-  already-established TRAMP connection; a disconnected host is probed
-  in the background and contributes no section to this listing — its
-  sessions reappear in a later listing once it answers.
+  buffers, and the current session's host.  Closed-session discovery
+  uses Pi's =SessionManager.listAll= SDK locally and on reachable remote
+  hosts, with shared record conversion for consistent picker metadata.
+  Local host-wide discovery uses the SDK when Pi's default root matches
+  the layer's root; project-scoped lists pass an explicit session
+  directory.  SDK/launcher failures or a custom local-root mismatch
+  fall back to the canonical JSONL scanner; remote discovery falls back
+  to the TRAMP scan.  Remote work is
+  best effort and never blocks: live buffers come from local state, and
+  SDK/scanner work only happens over an already-established TRAMP
+  connection.  A disconnected host is probed in the background and
+  contributes no section until a later listing after it answers.
 - =SPC a i I= (=pilish/switch-session-in-dir=) — switch
   between the current directory's pi sessions, applying the pi window
   layout afterwards.  The directory is the session's own directory

@@ -609,16 +609,19 @@ the per-host hub of D16, which supersedes it for =SPC a i i=.
   half-remote list (live buffers of all hosts, closed files of none)
   — the same session appeared in one picker but not the other, and a
   closed remote session could never be deleted at all.
-- Session metadata is read through
-  =pilish//session-scan-info=, which resolves the package's
-  scanner at runtime with =fboundp=: the scanner name moved between
-  package releases (=pilish-jsonl-read-session-info= →
+- Closed-session discovery prefers Pi's =SessionManager.listAll= SDK
+  on both local and remote hosts, including directory-scoped lists;
+  shared record conversion keeps their picker metadata consistent.
+  If the SDK/launcher is unavailable, or local roots do not match,
+  both paths fall back to the canonical JSONL scanner,
+  =pilish//session-scan-info=, which resolves
+  the package's scanner at runtime with =fboundp=: scanner names moved
+  between package releases (=pilish-jsonl-read-session-info= →
   =pilish-jsonl-read-session-info=; older versions ship
-  =pilish--session-metadata=).  Calling a missing name
-  directly made EVERY metadata read fail (the fail-open condition-case
-  swallowed the void-function error per file), which silently emptied
-  the closed-session lists — the scanner must be resolved, never
-  assumed.
+  =pilish--session-metadata=).  Calling a missing name directly made
+  EVERY metadata read fail (the fail-open condition-case swallowed the
+  void-function error per file), silently emptying the closed-session
+  lists — the scanner must be resolved, never assumed.
 - Connection gating: remote work in the listing path happens only
   over an already-established TRAMP connection
   (=pilish//tramp-connection-alive-p= — an I/O-free check:

@@ -1523,25 +1523,37 @@ boundary."
 DIR is compared expanded and with a trailing slash, matching the
 normalization `pilish--session-file-cwd-or-error' applies to
 recorded cwds.  ROOT overrides the scanned session root (see
-`pilish//session-entries').  Remote hosts use pi's per-cwd session
-directory; the SDK lists that directory directly, with a TRAMP scan
-fallback, instead of walking the host-wide sessions tree."
+`pilish//session-entries').  Local and remote hosts use Pi's per-cwd
+session directory; the SDK lists that directory directly, with the
+JSONL/TRAMP scanner as fallback, instead of walking the host-wide tree."
   (let* ((dir (pilish//normalized-dir dir))
          (prefix (pilish--remote-prefix-for-path dir))
-         (root (if (and root prefix
-                        (equal prefix (pilish--remote-prefix-for-path root))
-                        (fboundp 'pilish-jsonl-session-dir-for-cwd))
-                   (file-name-as-directory
-                    (pilish-jsonl-session-dir-for-cwd
-                     (file-remote-p dir 'localname) root))
-                 root))
+         (session-root (or root (and (not prefix) (pilish//session-root))))
+         (local-session-dir
+          (and (not prefix) (not (file-remote-p dir))
+               (fboundp 'pilish-jsonl-session-dir-for-cwd)
+               (file-name-as-directory
+                (pilish-jsonl-session-dir-for-cwd dir session-root))))
+         (root (cond
+                ((and root prefix
+                      (equal prefix (pilish--remote-prefix-for-path root))
+                      (fboundp 'pilish-jsonl-session-dir-for-cwd))
+                 (file-name-as-directory
+                  (pilish-jsonl-session-dir-for-cwd
+                   (file-remote-p dir 'localname) root)))
+                (local-session-dir local-session-dir)
+                (t root)))
          (root-prefix (and root (pilish--remote-prefix-for-path root)))
          (remote-result (and prefix root-prefix
                              (equal prefix root-prefix)
                              (pilish//remote-session-entries prefix root)))
-         (entries (if remote-result
-                      (cdr remote-result)
-                    (pilish//session-entries root))))
+         (local-result (and local-session-dir
+                            (pilish//local-session-entries
+                             local-session-dir)))
+         (entries (cond
+                   (remote-result (cdr remote-result))
+                   (local-result (cdr local-result))
+                   (t (pilish//session-entries root)))))
     (cl-remove-if-not
      (lambda (entry)
        (let ((cwd (plist-get entry :cwd)))
@@ -1564,48 +1576,58 @@ plainly."
   "Return plist entries for all sessions under ROOT.
 ROOT defaults to the pi session root: `pilish/session-root',
 overridden by the PI_AGENT_DIR environment variable when set (pi then
-stores sessions under <PI_AGENT_DIR>/sessions).  A remote (TRAMP) ROOT
-is scanned best-effort: connection failures yield an empty list
-instead of signalling, so an unreachable host degrades to no closed
-sessions rather than blocking the caller.  Each entry carries an
-:opened flag (non-nil when the file is loaded by an active pi chat
-buffer — see `pilish//opened-session-files')."
+stores sessions under <PI_AGENT_DIR>/sessions).  A matching local root
+uses Pi's SDK with the canonical JSONL scanner as fallback; remote
+(TRAMP) roots are scanned best-effort so an unreachable host never
+blocks the caller.  Each entry carries an :opened flag (non-nil when
+the file is loaded by an active pi chat buffer — see
+`pilish//opened-session-files')."
   (let* ((root (or root (pilish//session-root)))
          (remote-p (pilish--remote-prefix-for-path root))
-         (files (if remote-p
-                    (condition-case nil
-                        (and (file-directory-p root)
-                             (directory-files-recursively root "\\.jsonl$"))
-                      (error nil))
-                  (and (file-directory-p root)
-                       (directory-files-recursively root "\\.jsonl$"))))
-         (opened (pilish//opened-session-files))
+         (sdk-root (and (not remote-p)
+                        (fboundp 'pilish-jsonl-sessions-root)
+                        (pilish-jsonl-sessions-root)))
+         (sdk-result
+          (and sdk-root
+               (equal (file-name-as-directory (expand-file-name root))
+                      (file-name-as-directory (expand-file-name sdk-root)))
+               (pilish//local-session-entries)))
          entries)
-    (dolist (file files)
-      (when-let* ((meta (pilish//session-metadata-cached file)))
-        (push (list :file file
-                    :cwd (pilish//entry-cwd file (plist-get meta :cwd))
-                    :first-message (plist-get meta :first-message)
-                    :name (plist-get meta :session-name)
-                    :count (plist-get meta :message-count)
-                    :modified (plist-get meta :modified-time)
-                    :opened (pilish//file-in-opened-p file opened))
-              entries)))
-    ;; Evict only files under the scanned ROOT.  Directory-scoped
-    ;; remote pickers scan a single per-cwd subtree; evicting by host
-    ;; alone would discard every other project's cached metadata.
-    (let ((root-prefix (file-name-as-directory
-                        (if remote-p root (expand-file-name root)))))
-      (maphash (lambda (file _)
-                 (when (and (not (member file files))
-                            (equal (pilish--remote-prefix-for-path file)
-                                   remote-p)
-                            (string-prefix-p root-prefix
-                                             (if remote-p file
-                                               (expand-file-name file))))
-                   (remhash file pilish//session-cache)))
-               pilish//session-cache))
-    (nreverse entries)))
+    (if sdk-result
+        (cdr sdk-result)
+      (let* ((files (if remote-p
+                        (condition-case nil
+                            (and (file-directory-p root)
+                                 (directory-files-recursively root "\\.jsonl$"))
+                          (error nil))
+                      (and (file-directory-p root)
+                           (directory-files-recursively root "\\.jsonl$"))))
+             (opened (pilish//opened-session-files)))
+        (dolist (file files)
+          (when-let* ((meta (pilish//session-metadata-cached file)))
+            (push (list :file file
+                        :cwd (pilish//entry-cwd file (plist-get meta :cwd))
+                        :first-message (plist-get meta :first-message)
+                        :name (plist-get meta :session-name)
+                        :count (plist-get meta :message-count)
+                        :modified (plist-get meta :modified-time)
+                        :opened (pilish//file-in-opened-p file opened))
+                  entries)))
+        ;; Evict only files under the scanned ROOT.  Directory-scoped
+        ;; pickers scan a single per-cwd subtree; evicting by host alone
+        ;; would discard every other project's cached metadata.
+        (let ((root-prefix (file-name-as-directory
+                            (if remote-p root (expand-file-name root)))))
+          (maphash (lambda (file _)
+                     (when (and (not (member file files))
+                                (equal (pilish--remote-prefix-for-path file)
+                                       remote-p)
+                                (string-prefix-p root-prefix
+                                                 (if remote-p file
+                                                   (expand-file-name file))))
+                       (remhash file pilish//session-cache)))
+                   pilish//session-cache))
+        (nreverse entries)))))
 
 (defun pilish//disambiguated-label (label n file)
   "LABEL, suffixed with a short uuid when seen N (>0) times before.
@@ -3138,14 +3160,13 @@ already-established connection, so a dead connection fails fast."
       (when (buffer-live-p buf)
         (kill-buffer buf)))))
 
-(defconst pilish//remote-pi-preload-source
+(defconst pilish//pi-preload-source
   (concat
    "\"use strict\";\n"
    "import fs from \"node:fs\";\n"
    "import path from \"node:path\";\n"
    "import { pathToFileURL } from \"node:url\";\n"
-   "if (process.env.PILISH_REMOTE_PRELOAD_ACTIVE !== \"1\") {\n"
-   "  process.env.PILISH_REMOTE_PRELOAD_ACTIVE = \"1\";\n"
+   "if (process.env.PILISH_PI_PRELOAD_ACTIVE !== \"1\") {\n"
    "  const emit = (value) => {\n"
    "    fs.writeSync(1, \"PILISH_PI_RESULT:\" + JSON.stringify(value) + \"\\n\");\n"
    "    process.exit(0);\n"
@@ -3158,7 +3179,8 @@ already-established connection, so a dead connection fails fast."
    "  const runtime = { execPath: process.execPath, version: process.version, managedRoot: process.env.PI_MANAGED_INSTALL_ROOT || null };\n"
    "  const realPath = (value) => { try { return fs.realpathSync(value); } catch (_) { return value; } };\n"
    "  runtime.realExecPath = realPath(process.execPath);\n"
-   "  if (process.env.PILISH_REMOTE_PI_MODE !== \"sessions\") {\n"
+   "  if (process.env.PILISH_PI_MODE !== \"sessions\") {\n"
+   "    process.env.PILISH_PI_PRELOAD_ACTIVE = \"1\";\n"
    "    emit({ runtime });\n"
    "  } else {\n"
    "    const packageName = \"@earendil-works/pi-coding-agent\";\n"
@@ -3191,28 +3213,30 @@ already-established connection, so a dead connection fails fast."
    "        if (json.name === packageName) { packageRoot = candidate; packageJson = json; break; }\n"
    "      } catch (_) {}\n"
    "    }\n"
-   "    if (!packageRoot) throw new Error(\"could not locate the installed Pi package from its running executable\");\n"
-   "    const rootExport = typeof packageJson.exports === \"string\" ? packageJson.exports : packageJson.exports && packageJson.exports[\".\"];\n"
-   "    const importPath = typeof rootExport === \"string\" ? rootExport : rootExport && rootExport.import ? rootExport.import : packageJson.module || packageJson.main;\n"
-   "    if (typeof importPath !== \"string\") throw new Error(\"Pi package has no importable public entry point\");\n"
-   "    await (async () => {\n"
-   "      const api = await import(pathToFileURL(path.resolve(packageRoot, importPath)).href);\n"
-   "      const manager = api.SessionManager;\n"
-   "      if (!manager || typeof manager.listAll !== \"function\") throw new Error(\"this Pi version does not export SessionManager.listAll\");\n"
-   "      const sessionDir64 = process.env.PILISH_REMOTE_PI_SESSION_DIR_B64;\n"
-   "      let sessions;\n"
-   "      if (sessionDir64) {\n"
-   "        const sessionDir = Buffer.from(sessionDir64, \"base64\").toString(\"utf8\");\n"
-   "        sessions = await manager.listAll(sessionDir);\n"
-   "      } else {\n"
-   "        sessions = await manager.listAll();\n"
-   "      }\n"
-   "      const rows = sessions.map((info) => {\n"
-   "        const modifiedMs = info.modified instanceof Date ? info.modified.getTime() : Date.parse(info.modified);\n"
-   "        return { path: info.path, cwd: info.cwd || null, name: info.name || null, firstMessage: info.firstMessage || null, messageCount: info.messageCount, modifiedMs: Number.isFinite(modifiedMs) ? modifiedMs : null };\n"
-   "      });\n"
-   "      emit({ runtime, sessions: rows });\n"
-   "    })().catch(fail);\n"
+   "    if (packageRoot) {\n"
+   "      process.env.PILISH_PI_PRELOAD_ACTIVE = \"1\";\n"
+   "      const rootExport = typeof packageJson.exports === \"string\" ? packageJson.exports : packageJson.exports && packageJson.exports[\".\"];\n"
+   "      const importPath = typeof rootExport === \"string\" ? rootExport : rootExport && rootExport.import ? rootExport.import : packageJson.module || packageJson.main;\n"
+   "      if (typeof importPath !== \"string\") throw new Error(\"Pi package has no importable public entry point\");\n"
+   "      await (async () => {\n"
+   "        const api = await import(pathToFileURL(path.resolve(packageRoot, importPath)).href);\n"
+   "        const manager = api.SessionManager;\n"
+   "        if (!manager || typeof manager.listAll !== \"function\") throw new Error(\"this Pi version does not export SessionManager.listAll\");\n"
+   "        const sessionDir64 = process.env.PILISH_PI_SESSION_DIR_B64;\n"
+   "        let sessions;\n"
+   "        if (sessionDir64) {\n"
+   "          const sessionDir = Buffer.from(sessionDir64, \"base64\").toString(\"utf8\");\n"
+   "          sessions = await manager.listAll(sessionDir);\n"
+   "        } else {\n"
+   "          sessions = await manager.listAll();\n"
+   "        }\n"
+   "        const rows = sessions.map((info) => {\n"
+   "          const modifiedMs = info.modified instanceof Date ? info.modified.getTime() : Date.parse(info.modified);\n"
+   "          return { path: info.path, cwd: info.cwd || null, name: info.name || null, firstMessage: info.firstMessage || null, messageCount: info.messageCount, modifiedMs: Number.isFinite(modifiedMs) ? modifiedMs : null };\n"
+   "        });\n"
+   "        emit({ runtime, sessions: rows });\n"
+   "      })().catch(fail);\n"
+   "    }\n"
    "  }\n"
    "}\n")
   "ESM preload run inside the selected pi executable's own Node process.
@@ -3233,17 +3257,18 @@ serializes only picker metadata, never `allMessagesText'.")
     (concat
      "tmpdir=$(mktemp -d /tmp/pilish-pi.XXXXXX) || exit 1\n"
      "trap 'rm -rf \"$tmpdir\"' 0 HUP INT TERM\n"
+     "unset PILISH_PI_PRELOAD_ACTIVE PILISH_PI_SESSION_DIR_B64\n"
      (format "printf %%s %s > \"$tmpdir/preload.mjs\"\n"
-             (shell-quote-argument pilish//remote-pi-preload-source))
+             (shell-quote-argument pilish//pi-preload-source))
      (or (and node-dir
               (format "PATH=%s:$PATH; export PATH\n"
                       (shell-quote-argument
                        (directory-file-name node-dir))))
          "")
-     (format "PILISH_REMOTE_PI_MODE=%s; export PILISH_REMOTE_PI_MODE\n"
+     (format "PILISH_PI_MODE=%s; export PILISH_PI_MODE\n"
              (shell-quote-argument mode))
      (or (and session-dir64
-              (format "PILISH_REMOTE_PI_SESSION_DIR_B64=%s; export PILISH_REMOTE_PI_SESSION_DIR_B64\n"
+              (format "PILISH_PI_SESSION_DIR_B64=%s; export PILISH_PI_SESSION_DIR_B64\n"
                       session-dir64))
          "")
      "NODE_OPTIONS=\"--import=$tmpdir/preload.mjs${NODE_OPTIONS:+ $NODE_OPTIONS}\"; export NODE_OPTIONS\n"
@@ -3286,6 +3311,107 @@ Pi invocation.  Returns the parsed response hash-table, or nil."
                   (error-message-string err))
          nil)))))
 
+(defun pilish//local-pi-run (&optional session-dir)
+  "Run the configured local PI with the SDK preload.
+SESSION-DIR, when non-nil, limits `SessionManager.listAll' to that
+local directory.  Returns the parsed response hash-table, or nil when
+PI/its SDK is unavailable; callers then use the JSONL scanner.  The
+launcher runs in the caller's local directory so relative commands and
+session paths retain their usual meaning; remote callers use a local
+temporary directory instead."
+  (let* ((configured (and (boundp 'pilish-executable)
+                          (default-value 'pilish-executable)))
+         (command (cond ((stringp configured) (list configured))
+                        ((listp configured) configured)))
+         (program (car-safe command))
+         (original-directory default-directory)
+         (local-directory (if (file-remote-p original-directory)
+                              temporary-file-directory
+                            original-directory))
+         (local-program
+          (if (and (stringp program)
+                   (not (file-name-absolute-p program))
+                   (file-name-directory program)
+                   (not (file-remote-p original-directory)))
+              (expand-file-name program original-directory)
+            program))
+         (tmpdir nil)
+         (preload nil)
+         (buffer nil)
+         (scoped-session-dir session-dir)
+         session-dir64
+         payload)
+    (unwind-protect
+        (condition-case err
+            (when (and (stringp local-program)
+                       (not (string-empty-p local-program)))
+              (when scoped-session-dir
+                (setq scoped-session-dir
+                      (file-name-as-directory
+                       (expand-file-name scoped-session-dir
+                                         original-directory)))
+                (when (file-remote-p scoped-session-dir)
+                  (error "Local SDK scan cannot use remote session directory: %s"
+                         scoped-session-dir))
+                (setq session-dir64
+                      (base64-encode-string
+                       (encode-coding-string scoped-session-dir 'utf-8-unix) t)))
+              (setq tmpdir
+                    (make-temp-file
+                     (expand-file-name "pilish-pi." temporary-file-directory) t)
+                    preload (expand-file-name "preload.mjs" tmpdir)
+                    buffer (generate-new-buffer
+                            " *pilish-local-session-scan*"))
+              (with-temp-file preload
+                (insert pilish//pi-preload-source))
+              (let ((process-environment (copy-sequence process-environment))
+                    (default-directory local-directory))
+                (setenv "PILISH_PI_PRELOAD_ACTIVE" nil)
+                (setenv "PILISH_PI_MODE" "sessions")
+                (setenv "PILISH_PI_SESSION_DIR_B64" session-dir64)
+                (let ((node-options (getenv "NODE_OPTIONS")))
+                  (setenv "NODE_OPTIONS"
+                          (concat "--import=" preload
+                                  (if (and node-options
+                                           (not (string-empty-p node-options)))
+                                      (concat " " node-options)
+                                    ""))))
+                (let* ((status (apply #'process-file
+                                      local-program nil (list buffer t) nil
+                                      (append (cdr command) '("--version"))))
+                       (output (with-current-buffer buffer
+                                 (buffer-substring-no-properties
+                                  (point-min) (point-max))))
+                       (position (and (stringp output)
+                                      (string-match
+                                       "PILISH_PI_RESULT:\\([^\n\r]*\\)"
+                                       output))))
+                  (when (and (numberp status) (zerop status) position)
+                    (condition-case parse-error
+                        (setq payload
+                              (json-parse-string
+                               (match-string 1 output)
+                               :object-type 'hash-table
+                               :array-type 'list
+                               :null-object nil
+                               :false-object nil))
+                      (error
+                       (message "pi: invalid local SessionManager response: %s"
+                                (error-message-string parse-error)))))
+                  (unless payload
+                    (message "pi: local SDK session scan unavailable%s; falling back to JSONL scan"
+                             (if (numberp status)
+                                 (format " (pi exited %s)" status)
+                               ""))))))
+          (error
+           (message "pi: local SDK session scan failed; falling back to JSONL scan: %s"
+                    (error-message-string err))))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (and tmpdir (file-directory-p tmpdir))
+        (delete-directory tmpdir t)))
+    payload))
+
 (defun pilish//remote-record-node-path (host pi-path node-path)
   "Persist NODE-PATH reported by PI-PATH on HOST when it changed."
   (when (and (stringp host) (stringp pi-path)
@@ -3299,19 +3425,23 @@ Pi invocation.  Returns the parsed response hash-table, or nil."
         (customize-save-variable 'pilish/remote-executables
                                  pilish/remote-executables)))))
 
-(defun pilish//remote-session-record-entry (prefix record opened)
-  "Convert one Pi SessionInfo RECORD into a layer session entry.
-PREFIX anchors Pi's native remote paths; OPENED is the local list of
-session files currently loaded by active chat buffers."
+(defun pilish//session-record-entry (record opened &optional prefix session-root)
+  "Convert Pi SessionInfo RECORD into a layer entry.
+PREFIX anchors native remote paths; SESSION-ROOT anchors relative local
+paths; OPENED is the local list of active session files."
   (let* ((path (gethash "path" record))
          (file (and (stringp path)
                     (cond
-                     ((pilish--remote-prefix-for-path path) path)
-                     ((or (file-name-absolute-p path)
-                          (string-prefix-p "~/" path))
-                      (concat prefix path))
+                     ((and prefix (pilish--remote-prefix-for-path path)) path)
+                     (prefix
+                      (if (or (file-name-absolute-p path)
+                              (string-prefix-p "~/" path))
+                          (concat prefix path)
+                        (expand-file-name
+                         path (concat prefix "~/.pi/agent/sessions/"))))
+                     ((file-name-absolute-p path) path)
                      (t (expand-file-name
-                         path (concat prefix "~/.pi/agent/sessions/"))))))
+                         path (or session-root (pilish//session-root)))))))
          (cwd (gethash "cwd" record))
          (modified-ms (gethash "modifiedMs" record)))
     (when file
@@ -3324,6 +3454,22 @@ session files currently loaded by active chat buffers."
             :modified (and (numberp modified-ms)
                            (seconds-to-time (/ (float modified-ms) 1000.0)))
             :opened (pilish//file-in-opened-p file opened)))))
+
+(defun pilish//local-session-entries (&optional session-dir)
+  "Return (t . ENTRIES) from the local Pi SDK, or nil if unavailable.
+SESSION-DIR, when non-nil, scopes `SessionManager.listAll' to one
+project; otherwise Pi discovers all local sessions."
+  (let* ((payload (pilish//local-pi-run session-dir))
+         (records (and payload (gethash "sessions" payload :missing)))
+         (opened (pilish//opened-session-files))
+         (session-root (or session-dir (pilish//session-root))))
+    (when (and payload (not (eq records :missing)))
+      (cons t
+            (delq nil
+                  (mapcar (lambda (record)
+                            (pilish//session-record-entry
+                             record opened nil session-root))
+                          records))))))
 
 (defun pilish//remote-session-entries (prefix &optional session-dir)
   "Return (t . ENTRIES) from Pi on PREFIX, or nil when unavailable.
@@ -3347,8 +3493,8 @@ established TRAMP connection and a verified pi executable mapping."
           (cons t
                 (delq nil
                       (mapcar (lambda (record)
-                                (pilish//remote-session-record-entry
-                                 prefix record opened))
+                                (pilish//session-record-entry
+                                 record opened prefix))
                               records))))))))
 
 (defun pilish//remote-ask-executable (host name)
