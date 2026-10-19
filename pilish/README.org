@@ -198,8 +198,11 @@ row.
   fresh git worktree and start a pi session in it.  Picks a git
   repository via helm (known repos from the context directory,
   =projectile-known-projects=, and one level under each
-  =pilish/repo-roots= entry are offered; any path can be
-  typed — re-prompting until it is inside a repository), then
+  =pilish/repo-roots= entry are offered; local paths can always be
+  typed, while remote paths are only inspected and accepted when the
+  current context is remote on the same host and its TRAMP connection
+  is already established — re-prompting until it is inside a
+  repository), then
   prompts for a suffix naming the worktree directory under
   =pilish/workspace-root= (default =~/work=).  The worktree directory
   combines the repository's directory name with the suffix, so the
@@ -217,7 +220,8 @@ row.
   workspace with git worktrees and start a pi session in it.  Picks
   one or more git repositories via helm multi-select
   (=pilish/repo-mark-key=, default =C-;=, marks several;
-  =RET= confirms; same candidates as above, any path can be typed),
+  =RET= confirms; same candidates as above, local paths can always be
+  typed, and remote paths require the current context's connected host),
   then prompts for the workspace name.  Creates
   =«root»/«name»/repos= with one worktree per repository (mainline
   branch as above, fetched best-effort), named after the

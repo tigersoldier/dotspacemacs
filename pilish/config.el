@@ -50,9 +50,11 @@ The repos found here — plus `projectile-known-projects' when
 projectile is loaded, plus the current context directory — are
 offered as candidates by the git repo pickers of
 `pilish/new-worktree-session' (SPC a i w) and
-`pilish/new-workspace-session' (SPC a i W).  Any directory
-can still be typed in directly; only the quick-pick candidates come
-from these roots."
+`pilish/new-workspace-session' (SPC a i W).  Any local directory
+can still be typed in directly; remote paths are inspected only when
+the current context is remote on the same host and the TRAMP connection
+is already established.  Only the quick-pick candidates come from
+these roots."
   :type '(repeat directory)
   :group 'pilish)
 

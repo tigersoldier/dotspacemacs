@@ -4157,10 +4157,12 @@ installed."
 ;; pickers unbind helm's C-SPC/C-@ marking keys, which commonly
 ;; conflict with input method activation.  Candidates come from the
 ;; context directory, `projectile-known-projects', and one level
-;; under each `pilish/repo-roots' entry; any path can be
-;; typed instead.  Worktrees are created from the repo's mainline
-;; branch — origin/main, else origin/master, else the local
-;; main/master — fetched best-effort from origin first
+;; under each `pilish/repo-roots' entry; local paths can always be
+;; typed, while remote paths are accepted only for the current
+;; context's host with an established TRAMP connection.  Worktrees
+;; are created from the repo's mainline branch — origin/main, else
+;; origin/master, else the local main/master — fetched best-effort
+;; from origin first
 ;; (timeout-capped, failures ignored).  A remote-tracking branch
 ;; lands as a detached HEAD at its tip; a free local branch is
 ;; checked out attached; otherwise the worktree is created detached
@@ -4190,14 +4192,37 @@ git fail instead of waiting."
     (when (zerop (apply #'pilish//git-run dir args))
       (string-trim (buffer-string)))))
 
+(defun pilish//repo-path-check-allowed-p (path context-host)
+  "Return non-nil when PATH may be checked from CONTEXT-HOST.
+Local paths are always allowed; remote paths require the current
+context to be remote on the same host and an established TRAMP
+connection.  Relative paths inherit `default-directory'.  This
+preflight performs no remote I/O."
+  (let* ((remote-prefix (file-remote-p path))
+         (host (or (and remote-prefix (file-remote-p path 'host))
+                   (and (or (string-prefix-p "~" path)
+                            (not (file-name-absolute-p path)))
+                        (file-remote-p default-directory 'host))))
+         (connection-path (if remote-prefix path default-directory)))
+    (or (and (null remote-prefix) (null host))
+        (and host context-host
+             (string-equal (downcase host)
+                           (downcase context-host))
+             (pilish//tramp-connection-alive-p connection-path)))))
+
 (defun pilish//git-repo-root (dir)
   "Return the top-level worktree directory of the git repo containing DIR.
 DIR may be any subdirectory.  Returns nil when DIR is not inside a
-git repository."
-  (when-let* ((root (pilish//git-output
-                     (expand-file-name dir) "rev-parse" "--show-toplevel"))
-              ((file-directory-p root)))
-    root))
+git repository or its remote host is not allowed or connected."
+  (let ((context-host (file-remote-p (pilish//context-directory) 'host)))
+    (when (pilish//repo-path-check-allowed-p dir context-host)
+      (let ((dir (expand-file-name dir)))
+        (when (pilish//repo-path-check-allowed-p dir context-host)
+          (when-let* ((root (pilish//git-output
+                             dir "rev-parse" "--show-toplevel"))
+                      ((pilish//repo-path-check-allowed-p root context-host))
+                      ((file-directory-p root)))
+            root))))))
 
 (defun pilish//git-branch-exists-p (repo branch)
   "Return non-nil when REPO has BRANCH (local or remote-tracking)."
@@ -4261,28 +4286,38 @@ final selection with `pilish//git-repo-root'."
   "Git repo candidates for the repo pickers (abbreviated paths).
 Sources, in order: the current context directory,
 `projectile-known-projects' (when projectile is loaded), and one
-directory level under each entry of `pilish/repo-roots'.
-Deduplicated; each candidate must have a .git entry."
-  (let ((seen (make-hash-table :test #'equal))
-        candidates)
-    (cl-labels ((add (dir)
-                 (let ((dir (expand-file-name dir)))
-                   (when (and (file-directory-p dir)
-                              (pilish//git-repo-p dir)
-                              (not (gethash dir seen)))
-                     (puthash dir t seen)
-                     (push (abbreviate-file-name (directory-file-name dir))
-                           candidates)))))
-      (add (pilish//context-directory))
+directory level under each entry of `pilish/repo-roots'.  Local paths
+are checked normally; a remote path is checked only when the current
+context is remote on the same host and its TRAMP connection is already
+established.  Candidates are deduplicated; each must have a .git
+entry."
+  (let* ((context-directory (pilish//context-directory))
+         (context-host (file-remote-p context-directory 'host))
+         (seen (make-hash-table :test #'equal))
+         candidates)
+    (cl-labels ((add (path)
+                 (when (pilish//repo-path-check-allowed-p path context-host)
+                   (let ((dir (expand-file-name path)))
+                     (when (and (pilish//repo-path-check-allowed-p
+                                 dir context-host)
+                                (file-directory-p dir)
+                                (pilish//git-repo-p dir)
+                                (not (gethash dir seen)))
+                       (puthash dir t seen)
+                       (push (abbreviate-file-name (directory-file-name dir))
+                             candidates))))))
+      (add context-directory)
       (dolist (dir (and (boundp 'projectile-known-projects)
                         (listp projectile-known-projects)
                         projectile-known-projects))
         (add dir))
-      (dolist (root pilish/repo-roots)
-        (let ((root (expand-file-name root)))
-          (when (file-directory-p root)
-            (dolist (dir (directory-files root t "^[^.]"))
-              (add dir)))))
+      (dolist (path pilish/repo-roots)
+        (when (pilish//repo-path-check-allowed-p path context-host)
+          (let ((root (expand-file-name path)))
+            (when (and (pilish//repo-path-check-allowed-p root context-host)
+                       (file-directory-p root))
+              (dolist (dir (directory-files root t "^[^.]"))
+                (add dir))))))
       (nreverse candidates))))
 
 (defun pilish//helm-repo-map ()
@@ -4359,9 +4394,11 @@ string; nil when the user cancelled (helm) or input was empty
 (defun pilish//read-git-repo (prompt &optional default-dir)
   "Pick a git repository with PROMPT, re-prompting until it is valid.
 Known repos are offered as candidates (see
-`pilish//repo-candidates'); any directory can be typed
-instead.  Empty input falls back to DEFAULT-DIR when it is a
-repository.  Returns the repository's top-level directory."
+`pilish//repo-candidates'); any local directory can be typed, while a
+remote directory is accepted only for the current context's host with
+an established TRAMP connection.  Empty input falls back to
+DEFAULT-DIR when it is a repository.
+Returns the repository's top-level directory."
   (let (repo)
     (cl-loop
      for pick = (pilish//pick-repo prompt)
@@ -4379,9 +4416,11 @@ repository.  Returns the repository's top-level directory."
 Uses helm multi-select (`pilish/repo-mark-key' marks
 candidates, RET confirms; known repos are offered, see
 `pilish//repo-candidates') or `completing-read-multiple'
-without helm.  The whole batch is re-offered when any picked entry
-is not inside a git repository.  Returns the repository top-level
-directories, deduplicated, in selection order."
+without helm.  Any local path can be typed; remote paths are accepted
+only for the current context's host with an established TRAMP
+connection.  The whole batch is re-offered
+when any picked entry is not inside a git repository.  Returns the
+repository top-level directories, deduplicated, in selection order."
   (let (picks roots)
     (cl-loop
      do (setq picks (pilish//pick-repos prompt))

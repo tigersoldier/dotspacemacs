@@ -929,3 +929,22 @@ cache.  Rejected: using Helm's generic file reader or global Helm
 advice, which would either perform TRAMP checks while typing or affect
 unrelated pickers; persisting listings would retain stale remote state
 across Emacs restarts.
+
+* D22. Gate worktree repo checks to the active remote host
+
+The =a i w= and =a i W= repo pickers share candidate discovery.  Its
+=projectile-known-projects= and configurable repo roots can contain
+TRAMP paths, and even =file-directory-p= or =directory-files= can make
+TRAMP start SSH before the user selects anything.  Keep local-path
+checks unchanged, but parse remote hosts syntactically and only inspect
+a remote path when the current context is itself remote on the same
+host (case-insensitively) and that path's TRAMP connection is already
+established.  Apply the same guard to typed repo paths before Git or
+filesystem validation, so another or disconnected host is skipped
+without I/O.
+
+This gates TRAMP file checks only; it does not change the selected
+repository's best-effort =git fetch origin=, which may independently
+use SSH according to the repository's origin URL.  Rejected: scanning
+all configured remote roots from a local context, which could connect
+to unrelated hosts just to populate a picker.
