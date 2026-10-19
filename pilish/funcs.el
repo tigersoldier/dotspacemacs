@@ -23,6 +23,18 @@
 ;; `pilish--start-process' advice rebinds it) to drop local-only
 ;; `-e' extensions.  Same lexical-binding caveat as above.
 (defvar pilish-extra-args)
+(defvar helm-map)
+(defvar helm-pattern)
+(defvar helm-ff-initial-sort-method)
+(defvar pilish//remote-directory-picker-current nil)
+(defvar pilish//remote-directory-picker-children nil)
+(defvar pilish//remote-directory-picker-home nil)
+(defvar pilish//remote-directory-picker-prefix nil)
+(declare-function helm "helm")
+(declare-function helm-list-directory "helm-files"
+                  (directory &optional selection))
+(declare-function helm-force-update "helm-core")
+(declare-function helm-get-selection "helm")
 (declare-function tramp-make-tramp-file-name "tramp")
 (declare-function pilish//remote-session-entries nil (prefix &optional dir))
 (declare-function company-mode "company")
@@ -656,6 +668,14 @@ when it prepends its own installer-managed Node directory."
                                           (const :tag "found through PATH" nil))))
   :group 'pilish)
 
+(defcustom pilish/remote-directory-cache-ttl 60
+  "Seconds to reuse remote directory listings in the remote-session picker.
+The cache is memory-only, scoped to that picker, and bounded to 128
+entries.  Press C-c C-r in the picker to refresh the current
+listing immediately.  Set to zero to disable caching."
+  :type 'natnum
+  :group 'pilish)
+
 (defcustom pilish/remote-connect-timeout 20
   "Timeout in seconds for remote connections in
 `pilish/start-remote-session'.
@@ -684,6 +704,12 @@ Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
 
 (defvar pilish//session-cache (make-hash-table :test 'equal)
   "Cache of session-file -> (mtime . metadata plist).")
+
+(defvar pilish//remote-directory-list-cache (make-hash-table :test 'equal)
+  "Cached immediate-child directory names keyed by remote directory.")
+
+(defconst pilish//remote-directory-list-cache-limit 128
+  "Maximum number of remote directory listings held in memory.")
 
 (defvar pilish//renaming-self nil
   "Non-nil while this layer renames a perspective itself.")
@@ -3657,6 +3683,283 @@ other arguments are passed through unchanged."
           (setq out (append out (list arg))))))
     out))
 
+(defun pilish//remote-directory-cache-key (directory)
+  "Return the stable cache key for remote DIRECTORY."
+  (file-name-as-directory
+   (directory-file-name (pilish//plain-string directory))))
+
+(defun pilish//remote-directory-cache-copy (children)
+  "Copy the list of child directory names CHILDREN."
+  (mapcar #'copy-sequence children))
+
+(defun pilish//remote-directory-cache-prune ()
+  "Remove expired remote listings and enforce the in-memory size limit."
+  (let ((now (float-time))
+        (ttl pilish/remote-directory-cache-ttl)
+        expired)
+    (maphash (lambda (key entry)
+               (when (or (not (consp entry))
+                         (not (numberp (car entry)))
+                         (>= (- now (car entry)) ttl))
+                 (push key expired)))
+             pilish//remote-directory-list-cache)
+    (dolist (key expired)
+      (remhash key pilish//remote-directory-list-cache)))
+  (while (> (hash-table-count pilish//remote-directory-list-cache)
+            pilish//remote-directory-list-cache-limit)
+    (let (oldest-key oldest-time)
+      (maphash (lambda (key entry)
+                 (let ((timestamp (car-safe entry)))
+                   (when (and (numberp timestamp)
+                              (or (null oldest-time)
+                                  (< timestamp oldest-time)))
+                     (setq oldest-key key
+                           oldest-time timestamp))))
+               pilish//remote-directory-list-cache)
+      (if oldest-key
+          (remhash oldest-key pilish//remote-directory-list-cache)
+        (clrhash pilish//remote-directory-list-cache)))))
+
+(defun pilish//remote-directory-cache-clear (directory)
+  "Clear the cached child listing for DIRECTORY."
+  (remhash (pilish//remote-directory-cache-key directory)
+           pilish//remote-directory-list-cache))
+
+(defun pilish//remote-directory-cached-children (directory)
+  "Return the immediate child directory names of remote DIRECTORY.
+The cache is keyed by the full TRAMP directory and only lists after
+checking that the selected host connection is already alive."
+  (let* ((directory (file-name-as-directory
+                     (pilish//plain-string directory)))
+         (prefix (pilish--remote-prefix-for-path directory))
+         (ttl (max 0 pilish/remote-directory-cache-ttl))
+         (key (pilish//remote-directory-cache-key directory)))
+    (unless (equal prefix pilish//remote-directory-picker-prefix)
+      (user-error "Remote directory picker is restricted to %s"
+                  pilish//remote-directory-picker-prefix))
+    (unless (pilish//tramp-connection-alive-p directory)
+      (user-error "Connection to %s is no longer established; cancel and retry"
+                  (or (file-remote-p directory 'host) directory)))
+    (pilish//remote-directory-cache-prune)
+    (let* ((entry (and (> ttl 0)
+                       (gethash key pilish//remote-directory-list-cache)))
+           (cached (and (consp entry)
+                        (numberp (car entry))
+                        (< (- (float-time) (car entry)) ttl))))
+      (if cached
+          (pilish//remote-directory-cache-copy (cdr entry))
+        (condition-case err
+            (let* ((helm-ff-initial-sort-method nil)
+                   (entries (helm-list-directory directory))
+                   (children
+                    (sort
+                     (cl-loop for candidate in entries
+                              for plain = (and (stringp candidate)
+                                               (substring-no-properties
+                                                candidate))
+                              for is-directory =
+                              (and (stringp candidate)
+                                   (get-text-property
+                                    1 'helm-ff-dir candidate))
+                              for is-symlink =
+                              (and (stringp candidate)
+                                   (get-text-property
+                                    1 'helm-ff-sym candidate))
+                              for localname =
+                              (and plain (file-remote-p plain 'localname))
+                              for name =
+                              (and localname
+                                   (file-name-nondirectory
+                                    (directory-file-name localname)))
+                              when (and name
+                                        (not (member name '("." "..")))
+                                        (or is-directory
+                                            (and is-symlink
+                                                 (file-directory-p plain))))
+                              collect (substring-no-properties name))
+                     #'string-lessp)))
+              (when (> ttl 0)
+                (puthash key (cons (float-time) children)
+                         pilish//remote-directory-list-cache)
+                (pilish//remote-directory-cache-prune))
+              children)
+          (file-error
+           (user-error "Cannot list %s: %s"
+                       directory (error-message-string err))))))))
+
+(defun pilish//remote-directory-parent (directory)
+  "Return DIRECTORY's parent on the same remote host, or nil at its root."
+  (let* ((prefix (pilish--remote-prefix-for-path directory))
+         (localname (file-remote-p directory 'localname))
+         (localname (and localname (directory-file-name localname))))
+    (when (and prefix localname (not (equal localname "/")))
+      (let ((parent (file-name-directory localname)))
+        (and parent (concat prefix (file-name-as-directory parent)))))))
+
+(defun pilish//remote-directory-resolve-typed-path (input)
+  "Resolve typed INPUT on the selected host without performing file I/O."
+  (let* ((input (and (stringp input) (substring-no-properties input)))
+         (prefix pilish//remote-directory-picker-prefix)
+         (home-local (file-remote-p
+                      pilish//remote-directory-picker-home 'localname))
+         (current-local (file-remote-p
+                         pilish//remote-directory-picker-current 'localname))
+         local)
+    (when (and input (not (string-empty-p input)))
+      (setq local
+            (cond
+             ((and prefix (string-prefix-p prefix input))
+              (let ((remote-local (file-remote-p input 'localname)))
+                (cond ((equal remote-local "~") home-local)
+                      ((and remote-local (string-prefix-p "~/" remote-local))
+                       (concat home-local (substring remote-local 1)))
+                      ((and remote-local (string-prefix-p "/" remote-local))
+                       remote-local)
+                      (t nil))))
+             ((file-remote-p input) nil)
+             ((equal input "~") home-local)
+             ((string-prefix-p "~/" input)
+              (concat home-local (substring input 1)))
+             ((string-prefix-p "~" input) nil)
+             ((string-prefix-p "/" input) input)
+             (current-local (expand-file-name input current-local))
+             (t nil)))
+      (when (and (stringp local) (string-prefix-p "/" local))
+        (concat prefix (file-name-as-directory (expand-file-name local)))))))
+
+(defun pilish//remote-directory-picker-candidates ()
+  "Return current, parent, and snapshotted child directory candidates."
+  (let* ((current pilish//remote-directory-picker-current)
+         (children pilish//remote-directory-picker-children)
+         (parent (pilish//remote-directory-parent current)))
+    (append
+     (list (cons (format "./  %s" current) current))
+     (when parent (list (cons "../" parent)))
+     (mapcar (lambda (name)
+               (cons (concat name "/") (concat current name "/")))
+             children))))
+
+(defun pilish//remote-directory-typed-candidates (_candidates _source)
+  "Offer a syntactically resolved path only when INPUT contains a slash.
+Path resolution is local string work; the chosen path is checked once,
+on explicit RET, by `pilish//remote-directory-select-action'."
+  (let* ((input (and (stringp helm-pattern)
+                     (substring-no-properties helm-pattern)))
+         (path (and input
+                    (not (string-empty-p input))
+                    (string-match-p "/" input)
+                    (pilish//remote-directory-resolve-typed-path input))))
+    (when path
+      (list (cons input path)))))
+
+(defun pilish//remote-directory-validate (directory)
+  "Validate DIRECTORY on the selected host and return its normalized path."
+  (let* ((directory (file-name-as-directory
+                     (pilish//plain-string directory)))
+         (prefix (pilish--remote-prefix-for-path directory)))
+    (unless (equal prefix pilish//remote-directory-picker-prefix)
+      (user-error "Choose a directory on the selected host"))
+    (unless (pilish//tramp-connection-alive-p directory)
+      (user-error "Connection to %s is no longer established; cancel and retry"
+                  (or (file-remote-p directory 'host) directory)))
+    (unless (file-directory-p directory)
+      (user-error "Not a directory on the selected host: %s" directory))
+    directory))
+
+(defun pilish//remote-directory-select-action (directory)
+  "Accept selected DIRECTORY after validating it once."
+  (pilish//remote-directory-validate directory))
+
+(defun pilish//remote-directory-picker-enter ()
+  "Enter the selected directory and load its cached child snapshot."
+  (interactive)
+  (let ((directory (helm-get-selection)))
+    (unless (stringp directory)
+      (user-error "Select a directory to enter"))
+    (let* ((directory (pilish//remote-directory-validate directory))
+           (children (pilish//remote-directory-cached-children directory)))
+      (setq pilish//remote-directory-picker-current directory
+            pilish//remote-directory-picker-children children)
+      (helm-force-update))))
+
+(defun pilish//remote-directory-picker-up ()
+  "Move the remote directory browser to its parent directory."
+  (interactive)
+  (let ((parent (pilish//remote-directory-parent
+                 pilish//remote-directory-picker-current)))
+    (if parent
+        (let ((children (pilish//remote-directory-cached-children parent)))
+          (setq pilish//remote-directory-picker-current parent
+                pilish//remote-directory-picker-children children)
+          (helm-force-update))
+      (message "Already at the remote host root"))))
+
+(defun pilish//remote-directory-cache-refresh ()
+  "Refresh the current remote directory listing in the Helm picker."
+  (interactive)
+  (pilish//remote-directory-cache-clear
+   pilish//remote-directory-picker-current)
+  (setq pilish//remote-directory-picker-children
+        (pilish//remote-directory-cached-children
+         pilish//remote-directory-picker-current))
+  (helm-force-update))
+
+(defun pilish//remote-directory-picker-map ()
+  "Build the local Helm keymap for remote directory browsing."
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map helm-map)
+    (define-key map (kbd "TAB") #'pilish//remote-directory-picker-enter)
+    (define-key map (kbd "C-l") #'pilish//remote-directory-picker-up)
+    (define-key map (kbd "C-c C-r") #'pilish//remote-directory-cache-refresh)
+    map))
+
+(defun pilish//read-remote-directory (host home)
+  "Read a remote directory on HOST with cached Helm browsing."
+  (unless (and (require 'helm nil t)
+               (require 'helm-files nil t))
+    (user-error "Helm is required to browse remote session directories"))
+  (let* ((home (file-name-as-directory (pilish//plain-string home)))
+         (prefix (pilish--remote-prefix-for-path home)))
+    (unless prefix
+      (user-error "No remote prefix for %s" host))
+    (unless (pilish//tramp-connection-alive-p home)
+      (user-error "Connection to %s is no longer established; cancel and retry"
+                  host))
+    (let* ((pilish//remote-directory-picker-current home)
+           (pilish//remote-directory-picker-home home)
+           (pilish//remote-directory-picker-prefix prefix)
+           (pilish//remote-directory-picker-children
+            (pilish//remote-directory-cached-children home))
+           (map (pilish//remote-directory-picker-map))
+           (typed-source
+            (helm-make-source "Typed remote path" 'helm-source-dummy
+              :filtered-candidate-transformer
+              #'pilish//remote-directory-typed-candidates
+              :must-match t
+              :action #'pilish//remote-directory-select-action
+              :keymap map
+              :mode-line "Type a path; RET validates it"))
+           (directory-source
+            (helm-make-source "Remote directories" 'helm-source-sync
+              :candidates #'pilish//remote-directory-picker-candidates
+              :volatile t
+              :must-match t
+              :action #'pilish//remote-directory-select-action
+              :keymap map
+              :mode-line
+              "TAB: enter  RET: choose  C-l: parent  C-c C-r: refresh"))
+           (directory
+            (helm :sources (list typed-source directory-source)
+                  :buffer "*helm pilish remote directory*"
+                  :prompt (format "Remote directory on %s: " host)
+                  :input ""
+                  :resume 'noresume)))
+      (unless directory
+        (user-error "No remote directory selected on %s" host))
+      ;; The Helm action already performed the one explicit remote
+      ;; validation; don't stat the selected directory a second time.
+      directory)))
+
 (defun pilish/start-remote-session (&optional host)
   "Start a pi session on a remote host from `pilish/ssh-config-file'.
 
@@ -3806,9 +4109,7 @@ installed."
                           (pilish//remote-locate-executables
                            host (file-remote-p home 'localname))
                         (quit (user-error "pi: cancelled — no executable mapping for %s" host))))
-         (dir (read-directory-name
-               (format "Start pi session on %s in directory: " host)
-               home home t))
+         (dir (pilish//read-remote-directory host home))
          (dir (condition-case err
                   (pilish//normalized-dir dir)
                 (error

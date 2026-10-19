@@ -155,9 +155,16 @@ row.
   the directory prompt defaults to the host's home (=/ssh:HOST:~=),
   existing sessions of that directory are offered — the closed list
   is scanned on the remote host — and a fresh session starts
-  otherwise.  The pi process itself runs on the remote host through
-  TRAMP (the package starts it over ssh), so the host needs the pi
-  CLI installed and reachable via =ssh HOST=.
+  otherwise.  A directory-only Helm browser stays on the selected
+  host: =TAB= enters a child, =C-l= goes to the parent, and =RET= chooses
+  the current or selected directory.  Typing a path is also supported;
+  it is checked only when selected, not on each keystroke.  Remote child
+  listings are cached in memory for
+  =pilish/remote-directory-cache-ttl= seconds (60 by default), with
+  =C-c C-r= to refresh the current directory immediately.  The pi
+  process itself runs on the remote host through TRAMP (the package
+  starts it over ssh), so the host needs the pi CLI installed and
+  reachable via =ssh HOST=.
 - =SPC a i d= (=pilish/close-session=) — close a pi session:
   the current perspective's session when it has one, otherwise the
   live sessions are listed (active pi chat buffers; the perspective

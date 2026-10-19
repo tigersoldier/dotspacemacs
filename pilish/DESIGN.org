@@ -893,3 +893,39 @@ alongside the other package advices, so reloading the layer does not
 stack copies.  Rejected: changing only the cwd reader or dropping the
 package's metadata checks: the post-switch name refresh has the same
 TRAMP failure and these checks guard against invalid session files.
+
+* D21. Cache remote-directory listings in the remote-session picker
+
+The remote session directory prompt should keep Helm's familiar
+browse-and-type behavior, but repeated completion updates and
+revisiting a directory should not repeatedly run remote listings.
+Avoid global Helm advice or dependence on Helm's private cache reuse,
+which is conditional on file-notification watchers that TRAMP methods
+may not support.
+
+Use a pilish-specific Helm source rather than =helm-read-file-name=:
+Helm's generic file-name completion checks path accessibility while
+input changes, which can make TRAMP issue remote requests on every
+keystroke.  The custom source lists only immediate child directories;
+it uses Helm's =helm-list-directory= backend (remote =ls= with its
+Lisp fallback) once when entering an uncached directory, then filters
+a per-picker snapshot locally.  No remote file I/O is performed while
+the input changes.  The TTL governs reuse across prompts and directory
+revisits; =C-c C-r= explicitly refreshes the current snapshot.  It does
+not use Helm's watcher-dependent directory cache.  Symlink entries are
+checked for a directory target during listing.  Typed absolute or
+relative paths are expanded syntactically on the selected host and
+checked remotely only on explicit selection.  The browser provides
+=TAB= to enter, =C-l= to go up, and =RET= to choose.
+
+Cache child names by the complete TRAMP directory.  Listings expire
+after =pilish/remote-directory-cache-ttl= seconds (60 by default),
+are memory-only, and are bounded to 128 directories.  =C-c C-r= evicts
+the current directory's cached listing and forces an immediate refresh.
+Before each listing or explicit path check, require the selected host's
+TRAMP connection to be already established; reject typed paths for
+other hosts without probing them.  Set the TTL to zero to disable the
+cache.  Rejected: using Helm's generic file reader or global Helm
+advice, which would either perform TRAMP checks while typing or affect
+unrelated pickers; persisting listings would retain stale remote state
+across Emacs restarts.
