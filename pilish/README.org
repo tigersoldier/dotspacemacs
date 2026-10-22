@@ -101,16 +101,17 @@ row.
   listed; a remote host joins the listing whenever the layer knows it
   runs pi sessions — hosts with verified executables in
   =pilish/remote-executables=, hosts of active pi chat
-  buffers, and the current session's host.  Closed-session discovery
-  uses Pi's =SessionManager.listAll= SDK locally and on reachable remote
-  hosts, with shared record conversion for consistent picker metadata.
-  Local host-wide discovery uses the SDK when Pi's default root matches
-  the layer's root; project-scoped lists pass an explicit session
-  directory.  SDK/launcher failures or a custom local-root mismatch
-  fall back to the canonical JSONL scanner; remote discovery falls back
-  to the TRAMP scan.  Remote work is
+  buffers, and the current session's host.  Local closed-session
+  discovery keeps Emacs's recursive file manifest and caches metadata
+  by path, mtime, and size.  Cache misses are streamed through a
+  metadata-only JavaScript scanner in Pi's configured Node runtime,
+  without importing the SDK or building transcript text; a warm listing
+  skips launching Pi.  If the Node scan fails, the canonical Elisp JSONL
+  scanner remains the fallback.  Remote discovery uses Pi's
+  =SessionManager.listAll= SDK only; if unavailable, closed sessions
+  are omitted rather than scanning JSONL through TRAMP.  Remote work is
   best effort and never blocks: live buffers come from local state, and
-  SDK/scanner work only happens over an already-established TRAMP
+  remote SDK queries happen only over an already-established TRAMP
   connection.  A disconnected host is probed in the background and
   contributes no section until a later listing after it answers.
 - =SPC a i I= (=pilish/switch-session-in-dir=) — switch
@@ -153,11 +154,13 @@ row.
   (annotated with their =HostName= and =User=).  Then the normal
   new-session flow runs on that host:
   the directory prompt defaults to the host's home (=/ssh:HOST:~=),
-  existing sessions of that directory are offered — the closed list
-  is scanned on the remote host — and a fresh session starts
-  otherwise.  A directory-only Helm browser stays on the selected
-  host: =TAB= enters a child, =C-l= goes to the parent, and =RET= chooses
-  the current or selected directory.  Typing a path is also supported;
+  existing sessions of that directory are offered through the remote
+  Pi SessionManager SDK; if that query is unavailable, closed sessions
+  are omitted instead of reading JSONL through TRAMP, and a fresh
+  session starts otherwise.  A directory-only Helm browser stays on
+  the selected host: =TAB= enters a child, =C-l= goes to the parent,
+  and =RET= chooses the current or selected directory.  Typing a path is
+  also supported;
   it is checked only when selected, not on each keystroke.  Remote child
   listings are cached in memory for
   =pilish/remote-directory-cache-ttl= seconds (60 by default), with
@@ -182,7 +185,8 @@ row.
   boundary (separate sources under helm).  The list is built by the
   same logic as =SPC a i i=, scoped wider: every host's sessions are
   offered (a dead remote session can be reached and deleted), with
-  remote closed files scanned only over established connections.  An
+  remote closed sessions queried through Pi's SDK only over established
+  connections; no per-file TRAMP JSONL fallback is used.  An
   active session is
   closed like =SPC a i d=, then its file is deleted — moved to the OS
   trash via the =trash= command when available, otherwise deleted

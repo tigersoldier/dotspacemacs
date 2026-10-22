@@ -531,13 +531,13 @@ run the ordinary new-session flow (D10) on that host.
 - The directory prompt defaults to =/ssh:HOST:~= (remote home); the
   route-preserving path helpers keep the TRAMP prefix byte-for-byte
   intact through the whole flow.
-- Closed-session scan on the remote host: the picker's scan
-  (=pilish//session-entries=) takes an optional ROOT, and
-  the remote flow scans =<prefix>~/.pi/agent/sessions/= — the remote
-  pi's default agent dir; the local =PI_AGENT_DIR= override is not
-  forwarded by TRAMP, so it is deliberately not applied remotely.
-  Remote scans are best-effort: connection failures yield an empty
-  closed list instead of blocking the picker.
+- Closed-session discovery on the remote host uses Pi's
+  =SessionManager.listAll= SDK for =<prefix>~/.pi/agent/sessions/= —
+  the remote pi's default agent dir; the local =PI_AGENT_DIR= override
+  is not forwarded.  If the SDK query is unavailable, the closed list
+  is empty; it never falls back to scanning JSONL files through TRAMP.
+  Remote work remains best-effort and runs only over an established
+  connection.
 - Remote path canonicalization: session headers record the
   process-local cwd, so remote entries' =:cwd= is anchored to the
   file's TRAMP prefix (=pilish//entry-cwd=), and
@@ -591,14 +591,14 @@ the per-host hub of D16, which supersedes it for =SPC a i i=.
   never appear in the list, and no remote file is ever touched, so a
   dead remote host cannot hang the listing.  Used inside a remote
   (TRAMP) session, the list adds that host's sessions: its live chat
-  buffers plus its closed session files, scanned on the remote host.
+  buffers plus closed entries from the remote Pi SDK.
 - The scope is the current perspective's pi chat buffer's remote
   prefix (=pilish//current-session-remote-prefix=): no
   session → local scope.  =pilish//session-targets= takes a
   REMOTE-SCOPE: =local= (local sessions only), a TRAMP prefix string
-  (local sessions plus that host's live buffers and closed files), a
-  list of TRAMP prefixes (D16: the switch hub — local sessions plus
-  exactly those hosts), or =t= (local sessions plus every active
+  (local sessions plus that host's live buffers and SDK-listed closed
+  entries), a list of TRAMP prefixes (D16: the switch hub — local
+  sessions plus exactly those hosts), or =t= (local sessions plus every active
   remote host's — the close/delete scope, which must reach a dead
   remote session).
   Every picker is built by this one function; the commands differ
@@ -609,19 +609,17 @@ the per-host hub of D16, which supersedes it for =SPC a i i=.
   half-remote list (live buffers of all hosts, closed files of none)
   — the same session appeared in one picker but not the other, and a
   closed remote session could never be deleted at all.
-- Closed-session discovery prefers Pi's =SessionManager.listAll= SDK
-  on both local and remote hosts, including directory-scoped lists;
-  shared record conversion keeps their picker metadata consistent.
-  If the SDK/launcher is unavailable, or local roots do not match,
-  both paths fall back to the canonical JSONL scanner,
-  =pilish//session-scan-info=, which resolves
-  the package's scanner at runtime with =fboundp=: scanner names moved
-  between package releases (=pilish-jsonl-read-session-info= →
-  =pilish-jsonl-read-session-info=; older versions ship
-  =pilish--session-metadata=).  Calling a missing name directly made
-  EVERY metadata read fail (the fail-open condition-case swallowed the
-  void-function error per file), silently emptying the closed-session
-  lists — the scanner must be resolved, never assumed.
+- Local closed-session discovery keeps recursive file enumeration in
+  Emacs, reuses cached metadata when both mtime and size match, and
+  sends only misses to a metadata-only JavaScript scanner loaded by the
+  configured Pi launcher.  The scanner streams JSONL and returns only
+  picker fields; it does not import Pi's SDK or build transcript text.
+  A warm listing avoids starting Pi.  If Pi or the scanner is
+  unavailable, misses fall back to =pilish//session-scan-info=, which
+  resolves the package scanner at runtime with =fboundp=.  Remote
+  closed-session discovery continues to use Pi's =SessionManager.listAll=
+  SDK; failure omits remote closed entries rather than reading JSONL
+  through TRAMP.
 - Connection gating: remote work in the listing path happens only
   over an already-established TRAMP connection
   (=pilish//tramp-connection-alive-p= — an I/O-free check:
@@ -656,10 +654,11 @@ the per-host hub of D16, which supersedes it for =SPC a i i=.
   =pilish/remote-executables=), matching
   =pilish/start-remote-session='s spawn, so sessions picked
   from the scoped list spawn the remote pi correctly.
-- Switch-in-dir follows the directory: a remote DIR's listing scans
-  that host's session root over the established connection
-  (=pilish//remote-scan-root=), nothing remote when the host
-  is unreachable.
+- Switch-in-dir follows the directory: a remote DIR's listing queries
+  that host's SessionManager SDK over the established connection
+  (=pilish//remote-scan-root=); an unavailable SDK query omits its
+  closed entries instead of scanning JSONL through TRAMP.  Nothing
+  remote is queried when the host is unreachable.
 - Drive-by: =pilish//remote-locate-executables= now deletes
   stale mapping entries with =assoc-delete-all= — the previous
   =assq-delete-all= never matched string keys, so the saved custom
@@ -689,9 +688,10 @@ host instead of mixed into the live/closed lists.
   string / =t= forms, via =pilish//remote-scope-prefixes=;
   close/delete still pass =t= and are unchanged.  Listing a scoped
   host keeps D15's contract — live chat buffers from local state,
-  closed files scanned only over an already-established connection,
-  otherwise a background probe and no contribution — so a
-  disconnected host is best-effort and never blocks Emacs.
+  closed sessions queried through the remote Pi SDK only over an
+  already-established connection; unavailable queries omit closed
+  entries, with no TRAMP JSONL fallback.  A disconnected host gets a
+  background probe and contributes nothing, so listing never blocks.
 - Rendering: the switch list becomes ordered sections: local live
   sessions under "Live sessions", one section per remote host
   (named after the host, hosts sorted by name) between the two local
@@ -948,3 +948,42 @@ repository's best-effort =git fetch origin=, which may independently
 use SSH according to the repository's origin URL.  Rejected: scanning
 all configured remote roots from a local context, which could connect
 to unrelated hosts just to populate a picker.
+
+* D23. Never TRAMP-scan JSONL as a remote listing fallback
+
+Remote closed-session discovery must use the remote Pi
+=SessionManager.listAll= query.  If that query cannot run or returns no
+result, omit remote closed entries and report that they were skipped;
+do not fall back to walking JSONL files and parsing them through TRAMP.
+The per-directory =a i m= picker follows the same rule, and the generic
+=pilish//session-entries= scanner refuses remote roots as a defensive
+guard.  Local Node-scan failures still use the canonical Elisp JSONL scanner.
+
+This trades incomplete remote closed-session listings when Pi's SDK or
+executable mapping is unavailable for avoiding per-file TRAMP content
+reads.  Live sessions still come from local buffer state.  It does not
+change TRAMP reads involved in explicitly opening/resuming a selected
+session or starting Pi remotely.
+
+* D24. Scan local picker metadata with Pi's Node runtime
+
+The local =SPC a i i= and =SPC a i I= lists need session headers,
+latest =session_info= names, message counts, first-message previews,
+and file mtimes — not complete conversations.  =SessionManager.listAll=
+imports the full SDK and builds =allMessagesText=, which dominated the
+measured cold-listing time; its stdout response was also observed to be
+truncated.  Keep recursive file discovery and the mtime/size cache in
+Emacs, then pass only uncached paths as a temporary manifest to a
+standalone metadata scanner imported by a one-shot preload through Pi's
+own launcher.  This preserves =PI_AGENT_DIR= and the launcher's managed
+Node runtime without importing the SDK or duplicating session-root
+configuration.  Scanner output goes to a temporary file rather than
+stdout, avoiding output-size limits.  Repeated listings with unchanged
+files do not launch Pi; changed files are scanned as one batch.
+
+If the Node process or scanner fails, the existing canonical Elisp
+scanner remains the fallback.  Remote listings are unchanged: they use
+remote Pi's SDK only, as D23 requires.  Rejected: scanning only direct
+children (which loses recursive layer discovery), sending all files on
+every keypress (which wastes repeated work), and reusing the local
+scanner over TRAMP (which could block on unavailable hosts).
