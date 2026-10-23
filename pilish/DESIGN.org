@@ -666,6 +666,9 @@ the per-host hub of D16, which supersedes it for =SPC a i i=.
 
 ** D16. Switch-session hub: per-host remote sections (2026)
 
+Historical scope and rendering below are superseded by D26; they record
+the former all-known-host behavior.
+
 =pilish/switch-session= (SPC a i i) grows from "local, plus
 the current remote session's host" to a hub over every host the
 layer knows runs pi, and remote sessions are displayed grouped by
@@ -1015,3 +1018,14 @@ unavailable to the Node scan still takes the canonical Elisp fallback.
 Rejected: building candidates before label refresh completes, which can
 expose stale perspective labels, and starting a second Pi scan after an
 async failure before taking the existing Elisp fallback.
+
+* D26. Scope the session switcher to its invoking TRAMP host
+
+=SPC a i i= always lists local sessions. It inspects a remote host only
+when the invoking buffer's =default-directory= is TRAMP, and then only
+that exact prefix. The existing remote SDK query runs over an established
+connection; if disconnected, only that current host receives the bounded
+background SSH probe. A local invocation does not enumerate or probe
+hosts from active sessions or =pilish/remote-executables=. Other
+multi-host commands retain their explicit broader scopes. Rejected:
+probing all known hosts from a local session switcher.

@@ -79,10 +79,10 @@ row.
 
 - =SPC a i i= (=pilish/switch-session=) — list all pi
   sessions (the current one is excluded) grouped into sections: the
-  local machine's live sessions (●) under =Live sessions=, one
-  section per remote host with sessions — named after the host, the
-  hosts sorted by name — between the two local groups, then the local
-  closed sessions (○) under =Closed sessions=.  Within each section
+  local machine's live sessions (●) under =Live sessions=; optionally
+  one section for the invoking TRAMP host between the local live and
+  closed groups.  Local closed sessions (○) appear under =Closed sessions=.
+  Within each section
   live sessions sort by directory, then by title; closed sessions by
   recency, newest first (descending) (a remote host section lists its
   host's live sessions first, then its closed ones).  Selecting a
@@ -98,10 +98,9 @@ row.
   =pilish/session-sort-opened= (default =dir-then-name=
   — directory, then title) and =pilish/session-sort-closed=
   (default =chrono= — newest first).  Scope: local sessions are always
-  listed; a remote host joins the listing whenever the layer knows it
-  runs pi sessions — hosts with verified executables in
-  =pilish/remote-executables=, hosts of active pi chat
-  buffers, and the current session's host.  Local closed-session
+  listed.  A remote host is queried only when invoked from a TRAMP
+  =default-directory=, and then only that exact host; a local context
+  does not inspect or probe remote hosts.  Local closed-session
   discovery keeps Emacs's recursive file manifest and caches metadata
   by path, mtime, and size.  Cache misses are scanned with a bounded
   prefix by a metadata-only JavaScript scanner in Pi's configured Node
@@ -300,8 +299,8 @@ inside session perspectives.
 
 ** Usage
 
-- =SPC a i i= — list all sessions (local live, one section per remote
-  host, then local closed): open the chosen one or switch to it
+- =SPC a i i= — list all sessions (local live, optionally the invoking
+  TRAMP host, then local closed): open the chosen one or switch to it
 - =SPC a i I= — switch between the current directory's sessions (with layout)
 - =SPC a i p= — start or focus the pi session for the current project
 - =SPC a i n= — start a new session (asks for the directory)
@@ -445,7 +444,7 @@ Global (=SPC a i= prefix; =SPC a p= is taken by =list-processes=):
 
 | Key        | Command                              | Description                    |
 |------------+--------------------------------------+--------------------------------|
-| =i=        | =pilish/switch-session=     | List sessions (local live, per-host remote, then closed) |
+| =i=        | =pilish/switch-session=     | List local sessions, optional current TRAMP host, then closed |
 | =I=        | =pilish/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =p=        | =pilish=                    | Start or focus session         |
 | =S=        | =pilish/open-named-session= | Start named (parallel) session |
@@ -467,7 +466,7 @@ buffer =t= is already =pilish-toggle=, so templates live on
 
 | Key | Command                              | Description                                    |
 |-----+--------------------------------------+------------------------------------------------|
-| =i= | =pilish/switch-session=     | List sessions (local live, per-host remote, then closed) |
+| =i= | =pilish/switch-session=     | List local sessions, optional current TRAMP host, then closed |
 | =I= | =pilish/switch-session-in-dir= | Switch current dir's sessions (with layout) |
 | =c= | =pilish-run-command=        | Run a pi slash command by name (+ args)        |
 | =s= | =pilish-skills-menu=        | Skills: letter runs, Shift+letter edits source |

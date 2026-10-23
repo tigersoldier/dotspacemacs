@@ -1075,35 +1075,39 @@ unresolvable."
           (pilish//registry-save))
         f)))
 
-(defun pilish//sync-labels ()
-  "Lazily sync perspective labels with their session titles.
+(defun pilish//sync-labels (&optional remote-scope)
+  "Lazily sync labels, restricting remote metadata to REMOTE-SCOPE.
 Sessions without a /name keep the first-message snippet; perspectives
 renamed by the user are skipped.  Fresh sessions whose registry
 :session-file is still nil are resolved from their chat buffer state
 first, so the placeholder label updates to the first-message snippet.
-Called from the session list and before switching."
-  (dolist (entry pilish//registry)
-    (let ((name (car entry)) (plist (cdr entry)))
-      (pilish//registry-fill-session-file name plist)
-      (when (and (not (plist-get plist :label-locked))
-                 (perspective-p (persp-get-by-name name))
-                 (plist-get plist :session-file)
-                 ;; Never rename from a remote file whose connection is
-                 ;; down: the metadata guard would fall back to a stale
-                 ;; title while `pilish//make-persp-label'
-                 ;; loses the directory part (its cwd read is
-                 ;; connection-gated too), and the next connected
-                 ;; listing would rename the label right back.
-                 (or (not (pilish--remote-prefix-for-path
-                           (plist-get plist :session-file)))
-                     (pilish//tramp-connection-alive-p
-                      (plist-get plist :session-file))))
-        (when-let* ((title (pilish//desired-label-title
-                            (plist-get plist :session-file)))
-                    (new-name (pilish//make-persp-label
-                               title (plist-get plist :session-file)))
-                    ((not (string= new-name name))))
-          (pilish//rename-persp name new-name))))))
+Without REMOTE-SCOPE, preserve the unscoped sync used by other callers."
+  (let ((remote-prefixes (and remote-scope
+                              (pilish//remote-scope-prefixes remote-scope))))
+    (dolist (entry pilish//registry)
+      (let ((name (car entry)) (plist (cdr entry)))
+        (pilish//registry-fill-session-file name plist)
+        (let* ((file (plist-get plist :session-file))
+               (remote-prefix (and file
+                                   (pilish--remote-prefix-for-path file))))
+          (when (and (or (null remote-scope)
+                         (null remote-prefix)
+                         (member remote-prefix remote-prefixes))
+                     (not (plist-get plist :label-locked))
+                     (perspective-p (persp-get-by-name name))
+                     file
+                     ;; Never rename from a remote file whose connection is
+                     ;; down: the metadata guard would fall back to a stale
+                     ;; title while `pilish//make-persp-label' loses the
+                     ;; directory part (its cwd read is connection-gated
+                     ;; too), and the next connected listing would rename
+                     ;; the label right back.
+                     (or (not remote-prefix)
+                         (pilish//tramp-connection-alive-p file)))
+            (when-let* ((title (pilish//desired-label-title file))
+                        (new-name (pilish//make-persp-label title file))
+                        ((not (string= new-name name))))
+              (pilish//rename-persp name new-name))))))))
 
 (defun pilish//after-set-session-name (&rest args)
   "Immediately sync the current perspective label after a session rename.
@@ -1539,12 +1543,12 @@ closed."
 ;; ---------------------------------------------------------------------
 ;; Remote-session scope and non-blocking remote access
 ;;
-;; Session lists are scoped by the current session's host: a local
-;; context lists local sessions only, a remote (TRAMP) session adds its
-;; own host's sessions.  Remote files are never touched over a
-;; connection that is not already established — all checks are I/O-free
-;; — so an unreachable host can no longer hang the listing; it is
-;; probed in the background instead and its sessions reappear in a
+;; Session-list commands choose remote scope explicitly: the switcher
+;; uses the invoking buffer's TRAMP prefix (otherwise local only), while
+;; close/delete can request broader remote scopes.  Remote files are
+;; never touched over a connection that is not already established — all
+;; checks are I/O-free — so an unreachable host cannot hang the listing;
+;; it is probed in the background instead and its sessions reappear in a
 ;; later listing once it answers.
 
 (defun pilish//tramp-connection-alive-p (path)
@@ -1572,9 +1576,8 @@ connection is made."
 (defun pilish//current-session-remote-prefix ()
   "Return the TRAMP remote prefix of the current session, or nil.
 The current session is the current perspective's pi chat buffer; nil
-when there is none (default perspective, no session) or it is local —
-the state in which session lists must not contain, or ever touch,
-remote sessions."
+when there is none (default perspective, no session) or it is local.
+Used by session-list commands whose remote scope follows that session."
   (when-let* ((persp (get-current-persp))
               ((perspective-p persp))
               (chat (pilish//chat-buffer-in-persp persp)))
@@ -1972,16 +1975,15 @@ dropped: its live chat buffers from LIVE, its session file from
 CLOSED.
 
 REMOTE-SCOPE decides which hosts' sessions are listed — the only
-remote axis, shared by every picker (`a i i' passes the known remote
-hosts or `local'; close/delete pass t to reach every host, including
-a dead remote one):
+remote axis, shared by every picker (`a i i' passes the invoking
+buffer's TRAMP prefix or `local'; close/delete pass t to reach every
+host, including a dead remote one):
 - nil (no scoping) and `local' keep LOCAL sessions only — a local
   context must not even touch remote state, so an unreachable host
 cannot block the list;
 - a TRAMP prefix string keeps local sessions plus that host's,
 - a list of TRAMP prefixes keeps local sessions plus exactly those
-  hosts' (the switch-session hub scope, see
-  `pilish//known-remote-prefixes'), and
+  hosts', for commands that explicitly include several remote hosts, and
 - t keeps local sessions plus every active remote host's.
 A scoped host contributes BOTH its live chat buffers and closed
 session entries from the remote Pi SDK (never a TRAMP JSONL fallback),
@@ -2832,12 +2834,19 @@ closed one (open it, switching to it when it is already opened)."
     (pilish//open-or-switch (plist-get target :entry)))
    (t (user-error "Invalid session target"))))
 
+(defun pilish//switch-session-remote-scope ()
+  "Return the invoking buffer's TRAMP prefix for SPC a i i, or `local'.
+A local context must not inspect or probe remote hosts; a TRAMP context
+includes only its own prefix."
+  (or (pilish--remote-prefix-for-path default-directory)
+      'local))
+
 (defun pilish/switch-session ()
   "List all pi sessions; open the chosen one or switch to it if opened.
 The current session is excluded.  Sessions are grouped into sections,
 in order: the local machine's live sessions (●, active pi chat
-buffers) under \"Live sessions\", one section per remote host with
-sessions (named after the host, hosts sorted by name) between the two
+buffers) under \"Live sessions\", at most one section for the
+invoking TRAMP host's sessions (named after that host) between the two
 local groups, then the local closed sessions (○, files on disk not
 loaded by a live session) under \"Closed sessions\".  Sections render
 with a boundary between groups — separate sources under helm, header
@@ -2848,33 +2857,32 @@ its host's live sessions first, then its closed ones).  Picking a
 live session switches to its perspective; picking a closed one opens
 it (reviving the perspective still registered for it).
 
-Scope: local sessions are always listed.  A remote host is listed
-whenever the layer knows it runs pi sessions — hosts with verified
-executables in `pilish/remote-executables', hosts of active
-pi chat buffers, and the host of the current session
-(`pilish//known-remote-prefixes').  Listing a host's
-sessions is best effort and never blocks: its live chat buffers are
-read from local state; its closed sessions are queried through Pi's
-SDK only over an already-established TRAMP connection.  If that query
-is unavailable, closed entries are omitted; a disconnected host is
-probed in the background (`pilish//remote-probe-async') and contributes
-no section to this listing — its sessions reappear in a later listing
-once it answers."
+Scope: local sessions are always listed.  Remote sessions are queried
+only when this command is invoked from a TRAMP `default-directory', and
+then only for that exact prefix; a local context does not inspect or
+probe remote hosts.  Listing that host is best effort and never blocks:
+its live chat buffers are read from local state; its closed sessions
+are queried through Pi's SDK only over an already-established TRAMP
+connection.  If that query is unavailable, closed entries are omitted;
+a disconnected current host is probed in the background
+(`pilish//remote-probe-async') and contributes no section until a later
+listing after it answers."
   (interactive)
   (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (pilish//with-local-scan-prefetch
-   (lambda ()
-     (let* ((remote-prefixes (pilish//known-remote-prefixes))
-            (remote-scope (or remote-prefixes 'local))
-            (groups (pilish//session-targets nil t t nil remote-scope))
-            (live (pilish//sort-targets
-                   (car groups) pilish/session-sort-opened))
-            (closed (pilish//sort-targets
-                     (cdr groups) pilish/session-sort-closed))
-            (sections (pilish//switch-session-sections live closed)))
-       (if (null sections)
+  (let ((remote-scope (pilish//switch-session-remote-scope)))
+    (pilish//with-local-scan-prefetch
+     (lambda ()
+       (let* ((remote-prefixes (unless (eq remote-scope 'local)
+                                 (list remote-scope)))
+              (groups (pilish//session-targets nil t t nil remote-scope))
+              (live (pilish//sort-targets
+                     (car groups) pilish/session-sort-opened))
+              (closed (pilish//sort-targets
+                       (cdr groups) pilish/session-sort-closed))
+              (sections (pilish//switch-session-sections live closed)))
+         (if (null sections)
            (user-error "No other pi sessions found (looked in %s%s)"
                        (expand-file-name pilish/session-root)
                        (if remote-prefixes
@@ -2883,12 +2891,13 @@ once it answers."
                                                 (file-remote-p prefix 'host))
                                               remote-prefixes ", "))
                          ""))
-         (let ((choice (pilish//pick-session-sections
-                        sections "Pi session: " nil t)))
-           (when choice
-             (pilish//open-or-switch-target
-              (cdr (assoc choice
-                          (apply #'append (mapcar #'cdr sections))))))))))))
+           (let ((choice (pilish//pick-session-sections
+                          sections "Pi session: " nil t)))
+             (when choice
+               (pilish//open-or-switch-target
+                (cdr (assoc choice
+                            (apply #'append (mapcar #'cdr sections))))))))))
+     remote-scope)))
 
 (defun pilish/switch-session-in-dir ()
   "Switch to another pi session of the current directory, with its layout.
@@ -3917,8 +3926,9 @@ results before label sync; the ROOT discovery snapshot is reused by listing."
   (when state
     (pilish//local-pi-job-cleanup (plist-get state :job))))
 
-(defun pilish//with-local-scan-prefetch (function)
-  "Merge local metadata before syncing labels and running FUNCTION."
+(defun pilish//with-local-scan-prefetch (function &optional remote-scope)
+  "Merge local metadata, sync labels within REMOTE-SCOPE, then run FUNCTION.
+When REMOTE-SCOPE is nil, preserve the ordinary unscoped label sync."
   (let (state)
     (unwind-protect
         (progn
@@ -3927,7 +3937,9 @@ results before label sync; the ROOT discovery snapshot is reused by listing."
           (let ((pilish//local-scan-prefetch-state state))
             (when state
               (pilish//local-scan-prefetch-finish state))
-            (pilish//sync-labels)
+            (if remote-scope
+                (pilish//sync-labels remote-scope)
+              (pilish//sync-labels))
             (funcall function)))
       (when state
         (pilish//local-scan-prefetch-cancel state)))))
