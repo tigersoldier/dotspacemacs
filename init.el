@@ -356,6 +356,34 @@ executes.
  This function is mostly useful for variables that need to be set
 before packages are loaded. If you are unsure, you should try in setting them in
 `dotspacemacs/user-config' first."
+  ;; Make the Org release installed in Spacemacs' ELPA the only Org in the
+  ;; session, before any package can pull in Emacs' built-in Org.
+  ;;
+  ;; Spacemacs activates packages in alphabetical order, so a package
+  ;; configured before `org-superstar' (e.g. `evil-matchit') can `require'
+  ;; Org while the ELPA Org directory is not on `load-path' yet; the built-in
+  ;; Org wins.  Later `org-superstar' (which depends on the ELPA Org)
+  ;; activates it and loads `org-indent' and friends, which were compiled
+  ;; against the ELPA release, and Org warns "Org version mismatch".
+  ;; Prepending the newest ELPA Org directory here guarantees one consistent
+  ;; Org version for the whole session.
+  (let* ((elpa-dir (expand-file-name "elpa" user-emacs-directory))
+         (org-dirs
+          (delq nil
+                (mapcar (lambda (dir) (and (file-directory-p dir) dir))
+                        (append
+                         (file-expand-wildcards
+                          (expand-file-name "org-[0-9]*" elpa-dir))
+                         (file-expand-wildcards
+                          (expand-file-name "*/org-[0-9]*" elpa-dir)))))))
+    (when org-dirs
+      ;; Sort by descending version so that `car' is the newest release.
+      (add-to-list 'load-path
+                   (car (sort org-dirs
+                              (lambda (a b)
+                                (version<
+                                 (substring (file-name-nondirectory b) 4)
+                                 (substring (file-name-nondirectory a) 4))))))))
   )
 
 (defun dotspacemacs/user-env ()
