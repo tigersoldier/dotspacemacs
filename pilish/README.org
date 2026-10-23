@@ -73,7 +73,7 @@ disk not loaded by a live session.  Whenever both are listed, live
 sessions come first, separated from the closed ones by a section
 boundary — separate =Live sessions= / =Closed sessions= sources under
 helm, header rows otherwise.  Each candidate is annotated with a
-status glyph (● live / ○ closed), message count, and age; titles
+status glyph (● live / ○ closed), an optional message count, and age; titles
 collapse newlines to single spaces so every session is exactly one
 row.
 
@@ -103,13 +103,20 @@ row.
   =pilish/remote-executables=, hosts of active pi chat
   buffers, and the current session's host.  Local closed-session
   discovery keeps Emacs's recursive file manifest and caches metadata
-  by path, mtime, and size.  Cache misses are streamed through a
-  metadata-only JavaScript scanner in Pi's configured Node runtime,
-  without importing the SDK or building transcript text; a warm listing
-  skips launching Pi.  If the Node scan fails, the canonical Elisp JSONL
-  scanner remains the fallback.  Remote discovery uses Pi's
+  by path, mtime, and size.  Cache misses are scanned with a bounded
+  prefix by a metadata-only JavaScript scanner in Pi's configured Node
+  runtime, without importing the SDK or counting transcript messages.
+  It takes the first =session_info= name; later renames may not appear.
+  For =SPC a i i=, the miss scan runs before perspective-label sync;
+  stable results then feed both label refresh and candidate building,
+  avoiding JSONL reparses for names and cwd.  A warm listing skips
+  launching Pi.
+  If the Node scan fails, the canonical Elisp JSONL scanner remains the
+  fallback.  Remote discovery uses Pi's
   =SessionManager.listAll= SDK only; if unavailable, closed sessions
-  are omitted rather than scanning JSONL through TRAMP.  Remote work is
+  are omitted rather than scanning JSONL through TRAMP.  A selected
+  remote entry without SDK cwd fails closed instead of triggering a
+  TRAMP JSONL read.  Remote work is
   best effort and never blocks: live buffers come from local state, and
   remote SDK queries happen only over an already-established TRAMP
   connection.  A disconnected host is probed in the background and

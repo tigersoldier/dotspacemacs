@@ -712,6 +712,17 @@ Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
 (defvar pilish//session-cache (make-hash-table :test 'equal)
   "Cache of session-file -> (:mtime TIME :size BYTES :metadata PLIST).")
 
+(defconst pilish//session-cache-version 2
+  "Version of cached session-name semantics and metadata shape.")
+(defvar pilish//session-cache-version-seen nil)
+(unless (equal pilish//session-cache-version-seen pilish//session-cache-version)
+  (when (hash-table-p pilish//session-cache)
+    (clrhash pilish//session-cache))
+  (setq pilish//session-cache-version-seen pilish//session-cache-version))
+
+(defvar pilish//local-scan-prefetch-state nil
+  "Dynamically bound local scan prefetch state during session switching.")
+
 (defvar pilish//remote-directory-list-cache (make-hash-table :test 'equal)
   "Cached immediate-child directory names keyed by remote directory.")
 
@@ -852,26 +863,149 @@ Files are compared property-stripped (see
     string))
 
 (defun pilish//session-file-cwd (file)
-  "Return FILE's recorded cwd, or nil.
+  "Return FILE's validated cached cwd, or nil.
 Remote (TRAMP) FILEs are only read over an already-established
 connection (`pilish//tramp-connection-alive-p', an I/O-free
 check) — an unreachable host must never block a listing; nil is
-returned then."
+returned then. Reuse metadata already read for the title instead of
+reopening the JSONL file just to recover its cwd."
   (condition-case nil
       (and (or (not (pilish--remote-prefix-for-path file))
                (pilish//tramp-connection-alive-p file))
-           (pilish--session-file-cwd-or-error file))
+           (file-readable-p file)
+           (let* ((cwd (plist-get (pilish//session-metadata-cached file)
+                                  :cwd))
+                  (expanded-cwd
+                   (and (stringp cwd) (not (string-empty-p cwd))
+                        (not (file-remote-p cwd))
+                        (not (pilish--remote-home-path-p cwd))
+                        (file-name-absolute-p cwd)
+                        (pilish--emacs-directory cwd file))))
+             (and expanded-cwd (file-directory-p expanded-cwd)
+                  expanded-cwd)))
     (error nil)))
+
+(defun pilish//session-cache-current-entry (file)
+  "Return FILE's local cache entry when its mtime and size still match."
+  (let* ((cached (gethash file pilish//session-cache))
+         (attrs (and cached
+                     (condition-case nil
+                         (file-attributes file)
+                       (error nil)))))
+    (when (and attrs
+               (eq (car-safe cached) :mtime)
+               (equal (plist-get cached :mtime)
+                      (file-attribute-modification-time attrs))
+               (equal (plist-get cached :size)
+                      (file-attribute-size attrs)))
+      cached)))
+
+(defun pilish//local-session-metadata-refresh-node (file)
+  "Refresh local FILE through Node.
+Return (:stable ENTRY), :unstable, or nil when the scanner is unavailable."
+  (condition-case err
+      (let* ((attrs (file-attributes file))
+             (signatures (make-hash-table :test 'equal)))
+        (when attrs
+          (puthash file
+                   (cons (file-attribute-modification-time attrs)
+                         (file-attribute-size attrs))
+                   signatures)
+          (let* ((payload (pilish//local-pi-run (list file)))
+                 (records (and payload
+                               (gethash "sessions" payload :missing))))
+            (when (and payload (not (eq records :missing)) (listp records))
+              (let ((record (cl-find-if
+                             (lambda (candidate)
+                               (and (hash-table-p candidate)
+                                    (equal (gethash "path" candidate) file)))
+                             records)))
+                (if (not (and record (eq (gethash "stable" record) t)))
+                    :unstable
+                  (pilish//local-scan-cache-records
+                   (list file) signatures records)
+                  (if-let* ((cached
+                             (pilish//session-cache-current-entry file)))
+                      (list :stable cached)
+                    :unstable)))))))
+    (error
+     (message "pi: cannot refresh session metadata for %s: %s"
+              (abbreviate-file-name file) (error-message-string err))
+     nil)))
+
+(defun pilish//session-file-cwd-after-node-refresh (file)
+  "Get FILE's cwd after Node refresh, retrying unstable snapshots once."
+  (let ((result (pilish//local-session-metadata-refresh-node file)))
+    (when (eq result :unstable)
+      (setq result (pilish//local-session-metadata-refresh-node file)))
+    (pcase result
+      (`(:stable ,cached)
+       (pilish//checked-session-cwd
+        file (plist-get (pilish//session-cache-metadata cached) :cwd)))
+      (:unstable
+       (user-error "Session changed during metadata scan: %s" file))
+      (_
+       (pilish--session-file-cwd-or-error file)))))
+
+(defun pilish//checked-session-cwd (file cwd)
+  "Validate known CWD for session FILE and return its Emacs directory."
+  (unless (and (stringp cwd) (not (string-empty-p cwd)))
+    (user-error "Session file has no usable cwd: %s" file))
+  (unless (file-readable-p file)
+    (user-error "Session file is not readable: %s" file))
+  (let* ((file-prefix (pilish--remote-prefix-for-path file))
+         (cwd-prefix (pilish--remote-prefix-for-path cwd))
+         (process-cwd (if cwd-prefix
+                          (file-remote-p cwd 'localname)
+                        cwd)))
+    (when (and cwd-prefix (not (equal cwd-prefix file-prefix)))
+      (user-error "Session cwd is on a different host: %s" cwd))
+    (when (or (pilish--remote-home-path-p process-cwd)
+              (not (file-name-absolute-p process-cwd)))
+      (user-error "Session file has no usable cwd: %s" file))
+    (let ((directory (pilish--emacs-directory cwd file)))
+      (unless (file-directory-p directory)
+        (user-error "Session cwd does not exist: %s" directory))
+      directory)))
+
+(defun pilish//session-file-cwd-for-open (file &optional known-cwd)
+  "Return validated cwd for opening FILE, reusing scan or KNOWN-CWD.
+A current local cache entry is authoritative.  Stale local cache entries,
+and cache misses without KNOWN-CWD, are refreshed with the Node scanner
+first; the canonical Elisp validator is used only if that scan is
+unavailable.  Remote picker entries use their SDK-provided KNOWN-CWD and
+never scan remote JSONL through TRAMP."
+  (setq file (pilish//plain-string file))
+  (let* ((remote (pilish--remote-prefix-for-path file))
+         (cached (and (not remote)
+                      (gethash file pilish//session-cache)))
+         (current (and cached
+                       (pilish//session-cache-current-entry file))))
+    (cond
+     ((and remote known-cwd)
+      (pilish//checked-session-cwd file known-cwd))
+     (current
+      (pilish//checked-session-cwd
+       file (plist-get (pilish//session-cache-metadata current) :cwd)))
+     ((and cached (not remote))
+      (pilish//session-file-cwd-after-node-refresh file))
+     (known-cwd
+      (pilish//checked-session-cwd file known-cwd))
+     ((not remote)
+      (pilish//session-file-cwd-after-node-refresh file))
+     (t
+      (user-error "Remote session listing did not provide a cwd: %s" file)))))
 
 (defun pilish//file-uuid-prefix (file)
   "Return a short (8-char) uuid prefix for session FILE, or nil."
   (when (string-match "_\\([0-9a-f-]\\{8\\}\\)" file)
     (match-string 1 file)))
 
-(defun pilish//make-persp-label (title file)
-  "Build a perspective label \"TITLE · abbrev-path\" for session FILE."
+(defun pilish//make-persp-label (title file &optional cwd)
+  "Build a perspective label \"TITLE · abbrev-path\" for session FILE.
+Use known CWD when supplied; otherwise reuse cached file metadata."
   (let ((abbrev (and file
-                     (when-let* ((dir (pilish//session-file-cwd file)))
+                     (when-let* ((dir (or cwd (pilish//session-file-cwd file))))
                        (abbreviate-file-name (directory-file-name dir))))))
     (if abbrev
         (format "%s · %s" title abbrev)
@@ -1193,40 +1327,102 @@ the package's original behavior."
                 (plist-put info :path file)))
           (delete-file copy))))))
 
+(defconst pilish//metadata-prefix-bytes (* 16 1024)
+  "Maximum metadata prefix scanned for the first local session name.")
+
+(defun pilish//first-session-info-name (file)
+  "Return (t . NAME) for FILE's first parsed name in the metadata prefix.
+A present nil NAME means no parseable `session_info' name occurred before the
+prefix limit.  Read complete JSONL lines, with up to 1 MiB of lookahead for a
+long line that crosses the limit."
+  (let* ((size (file-attribute-size (file-attributes file)))
+         (end (min size (+ pilish//metadata-prefix-bytes (* 1024 1024))))
+         (scanned 0)
+         (first-line t)
+         (name-found nil)
+         name)
+    (with-temp-buffer
+      (let ((coding-system-for-read 'utf-8-unix))
+        (insert-file-contents file nil 0 end))
+      (goto-char (point-min))
+      (while (and (not name-found)
+                  (< scanned pilish//metadata-prefix-bytes)
+                  (< (point) (point-max)))
+        (let* ((line-end (line-end-position))
+               (complete-line (or (< line-end (point-max)) (= end size)))
+               (line (buffer-substring-no-properties (point) line-end))
+               (line (if (and (> (length line) 0)
+                              (eq (aref line (1- (length line))) ?\r))
+                         (substring line 0 -1)
+                       line)))
+          (if complete-line
+              (progn
+                (when (and first-line (string-prefix-p "\uFEFF" line))
+                  (setq line (substring line 1)))
+                (setq first-line nil
+                      scanned (+ scanned (string-bytes line) 1))
+                (when (string-match-p
+                       "\\`[ \t]*{[ \t]*\"type\"[ \t]*:[ \t]*\"session_info\""
+                       line)
+                  (let ((entry
+                         (condition-case nil
+                             (json-parse-string line :object-type 'hash-table
+                                                :array-type 'list
+                                                :null-object nil
+                                                :false-object nil)
+                           (error nil))))
+                    (when (and (hash-table-p entry)
+                               (equal (gethash "type" entry) "session_info"))
+                      (let ((raw (gethash "name" entry)))
+                        (setq name-found t
+                              name (when (stringp raw)
+                                     (let ((trimmed (string-trim raw)))
+                                       (unless (string-empty-p trimmed)
+                                         trimmed))))))))
+                (forward-line 1))
+            (setq scanned pilish//metadata-prefix-bytes)))))
+    (cons t name)))
+
 (defun pilish//session-scan-info (file)
   "Return package-scanned session info for FILE, or nil.
 Delegates to the installed package's canonical session scanner and
 normalizes to (:first-message :message-count :session-name :cwd).
-The scanner moved between releases — `pilish-jsonl-read-
-session-info' in intermediate versions, `pilish-jsonl-read-session-
-info' after the pilish rename, `pilish--session-metadata'
-(whose plist already is the layer dialect) in older ones — so the
-name is resolved at runtime with `fboundp'; calling a missing name
-directly would make EVERY metadata read fail and silently empty the
-closed-session lists.  nil when no scanner exists or FILE is not a
-pi session (the scanners fail open internally)."
-  (cond
-   ((fboundp 'pilish-jsonl-read-session-info)
-    (let ((info (pilish-jsonl-read-session-info file)))
-      (and info
-           (list :first-message (plist-get info :firstMessage)
-                 :message-count (plist-get info :messageCount)
-                 :session-name (plist-get info :name)
-                 :cwd (plist-get info :cwd)))))
-   ((fboundp 'pilish-jsonl-read-session-info)
-    (let ((info (pilish-jsonl-read-session-info file)))
-      (and info
-           (list :first-message (plist-get info :firstMessage)
-                 :message-count (plist-get info :messageCount)
-                 :session-name (plist-get info :name)
-                 :cwd (plist-get info :cwd)))))
-   ((fboundp 'pilish--session-metadata)
-    (let ((meta (pilish--session-metadata file)))
-      (and meta
-           (list :first-message (plist-get meta :first-message)
-                 :message-count (plist-get meta :message-count)
-                 :session-name (plist-get meta :session-name)
-                 :cwd (plist-get meta :cwd)))))))
+Local fallback scans override the latest name with the first name in the same
+bounded prefix used by the Node picker scanner.  The scanner moved between
+releases — `pilish-jsonl-read-session-info' in intermediate versions,
+`pilish-jsonl-read-session-info' after the pilish rename,
+`pilish--session-metadata' (whose plist already is the layer dialect) in older
+ones — so the name is resolved at runtime with `fboundp'; calling a missing
+name directly would make EVERY metadata read fail and silently empty the
+closed-session lists.  nil when no scanner exists or FILE is not a pi session
+(the scanners fail open internally)."
+  (let ((info
+         (cond
+          ((fboundp 'pilish-jsonl-read-session-info)
+           (let ((info (pilish-jsonl-read-session-info file)))
+             (and info
+                  (list :first-message (plist-get info :firstMessage)
+                        :message-count (plist-get info :messageCount)
+                        :session-name (plist-get info :name)
+                        :cwd (plist-get info :cwd)))))
+          ((fboundp 'pilish-jsonl-read-session-info)
+           (let ((info (pilish-jsonl-read-session-info file)))
+             (and info
+                  (list :first-message (plist-get info :firstMessage)
+                        :message-count (plist-get info :messageCount)
+                        :session-name (plist-get info :name)
+                        :cwd (plist-get info :cwd)))))
+          ((fboundp 'pilish--session-metadata)
+           (let ((meta (pilish--session-metadata file)))
+             (and meta
+                  (list :first-message (plist-get meta :first-message)
+                        :message-count (plist-get meta :message-count)
+                        :session-name (plist-get meta :session-name)
+                        :cwd (plist-get meta :cwd))))))))
+    (when (and info (not (file-remote-p file)))
+      (when-let* ((first-name (pilish//first-session-info-name file)))
+        (plist-put info :session-name (cdr first-name))))
+    info))
 
 (defun pilish//session-cache-metadata (cached)
   "Return metadata from cache entry CACHED, including the old format."
@@ -1649,7 +1845,6 @@ active pi chat buffers."
                         :cwd (pilish//entry-cwd file (plist-get meta :cwd))
                         :first-message (plist-get meta :first-message)
                         :name (plist-get meta :session-name)
-                        :count (plist-get meta :message-count)
                         :modified (plist-get meta :modified-time)
                         :opened (pilish//file-in-opened-p file opened))
                   entries)))
@@ -1960,8 +2155,12 @@ perspective) carry :count/:modified directly."
     (plist-get target :label)))
 
 (defun pilish//target-count (target)
-  "Message count of session TARGET."
-  (pilish//target-meta target :count 0))
+  "Message count of TARGET when its source provides one.
+Local file-backed sessions omit counts to avoid scanning transcripts."
+  (let* ((entry (plist-get target :entry))
+         (file (plist-get entry :file)))
+    (unless (and file (not (file-remote-p file)))
+      (pilish//target-meta target :count nil))))
 
 (defun pilish//target-modified (target)
   "Last-modification time of session TARGET."
@@ -2022,22 +2221,22 @@ directory."
 
 (defun pilish//annotated-session-candidate (cand target)
   "Annotated display string for session candidate CAND with TARGET.
-Separators and action items (nil target, e.g. \"✚ New session\")
-render as-is; sessions get a \"● \"/\"○ \" status glyph plus
-\"  N msgs  AGE\"."
+Separators and action items render as-is; sessions get a status glyph,
+an optional count, and age."
   (if (or (null target) (eq (plist-get target :separator) t))
       cand
-    (format "%s%s  %d msgs  %s"
-            (if (plist-get target :opened) "● " "○ ")
-            cand
-            (pilish//target-count target)
-            (pilish//age-string
-             (pilish//target-modified target)))))
+    (let ((count (pilish//target-count target)))
+      (format "%s%s%s  %s"
+              (if (plist-get target :opened) "● " "○ ")
+              cand
+              (if (numberp count) (format "  %d msgs" count) "")
+              (pilish//age-string
+               (pilish//target-modified target))))))
 
 (defun pilish//helm-session-candidates (alist)
   "Return (DISPLAY . REAL) cons candidates for helm from session ALIST.
-DISPLAY annotates the candidate with status glyph, message count, and
-age; REAL is the clean candidate string used for dispatch, so helm
+DISPLAY annotates the candidate with a status glyph, optional message
+count, and age; REAL is the clean candidate string used for dispatch, so helm
 matching (on DISPLAY) and the caller's `assoc' lookups stay
 consistent."
   (mapcar (lambda (cand)
@@ -2048,10 +2247,8 @@ consistent."
 
 (defun pilish//session-target-affixation (alist)
   "Return an affixation function for session candidate ALIST.
-Candidates are annotated with a status glyph (● live / ○ closed)
-plus message count and age; section-header rows (:separator targets)
-and action items (nil target, e.g. \"✚ New session\") get no
-annotation."
+Candidates get a status glyph and age, plus a count when available.
+Section headers and action items receive no annotation."
   (lambda (cands)
     (mapcar
      (lambda (cand)
@@ -2060,10 +2257,13 @@ annotation."
                            ((eq (plist-get target :separator) t) "")
                            ((plist-get target :opened) "● ")
                            (t "○ ")))
+              (count (and target (pilish//target-count target)))
               (suffix (if (and target
                                (not (eq (plist-get target :separator) t)))
-                          (format "  %d msgs  %s"
-                                  (pilish//target-count target)
+                          (format "%s  %s"
+                                  (if (numberp count)
+                                      (format "%d msgs" count)
+                                    "")
                                   (pilish//age-string
                                    (pilish//target-modified target)))
                         "")))
@@ -2072,8 +2272,8 @@ annotation."
 
 (defun pilish//session-collection (alist)
   "Return a completing-read collection over candidate ALIST.
-Provides affixation metadata (status glyph, count, age) and keeps the
-pre-sorted candidate order."
+Provides affixation metadata (status glyph, optional count, age) and
+keeps the pre-sorted candidate order."
   (let ((cands (mapcar #'car alist)))
     (lambda (string pred action)
       (cond
@@ -2093,7 +2293,7 @@ pre-sorted candidate order."
 SECTIONS is an ordered list of (NAME . ALIST): each non-empty
 candidate ALIST renders as a non-selectable section-header row
 (`pilish//session-header') followed by its candidates,
-annotated with status glyph, message count, and age and keeping
+annotated with a status glyph, optional count, and age while keeping
 their pre-sorted order.  Sections therefore appear in the minibuffer
 in SECTIONS' order with a visible boundary between them.  EXTRA (an
 alist, e.g. the \"✚ New session\" action) is appended after the last
@@ -2163,9 +2363,8 @@ becomes a helm source named NAME — \"Live sessions\", a remote host
 name, \"Closed sessions\", ... — real section headers in helm's
 buffer, shown in SECTIONS' order.  EXTRA is a list of
 (SOURCE-NAME . ALIST) sections appended after them (e.g. the
-\"✚ New session\" action).  Candidates are annotated with status
-glyph, message count, and age; the returned string is the clean
-candidate (no annotation).  When MUST-MATCH is nil the typed input is
+\"✚ New session\" action).  Candidates are annotated with a status glyph, optional count, and age;
+the returned string is the clean candidate (no annotation).  When MUST-MATCH is nil the typed input is
 a valid result: it is preferred over a merely similar candidate and a
 source offers it as a new session name (see
 `pilish//helm-session-unknown-source').  DEFAULT-LABEL, when non-nil,
@@ -2283,14 +2482,15 @@ unnamed buffer is used as before."
                         (list :name (plist-get meta :session-name)
                               :first-message (plist-get meta :first-message))))))))))
 
-(defun pilish//revive-session (chat file &optional launch)
+(defun pilish//revive-session (chat file &optional launch cwd)
   "Ensure a live pi process for the session of FILE and resume FILE.
 CHAT is an existing chat buffer to reuse; its launch name is used when
-LAUNCH is nil.  An unnamed revive whose directory already runs a live
-unnamed session of a different file is opened under a generated name
-instead, so it never hijacks that live session's buffers/process.
-Returns the chat buffer."
-  (let* ((dir (pilish--session-file-cwd-or-error file))
+LAUNCH is nil.  CWD, when supplied, is the directory already known by
+the picker or perspective state.  An unnamed revive whose directory
+already runs a live unnamed session of a different file is opened under
+a generated name instead, so it never hijacks that live session's
+buffers/process.  Returns the chat buffer."
+  (let* ((dir (or cwd (pilish//session-file-cwd-for-open file)))
          (launch (or launch (and chat (pilish--chat-session-name chat))
                      (pilish//revive-collision-name dir file))))
     (condition-case err
@@ -2325,7 +2525,7 @@ canonical unnamed one."
            (and (stringp launch) (not (string-empty-p launch)) launch))))
      specs)))
 
-(defun pilish//switch-to-session (persp-name file)
+(defun pilish//switch-to-session (persp-name file &optional cwd)
   "Switch to opened session PERSP-NAME, reviving a dead pi process.
 
 A live process is not proof that FILE is loaded: the chat buffer and its
@@ -2352,7 +2552,7 @@ re-resume a different session into the wrong process."
                                file))
                       (pilish//chat-buffers-in-persp persp))
                      (pilish//chat-buffer-in-persp persp)))
-           (file-dir (pilish//session-file-cwd file))
+           (file-dir (pilish//session-file-cwd-for-open file cwd))
            (chat-dir (and chat
                           (with-current-buffer chat
                             (pilish--chat-session-directory))))
@@ -2380,7 +2580,8 @@ re-resume a different session into the wrong process."
                          ;; identity.
                          (and (or (null chat) wrong-buffer)
                               (pilish//registry-launch-name
-                               persp-name file)))))
+                               persp-name file))
+                         file-dir)))
           (when (and new-chat (not (eq new-chat chat)))
             ;; The perspective was displaying another directory's session
             ;; buffer (drifted in through the layout fallback): pin the
@@ -2428,7 +2629,7 @@ Only real perspectives count; the default perspective has no session."
               (plist-get (buffer-local-value 'pilish--state chat)
                          :session-file)))))))
 
-(defun pilish//open-session-launch-name (entry)
+(defun pilish//open-session-launch-name (entry &optional cwd)
   "Return the launch name to open closed session ENTRY, or nil.
 
 Named sessions reopen under their recorded :name (the session file's
@@ -2446,7 +2647,9 @@ directory's live unnamed chat buffer and process."
            (not (string-empty-p file))
            (condition-case nil
                (pilish--find-session
-                (pilish--session-file-cwd-or-error file))
+                (or cwd
+                    (pilish//session-file-cwd-for-open
+                     file (plist-get entry :cwd))))
              (error nil)))
       (pilish//derived-session-name entry))
      (t nil))))
@@ -2465,16 +2668,16 @@ the uuid keeps same-titled sessions of one directory distinct."
         (format "%s · %s" title uuid)
       (or title uuid (format-time-string "%H:%M:%S")))))
 
-(defun pilish//open-session-file-with-name (file launch)
+(defun pilish//open-session-file-with-name (file launch &optional cwd)
   "Open session FILE with launch name LAUNCH as a live session.
 
 Mirrors the package's `pilish-open-session-file' — setup,
 show buffers, resume — but passes LAUNCH (the session's recorded name
 or a generated disambiguator) to `pilish--setup-session' so
 the reopened session gets its own chat/input buffers and pi process
-instead of reusing the directory's canonical unnamed ones.  Returns
-the chat buffer."
-  (let* ((dir (pilish--session-file-cwd-or-error file))
+instead of reusing the directory's canonical unnamed ones.  CWD is
+passed from the picker metadata when available.  Returns the chat buffer."
+  (let* ((dir (or cwd (pilish//session-file-cwd-for-open file)))
          (chat (pilish--setup-session dir launch))
          (input (buffer-local-value 'pilish--input-buffer chat))
          (proc (buffer-local-value 'pilish--process chat)))
@@ -2492,8 +2695,10 @@ unnamed ones open as the directory's canonical session unless that
 would collide with a live unnamed session of the same directory, in
 which case the session is opened under a generated unique name."
   (let* ((file (plist-get entry :file))
+         (cwd (pilish//session-file-cwd-for-open
+               file (plist-get entry :cwd)))
          (title (pilish//entry-title entry))
-         (label (pilish//make-persp-label title file))
+         (label (pilish//make-persp-label title file cwd))
          (persp-name (pilish//unique-persp-name label file)))
     (persp-switch persp-name)
     (pilish//registry-put persp-name
@@ -2502,8 +2707,8 @@ which case the session is opened under a generated unique name."
                                    :buffers nil)
     (pilish//registry-save)
     (condition-case err
-        (let* ((launch (pilish//open-session-launch-name entry))
-               (chat (pilish//open-session-file-with-name file launch))
+        (let* ((launch (pilish//open-session-launch-name entry cwd))
+               (chat (pilish//open-session-file-with-name file launch cwd))
                (input (and chat (buffer-local-value
                                  'pilish--input-buffer chat))))
           (pilish//restore-registry-buffers
@@ -2562,7 +2767,7 @@ connection wait."
                          (car (rassoc file (pilish//live-session-mappings))))))
     (pilish//ensure-remote-reachable file)
     (if persp-name
-        (pilish//switch-to-session persp-name file)
+        (pilish//switch-to-session persp-name file (plist-get entry :cwd))
       (pilish//open-session entry))))
 
 (defun pilish//adopt-live-buffer (buf file)
@@ -2573,7 +2778,8 @@ has settled.  The existing chat/input buffers and their pi process are
 kept — no second process is spawned — and are registered into a new
 perspective with the pi window layout applied.  Returns BUF."
   (let* ((title (pilish//entry-title (list :file file)))
-         (label (pilish//make-persp-label title file))
+         (cwd (with-current-buffer buf (pilish--chat-session-directory)))
+         (label (pilish//make-persp-label title file cwd))
          (persp-name (pilish//unique-persp-name label file))
          (input (buffer-local-value 'pilish--input-buffer buf)))
     (persp-switch persp-name)
@@ -2658,29 +2864,31 @@ once it answers."
   (require 'pilish)
   (unless (bound-and-true-p persp-mode)
     (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
-  (pilish//sync-labels)
-  (let* ((remote-prefixes (pilish//known-remote-prefixes))
-         (remote-scope (or remote-prefixes 'local))
-         (groups (pilish//session-targets nil t t nil remote-scope))
-         (live (pilish//sort-targets
-                (car groups) pilish/session-sort-opened))
-         (closed (pilish//sort-targets
-                  (cdr groups) pilish/session-sort-closed))
-         (sections (pilish//switch-session-sections live closed)))
-    (if (null sections)
-        (user-error "No other pi sessions found (looked in %s%s)"
-                    (expand-file-name pilish/session-root)
-                    (if remote-prefixes
-                        (format "; remote hosts %s are not connected or session-less (a background probe is running)"
-                                (mapconcat (lambda (prefix)
-                                             (file-remote-p prefix 'host))
-                                           remote-prefixes ", "))
-                      ""))
-      (let ((choice (pilish//pick-session-sections
-                     sections "Pi session: " nil t)))
-        (when choice
-          (pilish//open-or-switch-target
-           (cdr (assoc choice (apply #'append (mapcar #'cdr sections))))))))))
+  (pilish//with-local-scan-prefetch
+   (lambda ()
+     (let* ((remote-prefixes (pilish//known-remote-prefixes))
+            (remote-scope (or remote-prefixes 'local))
+            (groups (pilish//session-targets nil t t nil remote-scope))
+            (live (pilish//sort-targets
+                   (car groups) pilish/session-sort-opened))
+            (closed (pilish//sort-targets
+                     (cdr groups) pilish/session-sort-closed))
+            (sections (pilish//switch-session-sections live closed)))
+       (if (null sections)
+           (user-error "No other pi sessions found (looked in %s%s)"
+                       (expand-file-name pilish/session-root)
+                       (if remote-prefixes
+                           (format "; remote hosts %s are not connected or session-less (a background probe is running)"
+                                   (mapconcat (lambda (prefix)
+                                                (file-remote-p prefix 'host))
+                                              remote-prefixes ", "))
+                         ""))
+         (let ((choice (pilish//pick-session-sections
+                        sections "Pi session: " nil t)))
+           (when choice
+             (pilish//open-or-switch-target
+              (cdr (assoc choice
+                          (apply #'append (mapcar #'cdr sections))))))))))))
 
 (defun pilish/switch-session-in-dir ()
   "Switch to another pi session of the current directory, with its layout.
@@ -3451,6 +3659,279 @@ own launcher supplies the configured Node runtime."
         (delete-directory tmpdir t)))
     payload))
 
+(defun pilish//local-pi-start-async (files)
+  "Start Pi's metadata scan for FILES and return its temporary job.
+The result is written to a temporary file so stdout remains small.
+Returns nil if the configured launcher cannot be started."
+  (let* ((configured (and (boundp 'pilish-executable)
+                          (default-value 'pilish-executable)))
+         (command (cond ((stringp configured) (list configured))
+                        ((listp configured) configured)))
+         (program (car-safe command))
+         (original-directory default-directory)
+         (local-directory (if (file-remote-p original-directory)
+                              temporary-file-directory
+                            original-directory))
+         (local-program
+          (if (and (stringp program)
+                   (not (file-name-absolute-p program))
+                   (file-name-directory program)
+                   (not (file-remote-p original-directory)))
+              (expand-file-name program original-directory)
+            program))
+         (tmpdir nil)
+         (preload nil)
+         (manifest nil)
+         (result-file nil)
+         (buffer nil)
+         process
+         start-error
+         job
+         handed-off)
+    (unwind-protect
+        (progn
+          (condition-case err
+              (when (and (stringp local-program)
+                         (not (string-empty-p local-program)))
+                (setq tmpdir
+                      (make-temp-file
+                       (expand-file-name "pilish-pi." temporary-file-directory) t)
+                      preload (expand-file-name "preload.mjs" tmpdir)
+                      manifest (expand-file-name "files.json" tmpdir)
+                      result-file (expand-file-name "result.json" tmpdir)
+                      buffer (generate-new-buffer
+                              " *pilish-local-session-scan*"))
+                (with-temp-file preload
+                  (insert pilish//pi-preload-source))
+                (let ((coding-system-for-write 'utf-8-unix))
+                  (with-temp-file manifest
+                    (insert (json-encode files))))
+                (let ((process-environment (copy-sequence process-environment))
+                      (default-directory local-directory))
+                  (setenv "PILISH_PI_PRELOAD_ACTIVE" nil)
+                  (setenv "PILISH_PI_MODE" "metadata-sessions")
+                  (setenv "PILISH_PI_SESSION_DIR_B64" nil)
+                  (setenv "PILISH_PI_METADATA_SCANNER"
+                          pilish//metadata-scanner-file)
+                  (setenv "PILISH_PI_SCAN_MANIFEST" manifest)
+                  (setenv "PILISH_PI_RESULT_FILE" result-file)
+                  (let ((node-options (getenv "NODE_OPTIONS")))
+                    (setenv "NODE_OPTIONS"
+                            (concat "--import=" preload
+                                    (if (and node-options
+                                             (not (string-empty-p node-options)))
+                                        (concat " " node-options)
+                                      ""))))
+                  (setq process
+                        (make-process
+                         :name (buffer-name buffer)
+                         :buffer buffer
+                         :stderr buffer
+                         :command (append (cons local-program (cdr command))
+                                         '("--version"))
+                         :connection-type 'pipe
+                         :coding 'utf-8-unix
+                         :noquery t
+                         :file-handler t
+                         :sentinel #'ignore)))
+                (setq job (list :process process :buffer buffer
+                                :tmpdir tmpdir :result-file result-file)))
+            (error
+             (setq start-error (error-message-string err))))
+          (unless job
+            (message "pi: local metadata-only scan unavailable%s; falling back to JSONL scan"
+                     (if start-error (concat ": " start-error) "")))
+          (when job
+            (setq handed-off t))
+          job)
+      (unless handed-off
+        (when (and process (process-live-p process))
+          (delete-process process))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        (when (and tmpdir (file-directory-p tmpdir))
+          (delete-directory tmpdir t))))))
+
+(defun pilish//local-pi-job-cleanup (job)
+  "Stop JOB if needed and release its buffer and temporary files."
+  (when job
+    (let ((process (plist-get job :process))
+          (buffer (plist-get job :buffer))
+          (tmpdir (plist-get job :tmpdir)))
+      (when (and process (process-live-p process))
+        (delete-process process))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer))
+      (when (and tmpdir (file-directory-p tmpdir))
+        (delete-directory tmpdir t))
+      (setf (plist-get job :process) nil
+            (plist-get job :buffer) nil
+            (plist-get job :tmpdir) nil))))
+
+(defun pilish//local-pi-await (job)
+  "Wait for local Pi JOB and parse its result file, or return nil."
+  (let ((process (plist-get job :process))
+        (result-file (plist-get job :result-file))
+        payload)
+    (unwind-protect
+        (condition-case err
+            (progn
+              (while (process-live-p process)
+                (accept-process-output process 0.05))
+              (let ((status (and (eq (process-status process) 'exit)
+                                 (process-exit-status process))))
+                (when (and (numberp status) (zerop status)
+                           (file-readable-p result-file))
+                  (condition-case parse-error
+                      (setq payload
+                            (json-parse-string
+                             (with-temp-buffer
+                               (insert-file-contents result-file)
+                               (buffer-string))
+                             :object-type 'hash-table
+                             :array-type 'list
+                             :null-object nil
+                             :false-object nil))
+                    (error
+                     (message "pi: invalid local metadata scan response: %s"
+                              (error-message-string parse-error)))))
+                (unless payload
+                  (message "pi: local metadata-only scan unavailable%s; falling back to JSONL scan"
+                           (if (numberp status)
+                               (format " (pi exited %s)" status)
+                             "")))))
+          (error
+           (message "pi: local metadata-only scan failed; falling back to JSONL scan: %s"
+                    (error-message-string err))))
+      (pilish//local-pi-job-cleanup job))
+    payload))
+
+(defun pilish//local-scan-cache-records (files signatures records)
+  "Cache stable scanner RECORDS for FILES using their initial SIGNATURES."
+  (let ((by-path (make-hash-table :test 'equal)))
+    (dolist (record records)
+      (when (and (hash-table-p record) (gethash "path" record))
+        (puthash (gethash "path" record) record by-path)))
+    (dolist (file files)
+      (let* ((old-signature (gethash file signatures))
+             (record (gethash file by-path))
+             (attrs (condition-case nil (file-attributes file) (error nil)))
+             (mtime (and attrs (file-attribute-modification-time attrs)))
+             (size (and attrs (file-attribute-size attrs))))
+        (if (and record (eq (gethash "stable" record) t)
+                 attrs
+                 (equal (car old-signature) mtime)
+                 (equal (cdr old-signature) size))
+            (let ((meta
+                   (when (eq (gethash "valid" record) t)
+                     (list :first-message (gethash "firstMessage" record)
+                           :session-name (gethash "name" record)
+                           :cwd (gethash "cwd" record)
+                           :modified-time mtime))))
+              (puthash file (list :mtime mtime :size size :metadata meta)
+                       pilish//session-cache))
+          ;; Do not cache a torn snapshot; a later listing can retry it.
+          (remhash file pilish//session-cache))))
+    t))
+
+(defun pilish//local-registry-session-files ()
+  "Return readable local session files registered outside discovery."
+  (cl-loop for entry in pilish//registry
+           for raw = (pilish//plain-string
+                      (plist-get (cdr entry) :session-file))
+           for file = (and (stringp raw) (not (string-empty-p raw))
+                           (not (file-remote-p raw))
+                           (expand-file-name raw))
+           when (and file (file-regular-p file))
+           collect file))
+
+(defun pilish//local-scan-prefetch-start (root)
+  "Discover ROOT and registered local files; start scanning cache misses.
+Registry paths outside ROOT are included for label metadata but stay out of
+the picker's discovered-session list.  Return mutable state used to merge the
+results before label sync; the ROOT discovery snapshot is reused by listing."
+  (when (and (stringp root) (not (file-remote-p root)))
+    (let* ((root (expand-file-name root))
+           (files (condition-case err
+                      (and (file-directory-p root)
+                           (directory-files-recursively root "\\.jsonl$"))
+                    (error
+                     (message "pi: cannot discover local session files under %s: %s"
+                              root (error-message-string err))
+                     :unavailable)))
+           (scan-files (and (listp files)
+                            (delete-dups
+                             (append files
+                                     (pilish//local-registry-session-files)))))
+           (signatures (make-hash-table :test 'equal))
+           (misses nil))
+      (unless (eq files :unavailable)
+        (dolist (file scan-files)
+          (let* ((attrs (condition-case nil (file-attributes file) (error nil)))
+                 (mtime (and attrs (file-attribute-modification-time attrs)))
+                 (size (and attrs (file-attribute-size attrs)))
+                 (cached (gethash file pilish//session-cache)))
+            (when attrs
+              (puthash file (cons mtime size) signatures)
+              (unless (and (eq (car-safe cached) :mtime)
+                           (equal (plist-get cached :mtime) mtime)
+                           (equal (plist-get cached :size) size))
+                (push file misses)))))
+        (setq misses (nreverse misses)))
+      (let* ((job (and misses (pilish//local-pi-start-async misses)))
+             (status (cond ((eq files :unavailable) 'failed)
+                           ((null misses) 'complete)
+                           (job 'running)
+                           (t 'failed))))
+        (list :root root :files files :signatures signatures
+              :attempted-files misses :job job :status status)))))
+
+(defun pilish//local-scan-prefetch-finish (state)
+  "Wait for STATE's scan and cache its stable results."
+  (pcase (plist-get state :status)
+    ('complete t)
+    ('running
+     (let* ((job (plist-get state :job))
+            (payload (pilish//local-pi-await job))
+            (records (and payload (gethash "sessions" payload :missing))))
+       (if (or (not payload) (eq records :missing) (not (listp records)))
+           (progn
+             (setf (plist-get state :status) 'failed)
+             nil)
+         (condition-case err
+             (progn
+               (pilish//local-scan-cache-records
+                (plist-get state :attempted-files)
+                (plist-get state :signatures) records)
+               (setf (plist-get state :status) 'complete)
+               t)
+           (error
+            (message "pi: cannot cache local metadata scan: %s"
+                     (error-message-string err))
+            (setf (plist-get state :status) 'failed)
+            nil)))))
+    (_ nil)))
+
+(defun pilish//local-scan-prefetch-cancel (state)
+  "Cancel STATE's outstanding process and release temporary resources."
+  (when state
+    (pilish//local-pi-job-cleanup (plist-get state :job))))
+
+(defun pilish//with-local-scan-prefetch (function)
+  "Merge local metadata before syncing labels and running FUNCTION."
+  (let (state)
+    (unwind-protect
+        (progn
+          (setq state (pilish//local-scan-prefetch-start
+                       (pilish//session-root)))
+          (let ((pilish//local-scan-prefetch-state state))
+            (when state
+              (pilish//local-scan-prefetch-finish state))
+            (pilish//sync-labels)
+            (funcall function)))
+      (when state
+        (pilish//local-scan-prefetch-cancel state)))))
+
 (defun pilish//remote-record-node-path (host pi-path node-path)
   "Persist NODE-PATH reported by PI-PATH on HOST when it changed."
   (when (and (stringp host) (stringp pi-path)
@@ -3498,73 +3979,102 @@ paths; OPENED is the local list of active session files."
   "Return (t . ENTRIES) from cached local JSONL metadata, or nil on failure.
 SESSION-DIR scopes discovery to one project directory; SESSION-ROOT
 selects the root for host-wide discovery.  Emacs retains recursive file
-discovery, passes only cache misses to Pi's Node scanner, and falls back
-to the canonical Elisp scanner if the Pi process cannot run."
+discovery and passes only cache misses to Pi's Node scanner.  During
+`pilish/switch-session', consume the async scan snapshot started before
+label sync; other callers run the batch scan synchronously.  If Pi fails,
+the canonical Elisp scanner remains the fallback."
   (let* ((root (or session-dir session-root (pilish//session-root)))
+         (prefetch
+          (and pilish//local-scan-prefetch-state
+               (stringp root) (not (file-remote-p root))
+               (equal (expand-file-name root)
+                      (plist-get pilish//local-scan-prefetch-state :root))
+               pilish//local-scan-prefetch-state))
+         (prefetch-status (and prefetch (plist-get prefetch :status)))
          (files
-          (if (or (not (stringp root)) (file-remote-p root))
-              :unavailable
-            (condition-case err
-                (and (file-directory-p root)
-                     (directory-files-recursively root "\\.jsonl$"))
-              (error
-               (message "pi: cannot discover local session files under %s: %s"
-                        root (error-message-string err))
-               :unavailable)))))
+          (if prefetch
+              (plist-get prefetch :files)
+            (if (or (not (stringp root)) (file-remote-p root))
+                :unavailable
+              (condition-case err
+                  (and (file-directory-p root)
+                       (directory-files-recursively root "\\.jsonl$"))
+                (error
+                 (message "pi: cannot discover local session files under %s: %s"
+                          root (error-message-string err))
+                 :unavailable))))))
     (when (not (eq files :unavailable))
-      (let ((signatures (make-hash-table :test 'equal))
+      (let ((signatures (or (and prefetch (plist-get prefetch :signatures))
+                            (make-hash-table :test 'equal)))
             (misses nil)
             (opened (pilish//opened-session-files))
             failed)
-        (dolist (file files)
-          (let* ((attrs (condition-case nil (file-attributes file) (error nil)))
-                 (mtime (and attrs (file-attribute-modification-time attrs)))
-                 (size (and attrs (file-attribute-size attrs)))
-                 (cached (gethash file pilish//session-cache)))
-            (when attrs
-              (puthash file (cons mtime size) signatures)
-              (unless (and (eq (car-safe cached) :mtime)
-                           (equal (plist-get cached :mtime) mtime)
-                           (equal (plist-get cached :size) size))
-                (push file misses)))))
-        (setq misses (nreverse misses))
-        (when misses
-          (let* ((payload (pilish//local-pi-run misses))
-                 (records (and payload (gethash "sessions" payload :missing))))
-            (if (or (not payload) (eq records :missing) (not (listp records)))
-                (setq failed t)
-              (let ((by-path (make-hash-table :test 'equal)))
-                (dolist (record records)
-                  (when-let* ((path (gethash "path" record)))
-                    (puthash path record by-path)))
-                (dolist (file misses)
-                  (let* ((old-signature (gethash file signatures))
-                         (record (gethash file by-path))
-                         (attrs (condition-case nil
+        (if prefetch
+            (let ((attempted (plist-get prefetch :attempted-files))
+                  (retained nil))
+              ;; The Node scan has already revalidated attempted files.
+              ;; Refresh the remaining cache-hit signatures after label sync
+              ;; so deleted or changed files do not leak stale picker entries.
+              (dolist (file files)
+                (unless (member file attempted)
+                  (let* ((attrs (condition-case nil
                                     (file-attributes file)
                                   (error nil)))
                          (mtime (and attrs
                                      (file-attribute-modification-time attrs)))
                          (size (and attrs (file-attribute-size attrs))))
-                    (if (and record (eq (gethash "stable" record) t)
-                             attrs
-                             (equal (car old-signature) mtime)
-                             (equal (cdr old-signature) size))
-                        (let ((meta
-                               (when (eq (gethash "valid" record) t)
-                                 (list :first-message
-                                       (gethash "firstMessage" record)
-                                       :message-count
-                                       (gethash "messageCount" record)
-                                       :session-name (gethash "name" record)
-                                       :cwd (gethash "cwd" record)
-                                       :modified-time mtime))))
-                          (puthash file (list :mtime mtime :size size
-                                              :metadata meta)
-                                   pilish//session-cache))
-                      ;; A changed or unreadable file is retried on the next
-                      ;; invocation rather than caching a torn snapshot.
-                      (remhash file pilish//session-cache))))))))
+                    (if attrs
+                        (puthash file (cons mtime size) signatures)
+                      (progn
+                        (remhash file signatures)
+                        (remhash file pilish//session-cache)))))
+                (when (gethash file signatures)
+                  (push file retained)))
+              (setq files (nreverse retained))
+              (setf (plist-get prefetch :files) files))
+          (dolist (file files)
+            (let* ((attrs (condition-case nil
+                              (file-attributes file)
+                            (error nil)))
+                   (mtime (and attrs (file-attribute-modification-time attrs)))
+                   (size (and attrs (file-attribute-size attrs))))
+              (when attrs
+                (puthash file (cons mtime size) signatures)))))
+        (dolist (file files)
+          (let* ((signature (gethash file signatures))
+                 (cached (gethash file pilish//session-cache)))
+            (when (and signature
+                       (not (and (eq (car-safe cached) :mtime)
+                                 (equal (plist-get cached :mtime)
+                                        (car signature))
+                                 (equal (plist-get cached :size)
+                                        (cdr signature)))))
+              (push file misses))))
+        (setq misses (nreverse misses))
+        (when misses
+          (let* ((attempted (and prefetch
+                                 (eq prefetch-status 'complete)
+                                 (plist-get prefetch :attempted-files)))
+                 (misses (if attempted
+                             (cl-remove-if (lambda (file)
+                                             (member file attempted))
+                                           misses)
+                           misses)))
+            (cond
+             ((eq prefetch-status 'failed)
+              ;; The prefetch already tried Pi.  Let the caller take the
+              ;; canonical Elisp fallback instead of launching Pi twice.
+              (setq failed t))
+             ((null misses) nil)
+             (t
+              (let* ((payload (pilish//local-pi-run misses))
+                     (records (and payload
+                                   (gethash "sessions" payload :missing))))
+                (if (or (not payload) (eq records :missing)
+                        (not (listp records)))
+                    (setq failed t)
+                  (pilish//local-scan-cache-records
+                   misses signatures records)))))))
         ;; Evict only disappeared files below this scan root.  A project-
         ;; scoped listing must not invalidate another project's metadata.
         (let ((root-prefix (file-name-as-directory (expand-file-name root))))
@@ -3595,7 +4105,6 @@ to the canonical Elisp scanner if the Pi process cannot run."
                                    :first-message
                                    (plist-get meta :first-message)
                                    :name (plist-get meta :session-name)
-                                   :count (plist-get meta :message-count)
                                    :modified (plist-get meta :modified-time)
                                    :opened
                                    (pilish//file-in-opened-p file opened)))))
@@ -5424,7 +5933,9 @@ their normal prompting."
                   (file (nth 4 spec)))
              (when (and (stringp dir) (file-directory-p dir)
                         (stringp file) (file-exists-p file))
-               (pilish//revive-session nil file launch))))
+               (pilish//revive-session
+                nil file launch
+                (pilish//session-file-cwd-for-open file dir)))))
           ('def-buffer-pi-input
            (let* ((name (nth 1 spec))
                   (dir (nth 2 spec))

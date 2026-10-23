@@ -43,7 +43,7 @@ One list model shared by every session picker (=switch-session=,
    "Closed sessions" — real section headers); otherwise
    completing-read with non-selectable header rows
    (=────── Live sessions ──────=) between the groups, affixation
-   (status glyph ●/○, message count, age), pre-sorted order (live
+   (status glyph ●/○, optional count when available, age), pre-sorted order (live
    first) preserved via display-sort-function identity.  Selecting a
    header row re-prompts.  This works under helm-mode, ivy, vertico
    and the plain minibuffer.
@@ -968,8 +968,9 @@ session or starting Pi remotely.
 * D24. Scan local picker metadata with Pi's Node runtime
 
 The local =SPC a i i= and =SPC a i I= lists need session headers,
-latest =session_info= names, message counts, first-message previews,
-and file mtimes — not complete conversations.  =SessionManager.listAll=
+first =session_info= names, first-message previews, and file mtimes —
+not message counts or complete conversations.  Later session renames
+may not appear in the picker.  =SessionManager.listAll=
 imports the full SDK and builds =allMessagesText=, which dominated the
 measured cold-listing time; its stdout response was also observed to be
 truncated.  Keep recursive file discovery and the mtime/size cache in
@@ -977,9 +978,12 @@ Emacs, then pass only uncached paths as a temporary manifest to a
 standalone metadata scanner imported by a one-shot preload through Pi's
 own launcher.  This preserves =PI_AGENT_DIR= and the launcher's managed
 Node runtime without importing the SDK or duplicating session-root
-configuration.  Scanner output goes to a temporary file rather than
-stdout, avoiding output-size limits.  Repeated listings with unchanged
-files do not launch Pi; changed files are scanned as one batch.
+configuration.  The scanner targets a 16 KiB metadata prefix per file
+and stops sooner when its fields are found (a single long line may cross
+the budget); it does not count messages.  Scanner output goes to a
+temporary file rather than stdout,
+avoiding output-size limits.  Repeated listings with unchanged files do
+not launch Pi; changed files are scanned as one batch.
 
 If the Node process or scanner fails, the existing canonical Elisp
 scanner remains the fallback.  Remote listings are unchanged: they use
@@ -987,3 +991,27 @@ remote Pi's SDK only, as D23 requires.  Rejected: scanning only direct
 children (which loses recursive layer discovery), sending all files on
 every keypress (which wastes repeated work), and reusing the local
 scanner over TRAMP (which could block on unavailable hosts).
+
+* D25. Reuse local scan results during switcher label sync
+
+=SPC a i i= starts its cache-miss Node scan before
+=pilish//sync-labels= and waits for the result. It merges only rows whose
+file signatures remained stable, then refreshes registered perspective
+labels and builds picker candidates from the same metadata cache. This
+avoids repeated Elisp JSONL scans for titles and cwd while preserving
+current labels and the mtime/size cache contract. If startup or scanning
+fails, unresolved local metadata uses the canonical Elisp fallback
+without retrying the failed Pi batch; an unwinding switch command cancels
+the child and removes its temporary files. Other local pickers retain the
+synchronous batch path, and remote listing remains governed by D23.
+Remote opens reuse the SDK entry's host-anchored cwd; if it is missing,
+the open fails closed rather than scanning JSONL through TRAMP.
+
+The prefetch manifest also includes registered local session files
+outside the discovery root, so label refresh can reuse their metadata
+without adding them to picker discovery. Cwd suffix formatting validates
+the cached cwd instead of reopening JSONL. A file changed during sync or
+unavailable to the Node scan still takes the canonical Elisp fallback.
+Rejected: building candidates before label refresh completes, which can
+expose stale perspective labels, and starting a second Pi scan after an
+async failure before taking the existing Elisp fallback.

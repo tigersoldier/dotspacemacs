@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 
 const MESSAGE_LINE = /^[ \t]*\{[ \t]*"type"[ \t]*:[ \t]*"message"/;
 const SESSION_INFO_LINE = /^[ \t]*\{[ \t]*"type"[ \t]*:[ \t]*"session_info"/;
+const MAX_METADATA_PREFIX_BYTES = 16 * 1024;
 
 function parseObject(line) {
   try {
@@ -40,32 +41,38 @@ async function scanFile(file) {
 
   let header = null;
   let name = null;
+  let nameFound = false;
   let firstMessage = null;
   let fallbackMessage = null;
-  let messageCount = 0;
   let previewAttempts = 0;
   let firstLine = true;
+  let scannedBytes = 0;
 
   try {
-    const input = createReadStream(file, { encoding: "utf8" });
+    const input = createReadStream(file, {
+      encoding: "utf8",
+      highWaterMark: MAX_METADATA_PREFIX_BYTES,
+    });
     const lines = createInterface({ input, crlfDelay: Infinity });
     for await (let line of lines) {
       if (firstLine) {
         line = line.replace(/^\uFEFF/, "");
         firstLine = false;
       }
-      if (!header) {
-        if (/^[ \t\r]*$/.test(line)) continue;
-        const candidate = parseObject(line);
-        if (candidate?.type === "session") {
-          header = candidate;
-          continue;
-        }
-        break;
-      }
+      scannedBytes += Buffer.byteLength(line, "utf8") + 1;
 
-      if (MESSAGE_LINE.test(line)) {
-        messageCount++;
+      if (!header) {
+        if (!/^[ \t\r]*$/.test(line)) {
+          const candidate = parseObject(line);
+          if (candidate?.type === "session") {
+            header = candidate;
+          } else {
+            lines.close();
+            input.destroy();
+            break;
+          }
+        }
+      } else if (MESSAGE_LINE.test(line)) {
         const preview = firstMessage === null && previewAttempts < 5;
         if (preview) previewAttempts++; // Malformed messages consume an attempt.
         if (preview) {
@@ -80,12 +87,21 @@ async function scanFile(file) {
             }
           }
         }
-      } else if (SESSION_INFO_LINE.test(line)) {
+      } else if (!nameFound && SESSION_INFO_LINE.test(line)) {
         const entry = parseObject(line);
         if (entry) {
           const raw = typeof entry.name === "string" ? entry.name.trim() : "";
           name = raw || null;
+          nameFound = true;
         }
+      }
+
+      const previewComplete = firstMessage !== null || previewAttempts >= 5;
+      if (scannedBytes >= MAX_METADATA_PREFIX_BYTES
+          || (header !== null && nameFound && previewComplete)) {
+        lines.close();
+        input.destroy();
+        break;
       }
     }
   } catch {
@@ -112,16 +128,15 @@ async function scanFile(file) {
       : null,
     name,
     firstMessage: first,
-    messageCount,
   };
 }
 
 /**
- * Scan the manifest-listed JSONL files for picker metadata only.
- * Files are streamed one line at a time; only the header, session_info
- * entries, and at most five message lines are parsed as complete JSON.
- * A returned row with stable=false must not be cached because the file
- * changed or disappeared during the scan.
+ * Scan a bounded prefix of manifest-listed JSONL files for picker metadata.
+ * The first session_info name wins; message counts are not extracted.
+ * Files stop once the header, name, and preview are found, or after the
+ * 16 KiB prefix budget (one long line may cross it). A row with stable=false
+ * must not be cached because the file changed or disappeared during the scan.
  */
 export async function scanSessionFiles(files, { concurrency = 8 } = {}) {
   if (!Array.isArray(files) || files.some((file) => typeof file !== "string")) {

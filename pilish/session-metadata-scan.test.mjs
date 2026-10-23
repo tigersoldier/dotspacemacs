@@ -42,9 +42,9 @@ test("streams BOM/CRLF JSONL and preserves picker metadata semantics", async (t)
   assert.equal(row.valid, true);
   assert.equal(row.stable, true);
   assert.equal(row.cwd, "/tmp/雪");
-  assert.equal(row.name, null, "a later blank session_info clears the name");
+  assert.equal(row.name, "old name", "the first session_info name wins");
   assert.equal(row.firstMessage, "first\nuser 雪");
-  assert.equal(row.messageCount, 4, "type-first malformed messages still count");
+  assert.equal("messageCount" in row, false);
 });
 
 test("uses the first parsed non-user message as fallback within the five-line budget", async (t) => {
@@ -73,7 +73,27 @@ test("uses the first parsed non-user message as fallback within the five-line bu
 
   const [row] = await scanSessionFiles([file]);
   assert.equal(row.firstMessage, "message 1 continued");
-  assert.equal(row.messageCount, 6);
+  assert.equal("messageCount" in row, false);
+});
+
+test("stops at the metadata prefix limit when the name is absent", async (t) => {
+  const root = await fixture(t);
+  const file = join(root, "late-name.jsonl");
+  await writeFile(
+    file,
+    [
+      JSON.stringify({ type: "session", cwd: "/tmp" }),
+      JSON.stringify({ type: "message", message: { role: "user", content: "title" } }),
+      JSON.stringify({ type: "custom", data: "x".repeat(20 * 1024) }),
+      JSON.stringify({ type: "session_info", name: "too late" }),
+    ].join("\n"),
+    "utf8",
+  );
+
+  const [row] = await scanSessionFiles([file]);
+  assert.equal(row.firstMessage, "title");
+  assert.equal(row.name, null);
+  assert.equal("messageCount" in row, false);
 });
 
 test("rejects files without a session header and validates the manifest", async (t) => {
@@ -83,8 +103,8 @@ test("rejects files without a session header and validates the manifest", async 
 
   const [row] = await scanSessionFiles([invalid]);
   assert.deepEqual(
-    { valid: row.valid, stable: row.stable, messageCount: row.messageCount },
-    { valid: false, stable: true, messageCount: 0 },
+    { valid: row.valid, stable: row.stable },
+    { valid: false, stable: true },
   );
 
   const emptyCwd = join(root, "empty-cwd.jsonl");
@@ -103,6 +123,6 @@ test("rejects files without a session header and validates the manifest", async 
     "utf8",
   );
   const [renamedRow] = await scanSessionFiles([renamed]);
-  assert.equal(renamedRow.name, "latest name");
+  assert.equal(renamedRow.name, "old", "later session_info updates are ignored");
   await assert.rejects(scanSessionFiles([42]), TypeError);
 });
