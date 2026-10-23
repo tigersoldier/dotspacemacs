@@ -652,5 +652,97 @@
     (should-not (string-match-p "msgs" display))
     (should-not (string-match-p "msgs" suffix))))
 
+(defun pilish-test--remote-scan (root &optional big)
+  "Run `pilish//remote-pi-run' as `sessions' against a fake host at ROOT.
+The remote shell, the bounded copy and TRAMP itself are stubbed so the
+remote-specific wrapper is exercised locally.  BIG makes the fake pi
+print a large single-line payload."
+  (let ((pi (expand-file-name "pi" root))
+        (payload
+         (when big
+           (with-temp-buffer
+             (insert "{\"sessions\":[")
+             (dotimes (i 400)
+               (unless (zerop i) (insert ","))
+               (insert (format
+                        "{\"path\":\"/r/s%03d.jsonl\",\"firstMessage\":\"%s\"}"
+                        i (make-string 20 ?x))))
+             (insert "],\"runtime\":{\"execPath\":\"/node\"}}")
+             (buffer-string)))))
+    (unwind-protect
+        (progn
+          (with-temp-file pi
+            (insert "#!/bin/sh\n")
+            (if big
+                (insert "cat <<'PILISH_TEST_PAYLOAD'\nPILISH_PI_RESULT:"
+                        payload "\nPILISH_TEST_PAYLOAD\n")
+              (insert "printf 'PILISH_PI_RESULT:%s\\n' '{\"sessions\":"
+                      "[{\"path\":\"/r/a.jsonl\"}],\"runtime\":"
+                      "{\"execPath\":\"/node\"}}'\n")))
+          (set-file-modes pi #o755)
+          (let ((removals 0))
+            (cl-letf (((symbol-function 'pilish//remote-shell-run)
+                       (lambda (script)
+                         (when (string-prefix-p "rm -f --" script)
+                           (setq removals (1+ removals)))
+                         (let ((default-directory root)
+                               (shell-file-name "/bin/sh"))
+                           (with-temp-buffer
+                             (let ((status (call-process
+                                            shell-file-name nil
+                                            (list (current-buffer) t) nil
+                                            "-c" script)))
+                               (cons status
+                                     (string-trim (buffer-string))))))))
+                      ((symbol-function 'pilish//remote-session-local-copy)
+                       (lambda (file)
+                         (when (file-exists-p file)
+                           (let ((copy (make-temp-file "pilish-test-copy-")))
+                             (copy-file file copy t)
+                             copy)))))
+              (list (pilish//remote-pi-run "" pi nil "sessions") removals))))
+      (delete-directory root t))))
+
+(ert-deftest pilish-remote-scan-payload-survives-temp-file-round-trip ()
+  "A large remote `sessions' payload is copied back whole, then cleaned up."
+  (let* ((root (make-temp-file "pilish-remote-scan-" t)))
+    (pcase-let ((`(,payload ,removals) (pilish-test--remote-scan root t)))
+      (should (= removals 1))
+      (should (= (length (gethash "sessions" payload)) 400))
+      (should (equal (gethash "execPath" (gethash "runtime" payload))
+                     "/node")))))
+
+(ert-deftest pilish-remote-scan-failure-omits-payload-and-cleans-up ()
+  "A remote scan that exits non-zero yields no entries and removes its file."
+  (let* ((root (make-temp-file "pilish-remote-scan-" t))
+         (pi (expand-file-name "pi" root)))
+    (unwind-protect
+        (progn
+          (with-temp-file pi (insert "#!/bin/sh\necho boom >&2\nexit 3\n"))
+          (set-file-modes pi #o755)
+          (let ((removals 0))
+            (cl-letf (((symbol-function 'pilish//remote-shell-run)
+                       (lambda (script)
+                         (when (string-prefix-p "rm -f --" script)
+                           (setq removals (1+ removals)))
+                         (let ((default-directory root)
+                               (shell-file-name "/bin/sh"))
+                           (with-temp-buffer
+                             (let ((status (call-process
+                                            shell-file-name nil
+                                            (list (current-buffer) t) nil
+                                            "-c" script)))
+                               (cons status
+                                     (string-trim (buffer-string))))))))
+                      ((symbol-function 'pilish//remote-session-local-copy)
+                       (lambda (file)
+                         (when (file-exists-p file)
+                           (let ((copy (make-temp-file "pilish-test-copy-")))
+                             (copy-file file copy t)
+                             copy)))))
+              (should-not (pilish//remote-pi-run "" pi nil "sessions"))
+              (should (= removals 1)))))
+      (delete-directory root t))))
+
 (provide 'pilish-session-metadata-scan-test)
 ;;; session-metadata-scan-test.el ends here

@@ -1029,3 +1029,29 @@ background SSH probe. A local invocation does not enumerate or probe
 hosts from active sessions or =pilish/remote-executables=. Other
 multi-host commands retain their explicit broader scopes. Rejected:
 probing all known hosts from a local session switcher.
+
+* D27. Carry remote session scans out of band
+
+The remote =sessions' query asks the remote Pi SDK for every closed
+session on the host and returns it as one JSON line: 810945 bytes for
+971 sessions on dev-server.  That is past the inline-transfer boundary
+D19 established for TRAMP reads, and D24 fixed only the local capture
+path by moving scanner output to a temporary file — remote queries still
+came back through =process-file''s connection-buffer capture.  Keep
+D23's rule (remote discovery is the SDK query, never a TRAMP JSONL
+walk), but wrap that query so it runs the generated preload script
+inside a remote shell and writes the scan output to a remote temporary
+file; the layer then copies that file back with the same bounded =scp=
+used for large session reads and parses it locally.  Both the remote and
+local temporary files are removed on every path.
+
+The wrapper is applied in =pilish//remote-pi-run= only, leaving
+=pilish//remote-pi-run-script= byte-identical to the local scan's script
+so both modes keep sharing one preload; =probe= payloads are tiny and
+stay inline.  Failure fails open: a lost copy or a non-zero remote scan
+yields no closed entries for that host (as D23 requires) plus one
+diagnostic message, never a retry through TRAMP.  Rejected: escalating
+only after a truncated parse, which cannot distinguish truncation from
+an empty list; and setting =PILISH_PI_RESULT_FILE= in the shared script,
+which would require the scan's own =trap= to keep the temporary
+directory alive and would fork the two modes' cleanup rules.

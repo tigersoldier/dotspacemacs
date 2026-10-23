@@ -3538,6 +3538,44 @@ use the installed public SDK.  Neither path serializes `allMessagesText'.")
      (format "%s --version\n" (tramp-shell-quote-argument pi-path))
      "status=$?\nrm -rf \"$tmpdir\"\ntrap - 0 HUP INT TERM\nexit \"$status\"\n")))
 
+(defun pilish//remote-scan-output (prefix output)
+  "Return OUTPUT with a large `sessions' payload fetched out of band.
+OUTPUT is `pilish//remote-shell-run''s stdout for the wrapped scan: it
+names a remote temporary file (PILISH_PI_RESULT_FILE) and the scan's
+exit status.  A single-line payload of this size is unreliable through
+TRAMP's inline connection-buffer capture (D19 records the 512 KiB read
+boundary; D27 covers this path), so the file is copied back with a
+bounded `scp' and its content returned for the caller to parse; both
+the remote and the local temporary file are removed.  Falls back to
+OUTPUT unchanged when the wrapper did not run."
+  (let ((file (and (stringp output)
+                   (string-match
+                    "PILISH_PI_RESULT_FILE:\\([^\n\r]+\\)" output)
+                   (match-string 1 output)))
+        (status (and (stringp output)
+                     (string-match
+                      "PILISH_PI_RESULT_STATUS:\\([0-9]+\\)" output)
+                     (string-to-number (match-string 1 output)))))
+    (if (null file)
+        output
+      (let* ((remote (concat prefix file))
+             (copy (pilish//remote-session-local-copy remote))
+             (content (and copy
+                           (with-temp-buffer
+                             (insert-file-contents copy)
+                             (buffer-string)))))
+        (when copy (delete-file copy))
+        (ignore-errors
+          (pilish//remote-shell-run
+           (format "rm -f -- %s" (tramp-shell-quote-argument file))))
+        (when (and content status (/= status 0))
+          (message "pi: remote scan on %s exited with %d: %s"
+                   (or (file-remote-p prefix 'host) prefix)
+                   status
+                   (string-trim
+                    (substring content 0 (min 400 (length content))))))
+        (or content output)))))
+
 (defun pilish//remote-pi-run (prefix pi-path node-path mode &optional session-dir)
   "Run PI-PATH on remote PREFIX with a one-shot Node preload.
 MODE is `probe' (report the exact Node runtime used by pi) or
@@ -3545,17 +3583,43 @@ MODE is `probe' (report the exact Node runtime used by pi) or
 metadata).  SESSION-DIR, when non-nil, limits listAll to that remote
 project folder.  The preload exits before pi's CLI starts; PI-PATH's
 own launcher therefore supplies the same Node and environment as a real
-Pi invocation.  Returns the parsed response hash-table, or nil."
+Pi invocation.  Returns the parsed response hash-table, or nil.
+
+A `sessions' scan returns every closed session on the host as one
+JSON line — hundreds of kilobytes on a busy host — which is unsafe to
+capture inline over TRAMP (see D19 and D27), so that mode writes its
+JSON to a remote temporary file and copies it back out of band;
+`probe' payloads are tiny and stay inline."
   (let* ((default-directory (file-name-as-directory (concat prefix "~")))
          (script (pilish//remote-pi-run-script pi-path node-path mode session-dir))
+         (sessions-p (equal mode "sessions"))
+         (command
+          (if sessions-p
+              (format
+               (concat
+                "script=$(mktemp /tmp/pilish-pi-script.XXXXXX) || exit 1\n"
+                "trap 'rm -f \"$script\"' 0 HUP INT TERM\n"
+                "cat > \"$script\" <<'PILISH_PI_SCRIPT_EOF'\n%s\nPILISH_PI_SCRIPT_EOF\n"
+                "out=$(mktemp /tmp/pilish-pi-result.XXXXXX) || exit 1\n"
+                "trap 'rm -f \"$script\" \"$out\"' 0 HUP INT TERM\n"
+                "sh \"$script\" > \"$out\" 2>&1\n"
+                "status=$?\n"
+                "printf 'PILISH_PI_RESULT_FILE:%%s\\n' \"$out\"\n"
+                "printf 'PILISH_PI_RESULT_STATUS:%%s\\n' \"$status\"\n"
+                "trap - 0 HUP INT TERM\n"
+                "exit 0\n")
+               script)
+            script))
          (result (condition-case err
-                     (pilish//remote-shell-run script)
+                     (pilish//remote-shell-run command)
                    (error
                     (message "pi: remote command on %s failed: %s"
                              (or (file-remote-p prefix 'host) prefix)
                              (error-message-string err))
                     nil)))
-         (output (cdr-safe result))
+         (output (if sessions-p
+                     (pilish//remote-scan-output prefix (cdr-safe result))
+                   (cdr-safe result)))
          (position (and (stringp output)
                         (string-match
                          "PILISH_PI_RESULT:\\([^\n\r]*\\)" output))))
