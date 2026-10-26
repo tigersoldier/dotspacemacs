@@ -395,6 +395,32 @@ To regenerate it after changing `~/.zshrc', run
 `spacemacs/force-init-spacemacs-env' (or delete the file and restart Emacs)."
   (spacemacs/load-spacemacs-env))
 
+(defun my/tty-mouse--ensure-decoders (&rest _)
+  "Make `xterm-mouse-mode''s SGR mouse decoders reachable in a TTY.
+
+`term/xterm.el' (`xterm--push-map') hangs `ESC [' off a *composed parent*
+of `input-decode-map', and `evil-esc-mode' (`evil-intercept-esc' is
+`always' in Spacemacs) substitutes a filtered `menu-item' wrapping a
+snapshot of the `ESC' map.  `xt-mouse' installs its decoders with a
+`define-key' on `input-decode-map' for the `ESC [ <' sequence, and
+`define-key' does not follow keymap parents, so depending on which map won
+the `ESC [' prefix the decoder can land where nothing ever looks; SGR
+reports then arrive as `M-[ < is undefined' and the mouse is dead.  (Emacs
+bug#29150: evil and xterm-mouse-mode modify the `?\e' prefix
+incompatibly.)
+
+Binding `<' and `M' in the map that `ESC [' actually resolves to is the
+part that matters: that is the map consulted at read time, it creates no
+shadowing entry, and because it is the same object evil snapshotted, it
+survives later re-wrapping of `ESC'."
+  (dolist (frame (frame-list))
+    (when (eq (framep frame) t)
+      (with-selected-frame frame
+        (let ((esc-bracket (lookup-key input-decode-map "\e[")))
+          (when (keymapp esc-bracket)
+            (define-key esc-bracket "<" #'xterm-mouse-translate-extended)
+            (define-key esc-bracket "M" #'xterm-mouse-translate)))))))
+
 (defun dotspacemacs/user-config ()
   "Configuration function for user code.
 This function is called at the very end of Spacemacs initialization after
@@ -411,6 +437,25 @@ you should place your code here."
   ;; Emacs 30 also opens .py files in `python-ts-mode'. Run after dir-locals
   ;; so project-specific backend settings are available before starting LSP.
   (add-hook 'python-ts-mode-local-vars-hook #'spacemacs//python-setup-backend)
+  ;; OSC 52 clipboard over mosh/ssh terminals.
+  ;; `term/xterm.el' probes the terminal at startup (DA2 `ESC[>0c', DA1 `ESC[c')
+  ;; and only enables its OSC 52 writer when the reply claims xterm >= 203 or
+  ;; lists capability 52.  mosh answers those probes itself as a plain vt220
+  ;; ("\e[>1;10;0c" / "\e[?62c" in mosh's terminalfunctions.cc), so copying in
+  ;; a terminal frame never reaches the system clipboard.  Opt in explicitly.
+  (when (eq (framep (selected-frame)) t)
+    (set-terminal-parameter nil 'xterm--set-selection t)
+    ;; mosh truncates the OSC 52 payload at 16 KiB, so cap below that to get a
+    ;; loud warning instead of a silently corrupted clipboard.
+    (setq xterm-max-cut-length 12000))
+  ;; Spacemacs enables `xterm-mouse-mode' in `spacemacs-defaults' but its
+  ;; `ESC [ <' SGR decoder can end up in a map nothing consults (see the
+  ;; function above).  Ensure it after evil's ESC wrapping is in place, and
+  ;; again for every new terminal/frame.
+  (my/tty-mouse--ensure-decoders)
+  (add-hook 'terminal-init-xterm-hook #'my/tty-mouse--ensure-decoders)
+  (add-hook 'window-setup-hook #'my/tty-mouse--ensure-decoders)
+  (add-hook 'after-make-frame-functions #'my/tty-mouse--ensure-decoders t)
   ;; Machine-local configuration, managed in the caibin-docs repo.
   (let ((local-config "~/.spacemacs.d/local.el"))
     (when (file-exists-p local-config)
