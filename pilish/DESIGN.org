@@ -983,7 +983,11 @@ own launcher.  This preserves =PI_AGENT_DIR= and the launcher's managed
 Node runtime without importing the SDK or duplicating session-root
 configuration.  The scanner targets a 16 KiB metadata prefix per file
 and stops sooner when its fields are found (a single long line may cross
-the budget); it does not count messages.  Scanner output goes to a
+the budget); it does not count messages.  Leading system-role messages
+are exempt from the preview budget and its five-message attempt limit:
+Pi's harness prompt commonly exceeds 16 KiB, and counting it would hide
+the first user message that follows it.  A 1 MiB absolute scan cap still
+bounds pathological leading messages.  Scanner output goes to a
 temporary file rather than stdout,
 avoiding output-size limits.  Repeated listings with unchanged files do
 not launch Pi; changed files are scanned as one batch.

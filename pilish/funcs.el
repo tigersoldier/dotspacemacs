@@ -712,8 +712,8 @@ Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
 (defvar pilish//session-cache (make-hash-table :test 'equal)
   "Cache of session-file -> (:mtime TIME :size BYTES :metadata PLIST).")
 
-(defconst pilish//session-cache-version 2
-  "Version of cached session-name semantics and metadata shape.")
+(defconst pilish//session-cache-version 3
+  "Version of cached session metadata semantics and shape.")
 (defvar pilish//session-cache-version-seen nil)
 (unless (equal pilish//session-cache-version-seen pilish//session-cache-version)
   (when (hash-table-p pilish//session-cache)

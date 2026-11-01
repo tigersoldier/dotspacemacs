@@ -76,6 +76,31 @@ test("uses the first parsed non-user message as fallback within the five-line bu
   assert.equal("messageCount" in row, false);
 });
 
+test("finds the first user message after an oversized system prompt", async (t) => {
+  const root = await fixture(t);
+  const file = join(root, "system-prompt.jsonl");
+  await writeFile(
+    file,
+    [
+      JSON.stringify({ type: "session", cwd: "/tmp" }),
+      JSON.stringify({ type: "session_info", name: "named session" }),
+      JSON.stringify({
+        type: "message",
+        message: { role: "system", content: "x".repeat(20 * 1024) },
+      }),
+      JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "first user title" },
+      }),
+    ].join("\n"),
+    "utf8",
+  );
+
+  const [row] = await scanSessionFiles([file]);
+  assert.equal(row.name, "named session");
+  assert.equal(row.firstMessage, "first user title");
+});
+
 test("stops at the metadata prefix limit when the name is absent", async (t) => {
   const root = await fixture(t);
   const file = join(root, "late-name.jsonl");

@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 const MESSAGE_LINE = /^[ \t]*\{[ \t]*"type"[ \t]*:[ \t]*"message"/;
 const SESSION_INFO_LINE = /^[ \t]*\{[ \t]*"type"[ \t]*:[ \t]*"session_info"/;
 const MAX_METADATA_PREFIX_BYTES = 16 * 1024;
+const MAX_METADATA_SCAN_BYTES = 1024 * 1024;
 
 function parseObject(line) {
   try {
@@ -47,6 +48,7 @@ async function scanFile(file) {
   let previewAttempts = 0;
   let firstLine = true;
   let scannedBytes = 0;
+  let previewBytes = 0;
 
   try {
     const input = createReadStream(file, {
@@ -59,7 +61,8 @@ async function scanFile(file) {
         line = line.replace(/^\uFEFF/, "");
         firstLine = false;
       }
-      scannedBytes += Buffer.byteLength(line, "utf8") + 1;
+      const lineBytes = Buffer.byteLength(line, "utf8") + 1;
+      scannedBytes += lineBytes;
 
       if (!header) {
         if (!/^[ \t\r]*$/.test(line)) {
@@ -72,33 +75,46 @@ async function scanFile(file) {
             break;
           }
         }
-      } else if (MESSAGE_LINE.test(line)) {
-        const preview = firstMessage === null && previewAttempts < 5;
-        if (preview) previewAttempts++; // Malformed messages consume an attempt.
-        if (preview) {
-          const entry = parseObject(line);
-          if (entry) {
-            const message = entry.message;
-            const text = messageText(message);
-            if (message?.role === "user" && text !== "") {
-              firstMessage = text;
-            } else if (fallbackMessage === null) {
-              fallbackMessage = text;
+      } else {
+        let previewLine = true;
+        if (MESSAGE_LINE.test(line)) {
+          const preview = firstMessage === null && previewAttempts < 5;
+          if (preview) {
+            const entry = parseObject(line);
+            const message = entry?.message;
+            // Pi writes its harness system prompt before the first user
+            // turn, and that single line is commonly larger than the
+            // metadata budget.  It is not a title candidate, so neither
+            // its bytes nor the line consume the preview budget.
+            if (message?.role === "system") {
+              previewLine = false;
+            } else {
+              previewAttempts++; // Malformed messages consume an attempt.
+              const text = messageText(message);
+              if (message?.role === "user" && text !== "") {
+                firstMessage = text;
+              } else if (fallbackMessage === null) {
+                fallbackMessage = text;
+              }
             }
           }
+        } else if (!nameFound && SESSION_INFO_LINE.test(line)) {
+          const entry = parseObject(line);
+          if (entry) {
+            const raw = typeof entry.name === "string" ? entry.name.trim() : "";
+            name = raw || null;
+            nameFound = true;
+          }
         }
-      } else if (!nameFound && SESSION_INFO_LINE.test(line)) {
-        const entry = parseObject(line);
-        if (entry) {
-          const raw = typeof entry.name === "string" ? entry.name.trim() : "";
-          name = raw || null;
-          nameFound = true;
-        }
+        if (previewLine) previewBytes += lineBytes;
       }
 
-      const previewComplete = firstMessage !== null || previewAttempts >= 5;
-      if (scannedBytes >= MAX_METADATA_PREFIX_BYTES
-          || (header !== null && nameFound && previewComplete)) {
+      const nameDone = nameFound || scannedBytes >= MAX_METADATA_PREFIX_BYTES;
+      const previewDone = firstMessage !== null
+        || previewAttempts >= 5
+        || previewBytes >= MAX_METADATA_PREFIX_BYTES;
+      if ((header !== null && nameDone && previewDone)
+          || scannedBytes >= MAX_METADATA_SCAN_BYTES) {
         lines.close();
         input.destroy();
         break;
@@ -135,8 +151,12 @@ async function scanFile(file) {
  * Scan a bounded prefix of manifest-listed JSONL files for picker metadata.
  * The first session_info name wins; message counts are not extracted.
  * Files stop once the header, name, and preview are found, or after the
- * 16 KiB prefix budget (one long line may cross it). A row with stable=false
- * must not be cached because the file changed or disappeared during the scan.
+ * 16 KiB prefix budget (one long line may cross it).  Leading system-role
+ * messages are exempt from the preview budget because Pi's harness prompt
+ * usually exceeds it and must not hide the first user message.  A 1 MiB
+ * absolute cap still bounds files whose leading message is pathological.
+ * A row with stable=false must not be cached because the file changed or
+ * disappeared during the scan.
  */
 export async function scanSessionFiles(files, { concurrency = 8 } = {}) {
   if (!Array.isArray(files) || files.some((file) => typeof file !== "string")) {

@@ -105,7 +105,10 @@ row.
   by path, mtime, and size.  Cache misses are scanned with a bounded
   prefix by a metadata-only JavaScript scanner in Pi's configured Node
   runtime, without importing the SDK or counting transcript messages.
-  It takes the first =session_info= name; later renames may not appear.
+  Leading system-role messages are exempt from the preview prefix budget:
+  Pi's harness prompt commonly exceeds it and must not hide the first
+  user message.  It takes the first =session_info= name; later renames may
+  not appear.
   For =SPC a i i=, the miss scan runs before perspective-label sync;
   stable results then feed both label refresh and candidate building,
   avoiding JSONL reparses for names and cwd.  A warm listing skips
