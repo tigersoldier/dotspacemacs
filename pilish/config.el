@@ -66,6 +66,41 @@ this key instead (C-; is deliberately undefined in `helm-map')."
   :type 'key-sequence
   :group 'pilish)
 
+;; Global buffers belong to every perspective.  They are injected, not
+;; filtered out: filtered buffers belong to no perspective and vanish
+;; from the restricted buffer list, whereas injected buffers appear in
+;; `SPC b b' in every layout and are spared by session teardown.
+
+(defun pilish//set-global-buffer-option (symbol value)
+  "Set SYMBOL to VALUE and inject newly matching global buffers.
+Custom setter for `pilish/global-buffer-names' and
+`pilish/global-buffer-major-modes'.  Only additions are applied:
+buffers that no longer match stay in the perspectives that already
+contain them."
+  (set-default-toplevel-value symbol value)
+  (when (fboundp 'pilish//inject-global-buffers-all)
+    (pilish//inject-global-buffers-all)))
+
+(defcustom pilish/global-buffer-names
+  '("*spacemacs*" "*scratch*" "*Messages*")
+  "Buffer names that are visible in every perspective.
+A matching buffer is added to every perspective as it is created and
+when it appears later, so `SPC b b' offers it in every layout.  Names
+are compared exactly; use `pilish/global-buffer-major-modes' to match
+by major mode instead."
+  :type '(repeat string)
+  :set #'pilish//set-global-buffer-option
+  :group 'pilish)
+
+(defcustom pilish/global-buffer-major-modes nil
+  "Major modes whose buffers are visible in every perspective.
+Modes are matched with `derived-mode-p', so a parent mode such as
+`prog-mode' also matches its derived modes.  A buffer matching either
+this list or `pilish/global-buffer-names' is global."
+  :type '(repeat symbol)
+  :set #'pilish//set-global-buffer-option
+  :group 'pilish)
+
 ;; Make sure Emacs can find the `pi' binary (also adds it to PATH for
 ;; pi's own shell tool calls). No-op if `pi' is already on exec-path.
 (pilish//add-pi-to-exec-path)

@@ -1,16 +1,10 @@
 * my-persp layer
 
-Optional generic enhancements for the =spacemacs-layouts= (persp-mode)
+Optional generic enhancement for the =spacemacs-layouts= (persp-mode)
 layer.  Fully optional: nothing depends on this layer, and the
 =pilish= layer works without it.
 
 ** Features
-
-- **Common-buffer injection**: buffers matching
-  =my-persp-common-buffer-regexps= (default =*scratch*=, =*Messages*=)
-  are added to every perspective as it is created, so they stay
-  reachable from the restricted buffer list (=SPC b b=) in any layout
-  and are never killed by layout-scoped commands.
 
 - **Terminal save/restore**: vterm, term/ansi-term, eshell, and
   shell-mode buffers are saved to perspective state with their real
@@ -20,6 +14,12 @@ layer.  Fully optional: nothing depends on this layer, and the
   =dotspacemacs-auto-resume-layouts t=.  A restored terminal is a
   fresh shell process in the saved cwd; shell state is not preserved.
 
+Global buffers (=*spacemacs*=, =*scratch*=, =*Messages*= and any
+buffers configured by =pilish/global-buffer-names= or
+=pilish/global-buffer-major-modes=) belong to the =pilish= layer, so
+they are available in every perspective whether or not this layer is
+loaded.
+
 ** How it works
 
 persp-mode's save/load is a public dispatch
@@ -27,9 +27,9 @@ persp-mode's save/load is a public dispatch
 buffer type is classified by its own handler.  This layer replaces the
 default `*'-prefixed skip filter (which would swallow terminal
 buffers) with a terminal-aware one and appends its own terminal
-handlers.  The =pilish= layer registers its chat/input
-handlers at the front of the same dispatch, so the two layers compose
-without knowing about each other.
+handlers.  The =pilish= layer registers its chat/input handlers at the
+front of the same dispatch, so the two layers compose without knowing
+about each other.
 
 ** Installation
 
@@ -42,8 +42,3 @@ Add both layers to =dotspacemacs-configuration-layers= in
    my-persp
    pilish
 #+end_src
-
-** Configuration
-
-- =my-persp-common-buffer-regexps= — buffer names treated as common
-  (injected into every perspective).

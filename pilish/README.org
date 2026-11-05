@@ -62,9 +62,10 @@ session start (or manually via =pilish-install-grammars=).
 Every opened pi session is a persp-mode perspective — "like a project":
 the buffers you open while in the session (files, terminals, pi
 chat/input) belong to that perspective, and =SPC b b= only shows the
-current perspective's buffers plus common buffers (=*scratch*=,
-=*Messages*=; see the optional =my-persp= layer below).  =SPC b B=
-shows all buffers.
+current perspective's buffers plus global buffers (=*spacemacs*,
+=*scratch*=, =*Messages*= by default; see =pilish/global-buffer-names=
+and =pilish/global-buffer-major-modes= below).  =SPC b B= shows all
+buffers.
 
 All session pickers share one list model: **live sessions** are the
 active pi chat buffers (sessions whose pi process is alive), listed
@@ -289,16 +290,12 @@ A small private layer (=private/my-persp=, listed before
 =pilish=) that enhances persp-mode generically, with zero
 coupling to this layer:
 
-- Common buffers (=*scratch*=, =*Messages*=; configurable via
-  =my-persp-common-buffer-regexps=) are injected into every
-  perspective, so they stay reachable from =SPC b b= in any layout.
 - Terminal buffers (vterm, term, eshell, shell) are saved to persp
   state with their real working directory (vterm via
   =/proc/<pid>/cwd=) and relaunched there on restore.
 
 Without =my-persp= the pi layer still works end to end; only terminals
-are not restored across restarts, and common buffers are not visible
-inside session perspectives.
+are not restored across restarts.
 
 ** Usage
 
@@ -493,8 +490,20 @@ Package options are set in the =init= function in =packages.el=:
 - =pilish-input-window-height= — height of the input window
   (set it in =config.el= or via =M-x customize-group pilish=)
 
-Layer option (defined in =config.el=):
+Layer options (defined in =config.el=):
 
+- =pilish/global-buffer-names= — buffer names visible in every
+  perspective (default =*spacemacs*=, =*scratch*=, =*Messages*=).
+  Global buffers are injected into every layout, including layouts
+  created later, and are spared by session teardown.
+- =pilish/global-buffer-major-modes= — major modes whose buffers are
+  visible in every perspective (default none).  Modes are matched with
+  =derived-mode-p=, so a parent mode such as =prog-mode= also matches
+  its derived modes.  A buffer matching either list is global.
+  Changing the lists with Customize refreshes existing perspectives;
+  after a plain =setq=, run =M-x pilish/add-global-buffers=.  Buffers
+  that no longer match stay in the perspectives that already
+  contain them.
 - =pilish/layout-width-ratio= — fraction of the frame width
   taken by the pi left column (chat + input), default =0.5=.  Set it
   in =dotspacemacs/user-config=, e.g.

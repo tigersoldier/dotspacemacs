@@ -30,6 +30,12 @@
 ;; `pilish--start-process' advice rebinds it) to drop local-only
 ;; `-e' extensions.  Same lexical-binding caveat as above.
 (defvar pilish-extra-args)
+;; Defcustoms from config.el; declared here because funcs.el is loaded
+;; (and byte-compiled) before that file's definitions exist.
+(defvar pilish/global-buffer-names)
+(defvar pilish/global-buffer-major-modes)
+;; persp-mode's activated hash table; read by the global-buffer hooks.
+(defvar *persp-hash*)
 (defvar helm-map)
 (defvar helm-pattern)
 (defvar helm-ff-initial-sort-method)
@@ -1204,6 +1210,73 @@ buffer list, so only a real perspective showing BUFFER matches."
                                 (memq buf (safe-persp-buffers persp)))))
                        (persp-names))))
       (persp-get-by-name name))))
+
+;; ---------------------------------------------------------------------
+;; Global buffers
+
+(defun pilish//global-buffer-p (buffer)
+  "Return non-nil when BUFFER is visible in every perspective.
+A buffer is global when its name is listed in
+`pilish/global-buffer-names' or its `major-mode' derives from a mode
+in `pilish/global-buffer-major-modes'.  BUFFER may be a buffer or a
+buffer name.  Either option may still be unbound while `config.el'
+defines it; the corresponding test is then skipped."
+  (let ((buffer (and buffer (get-buffer buffer)))
+        (names (and (boundp 'pilish/global-buffer-names)
+                    pilish/global-buffer-names))
+        (modes (and (boundp 'pilish/global-buffer-major-modes)
+                    pilish/global-buffer-major-modes)))
+    (and (buffer-live-p buffer)
+         (or (member (buffer-name buffer) names)
+             (with-current-buffer buffer
+               (cl-some (lambda (mode) (derived-mode-p mode)) modes))))))
+
+(defun pilish//add-global-buffer (buffer persp)
+  "Add global BUFFER to PERSP unless PERSP already contains it."
+  (when (and (buffer-live-p buffer)
+             (persp-p persp)
+             (pilish//global-buffer-p buffer)
+             (not (persp-contain-buffer-p buffer persp)))
+    (persp-add-buffer buffer persp nil nil)))
+
+(defun pilish//inject-global-buffers (persp &rest _)
+  "Add every live global buffer to PERSP."
+  (when (persp-p persp)
+    (dolist (buffer (buffer-list))
+      (pilish//add-global-buffer buffer persp))))
+
+(defun pilish//inject-global-buffers-all (&rest _)
+  "Add every live global buffer to every existing perspective.
+No-op until persp-mode is activated: `*persp-hash*' (and therefore
+`persp-names') only exists then."
+  (when (and (bound-and-true-p persp-mode)
+             (hash-table-p *persp-hash*))
+    (dolist (name (persp-names))
+      (when-let* ((persp (persp-get-by-name name)))
+        (pilish//inject-global-buffers persp)))))
+
+(defun pilish//inject-global-buffer-current (&rest _)
+  "Add the current buffer to every perspective when it is global.
+Runs after a major mode is set, which covers buffers created after
+the perspectives already exist (notably `*spacemacs*')."
+  (when (and (bound-and-true-p persp-mode)
+             (hash-table-p *persp-hash*)
+             (pilish//global-buffer-p (current-buffer)))
+    (dolist (name (persp-names))
+      (when-let* ((persp (persp-get-by-name name)))
+        (pilish//add-global-buffer (current-buffer) persp)))))
+
+(defun pilish/add-global-buffers ()
+  "Add every live buffer matching the global-buffer lists to all perspectives.
+Use this after changing `pilish/global-buffer-names' or
+`pilish/global-buffer-major-modes' with `setq'; their Customize
+setters refresh automatically.  Buffers that no longer match stay in
+the perspectives that already contain them."
+  (interactive)
+  (unless (bound-and-true-p persp-mode)
+    (user-error "persp-mode is not active — enable the spacemacs-layouts layer"))
+  (pilish//inject-global-buffers-all)
+  (message "Global buffers added to every perspective"))
 
 (defun pilish//sync-registry-after-session-change (&rest _)
   "Re-sync the registry + label after a package session switch.
@@ -5304,7 +5377,7 @@ perspective, pi window layout) is named after the workspace."
 
 (defun pilish//exclusive-buffers (persp)
   "Buffers of PERSP not present in any other real perspective.
-Common buffers (injected into every perspective) and buffers shared
+Global buffers (see `pilish//global-buffer-p') and buffers shared
 with other perspectives are spared.  The default (\"Default\")
 pseudo-perspective is not \"another perspective\":
 `persp-contain-buffer-p' answers t for it whatever the buffer, so
@@ -5315,8 +5388,9 @@ list (see `pilish//real-persp-p')."
                        #'pilish//real-persp-p
                        (mapcar #'persp-get-by-name (persp-names))))))
     (cl-remove-if (lambda (buf)
-                    (cl-find-if (lambda (p) (persp-contain-buffer-p buf p))
-                                others))
+                    (or (pilish//global-buffer-p buf)
+                        (cl-find-if (lambda (p) (persp-contain-buffer-p buf p))
+                                    others)))
                   (safe-persp-buffers persp))))
 
 (defun pilish//skip-kill-confirmation-for (buf)
@@ -5661,7 +5735,7 @@ nil for a local session (or when the stderr buffer/process is gone)."
   "Close the pi session of perspective NAME: process, buffers, persp.
 Confirms first.  Kills the pi process (when the perspective has its
 own chat buffer), then the perspective's exclusive buffers (standard
-unsaved-change prompts; common buffers and buffers shared with other
+unsaved-change prompts; global buffers and buffers shared with other
 perspectives are spared), then the perspective itself.
 
 When DELETE is non-nil the session file is also deleted — moved to
@@ -5797,7 +5871,7 @@ session may still appear in the session list"
 Closes the current perspective's session when it has one; otherwise
 lists the open sessions for the user to pick one.  Stops the pi
 process, kills the perspective's buffers (standard unsaved-change
-prompts; common buffers and buffers shared with other perspectives
+prompts; global buffers and buffers shared with other perspectives
 are spared), deletes the perspective, then switches to the next
 perspective that has a pi session (or the next perspective when none
 does).  The workspace is remembered in the registry, so reopening the
@@ -6034,6 +6108,14 @@ their normal prompting."
   ;; skip, hence the front position.
   (add-to-list 'persp-save-buffer-functions #'pilish//persp-save-handler)
   (add-to-list 'persp-load-buffer-functions #'pilish//persp-load-handler)
+  ;; Global buffers must be in perspectives created later and in every
+  ;; perspective after startup/restore.  `after-change-major-mode-hook'
+  ;; catches buffers created after the perspectives already exist (for
+  ;; example `*spacemacs*'), including buffers matching by major mode.
+  (add-hook 'persp-created-functions #'pilish//inject-global-buffers)
+  (add-hook 'persp-mode-hook #'pilish//inject-global-buffers-all)
+  (add-hook 'after-change-major-mode-hook
+            #'pilish//inject-global-buffer-current)
   (add-hook 'persp-renamed-functions #'pilish//on-persp-renamed)
   (add-hook 'persp-before-switch-functions #'pilish//on-before-switch)
   (add-hook 'persp-before-kill-functions #'pilish//on-before-kill))

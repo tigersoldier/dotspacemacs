@@ -1,54 +1,25 @@
 ;;; funcs.el --- my-persp layer functions for Spacemacs. -*- lexical-binding: t; -*-
 ;;
-;; Generic persp-mode enhancements that work for every perspective, pi
+;; Generic persp-mode enhancement that works for every perspective, pi
 ;; session or not:
 ;;
-;; 1. Common-buffer injection: buffers matching
-;;    `my-persp-common-buffer-regexps' (default *scratch*, *Messages*) are
-;;    added to every perspective as it is created, so they stay reachable
-;;    from the restricted buffer list in any layout.
+;; Terminal save/restore: vterm/term/eshell/shell buffers are saved to
+;; perspective state as (def-buffer-vterm|term|eshell|shell NAME CWD)
+;; specs and relaunched in their saved working directory when the
+;; perspective is restored (e.g. after an Emacs restart with
+;; `dotspacemacs-auto-resume-layouts').  The restored terminal is a
+;; fresh shell process in the saved cwd; shell state is not preserved.
 ;;
-;; 2. Terminal save/restore: vterm/term/eshell/shell buffers are saved to
-;;    perspective state as (def-buffer-vterm|term|eshell|shell NAME CWD)
-;;    specs and relaunched in their saved working directory when the
-;;    perspective is restored (e.g. after an Emacs restart with
-;;    `dotspacemacs-auto-resume-layouts').  The restored terminal is a
-;;    fresh shell process in the saved cwd; shell state is not preserved.
-;;
-;; Both are implemented through persp-mode's public save/load dispatch
+;; It is implemented through persp-mode's public save/load dispatch
 ;; (`persp-save-buffer-functions' / `persp-load-buffer-functions'), so
 ;; other layers can register their own buffer types into the same
-;; pipeline.  In particular the pilish layer registers its own
-;; chat/input handlers at the front of those lists and does not depend on
+;; pipeline.  In particular the pilish layer registers its own chat/input
+;; save/load handlers and global-buffer hooks, and does not depend on
 ;; this layer.
 ;;
 ;;; License: GPLv3
 
 ;;; Code:
-
-(defun my-persp//common-buffer-p (buffer)
-  "Return non-nil when BUFFER is a common buffer."
-  (cl-find-if (lambda (re) (string-match-p re (buffer-name buffer)))
-              my-persp-common-buffer-regexps))
-
-(defun my-persp//inject-common-buffers (persp &rest _)
-  "Add live common buffers to PERSP."
-  (when (persp-p persp)
-    (dolist (buf (buffer-list))
-      (when (and (buffer-live-p buf)
-                 (my-persp//common-buffer-p buf)
-                 (not (persp-contain-buffer-p buf persp)))
-        (persp-add-buffer buf persp nil nil)))))
-
-(defun my-persp//inject-common-buffers-all ()
-  "Add live common buffers to every existing perspective.
-No-op when persp-mode is loaded but not yet activated: `*persp-hash*'
-is only created when `persp-mode' is enabled, and `persp-names' would
-signal an error on the nil hash table."
-  (when (hash-table-p *persp-hash*)
-    (dolist (name (persp-names))
-      (when-let* ((persp (persp-get-by-name name)))
-        (my-persp//inject-common-buffers persp)))))
 
 ;; ---------------------------------------------------------------------
 ;; Terminal save/restore
@@ -124,12 +95,6 @@ terminal modes keep `default-directory' in sync with the shell."
 ;; Registration (runs when persp-mode is loaded)
 
 (with-eval-after-load 'persp-mode
-  ;; Common buffers: inject on perspective creation and into everything
-  ;; that already exists (incl. the default perspective).  The initial
-  ;; injection must wait for `persp-mode' to be *activated*: at load
-  ;; time `*persp-hash*' is still nil and persp-names would error.
-  (add-hook 'persp-created-functions #'my-persp//inject-common-buffers)
-  (add-hook 'persp-mode-hook #'my-persp//inject-common-buffers-all)
   ;; Terminal save/load.  persp's default save dispatch skips all
   ;; `*'-prefixed buffers (via `persp-filter-save-buffers-functions')
   ;; and then falls through to the generic `(def-buffer NAME FILE MODE)'

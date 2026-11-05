@@ -89,12 +89,22 @@ two groups.)
   perspective renamed by the user (=persp-rename=, SPC l r) sets
   =label-locked= and stops auto-sync.
 
-*** D5. Buffer attribution and common buffers
+*** D5. Buffer attribution and global buffers
 
 - persp-mode ='free= attribution (Spacemacs default) attaches every new
   buffer (files, terminals, pi chat/input) to the current perspective.
-- Common buffers (=*scratch*=, =*Messages*= by default; defcustom regexp
-  list) are injected into every perspective via =persp-created-functions=.
+- Global buffers are injected into every perspective, not filtered out:
+  - =pilish/global-buffer-names= (default =*spacemacs*=, =*scratch*=
+    and =*Messages*=; exact names).
+  - =pilish/global-buffer-major-modes= (default empty; modes are
+    matched with =derived-mode-p=, so parent modes cover derived ones).
+  Injection runs on perspective creation (=persp-created-functions=),
+  on persp-mode activation/restore (=persp-mode-hook=), and after a
+  buffer's major mode is set, so late buffers such as =*spacemacs*=
+  are picked up too.  Customizing either list refreshes existing
+  perspectives; a plain =setq= is followed by
+  =M-x pilish/add-global-buffers= (additions only — buffers that no
+  longer match stay where they were added).
   Injection, not filtering: persp's =persp-common-buffer-filter-functions=
   is an exclusion mechanism (filtered buffers belong to no perspective and
   vanish from the restricted buffer list).  Injected buffers are in all
@@ -210,7 +220,7 @@ in-persp=): =pilish/close-session= (SPC a i d) and
 3. Kill the pi process (only when the perspective owns its chat
    buffer; a shared same-directory chat buffer is spared), then the
    perspective's buffers (files, terminals, chat/input) — standard
-   per-buffer unsaved-change prompts; common buffers and other
+   per-buffer unsaved-change prompts; global buffers and other
    perspectives' buffers never touched.
 4. Kill the perspective, then switch to the next perspective (persp
    display order, wrapping) that is associated with a pi session — or
@@ -427,10 +437,11 @@ design (the session list falls back to scanning perspective buffers).
 
 - =pilish= layer (self-contained): registry + orchestration
   (capture/replay through persp's dispatch) + chat/input persp handlers +
-  manager UI + close/new commands.  No dependency on my-persp.
-- =my-persp= private layer (optional, generic, zero coupling): common-buffer
-  injection + terminal save/load for the auto-resume domain.  Listed before
-  =pilish= in =dotspacemacs-configuration-layers=.
+  global-buffer injection + manager UI + close/new commands.  No
+  dependency on my-persp.
+- =my-persp= private layer (optional, generic, zero coupling): terminal
+  save/load for the auto-resume domain.  Listed before =pilish= in
+  =dotspacemacs-configuration-layers=.
 - Registry file: cache directory (runtime state, not versioned dotfiles).
 
 ** Fail-open contract
