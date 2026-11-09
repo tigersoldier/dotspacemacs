@@ -39,6 +39,8 @@
 (defvar helm-map)
 (defvar helm-pattern)
 (defvar helm-ff-initial-sort-method)
+(defvar helm-alive-p)
+(defvar helm-buffer)
 (defvar pilish//remote-directory-picker-current nil)
 (defvar pilish//remote-directory-picker-children nil)
 (defvar pilish//remote-directory-picker-home nil)
@@ -48,6 +50,7 @@
                   (directory &optional selection))
 (declare-function helm-force-update "helm-core")
 (declare-function helm-get-selection "helm")
+(declare-function helm-set-pattern "helm-lib" (pattern &optional noupdate))
 (declare-function tramp-make-tramp-file-name "tramp")
 (declare-function pilish//remote-session-entries nil (prefix &optional dir))
 (declare-function company-mode "company")
@@ -684,8 +687,11 @@ when it prepends its own installer-managed Node directory."
 (defcustom pilish/remote-directory-cache-ttl 60
   "Seconds to reuse remote directory listings in the remote-session picker.
 The cache is memory-only, scoped to that picker, and bounded to 128
-entries.  Press C-c C-r in the picker to refresh the current
-listing immediately.  Set to zero to disable caching."
+entries.  After each listing the picker prefetches the next layer —
+the contents of the directory's immediate children — in the
+background; this TTL also throttles that prefetch and ages the child
+entries it fills.  Press C-c C-r in the picker to refresh the current
+listing immediately.  Set to zero to disable caching and prefetching."
   :type 'natnum
   :group 'pilish)
 
@@ -734,6 +740,27 @@ Each entry is (PERSP-NAME . (:session-file FILE :label-locked BOOL
 
 (defconst pilish//remote-directory-list-cache-limit 128
   "Maximum number of remote directory listings held in memory.")
+
+(defconst pilish//remote-directory-prefetch-queue-limit 64
+  "Maximum number of queued asynchronous remote directory listings.")
+
+(defvar pilish//remote-directory-prefetch-queue nil
+  "Queued asynchronous remote directory listings.
+Each entry is (DIRECTORY . NOTIFY); NOTIFY non-nil asks for a message
+when DIRECTORY cannot be listed.")
+
+(defvar pilish//remote-directory-prefetch-process nil
+  "The asynchronous remote directory listing process in flight, if any.
+Listings are serialized so a directory tree is never walked by several
+remote processes at once.")
+
+(defvar pilish//remote-directory-prefetch-pending (make-hash-table :test 'equal)
+  "Cache keys whose asynchronous listing is currently being fetched.")
+
+(defvar pilish//remote-directory-prefetch-done (make-hash-table :test 'equal)
+  "Cache keys whose next layer was prefetched, mapped to completion times.
+Used to avoid re-walking a directory on every Helm update; entries are
+pruned with `pilish/remote-directory-cache-ttl'.")
 
 (defvar pilish//renaming-self nil
   "Non-nil while this layer renames a perspective itself.")
@@ -4457,8 +4484,9 @@ other arguments are passed through unchanged."
 (defun pilish//remote-directory-cache-prune ()
   "Remove expired remote listings and enforce the in-memory size limit."
   (let ((now (float-time))
-        (ttl pilish/remote-directory-cache-ttl)
-        expired)
+        (ttl (max 0 pilish/remote-directory-cache-ttl))
+        expired
+        expired-prefetches)
     (maphash (lambda (key entry)
                (when (or (not (consp entry))
                          (not (numberp (car entry)))
@@ -4466,7 +4494,14 @@ other arguments are passed through unchanged."
                  (push key expired)))
              pilish//remote-directory-list-cache)
     (dolist (key expired)
-      (remhash key pilish//remote-directory-list-cache)))
+      (remhash key pilish//remote-directory-list-cache))
+    (maphash (lambda (key time)
+               (when (or (not (numberp time))
+                         (>= (- now time) ttl))
+                 (push key expired-prefetches)))
+             pilish//remote-directory-prefetch-done)
+    (dolist (key expired-prefetches)
+      (remhash key pilish//remote-directory-prefetch-done)))
   (while (> (hash-table-count pilish//remote-directory-list-cache)
             pilish//remote-directory-list-cache-limit)
     (let (oldest-key oldest-time)
@@ -4484,13 +4519,243 @@ other arguments are passed through unchanged."
 
 (defun pilish//remote-directory-cache-clear (directory)
   "Clear the cached child listing for DIRECTORY."
-  (remhash (pilish//remote-directory-cache-key directory)
-           pilish//remote-directory-list-cache))
+  (let ((key (pilish//remote-directory-cache-key directory)))
+    (remhash key pilish//remote-directory-list-cache)
+    (remhash key pilish//remote-directory-prefetch-done)))
+
+(defun pilish//remote-directory-cache-entry (directory)
+  "Return the fresh cached listing entry for remote DIRECTORY, or nil.
+An entry is (TIMESTAMP . CHILDREN).  No remote I/O is performed; a
+timestamp older than `pilish/remote-directory-cache-ttl' (or a cache
+disabled with a zero TTL) counts as a miss."
+  (let ((ttl (max 0 pilish/remote-directory-cache-ttl)))
+    (when (> ttl 0)
+      (pilish//remote-directory-cache-prune)
+      (let ((entry (gethash (pilish//remote-directory-cache-key directory)
+                            pilish//remote-directory-list-cache)))
+        (when (and (consp entry)
+                   (numberp (car entry))
+                   (< (- (float-time) (car entry)) ttl))
+          entry)))))
+
+(defun pilish//remote-directory-cache-store (directory children)
+  "Store CHILDREN as the listing of DIRECTORY unless a fresh entry exists.
+Asynchronous listings use this: a synchronous fetch (or a newer
+asynchronous one) that landed while the process was running must win."
+  (when (> (max 0 pilish/remote-directory-cache-ttl) 0)
+    (unless (pilish//remote-directory-cache-entry directory)
+      (puthash (pilish//remote-directory-cache-key directory)
+               (cons (float-time)
+                     (pilish//remote-directory-cache-copy children))
+               pilish//remote-directory-list-cache)
+      (pilish//remote-directory-cache-prune))))
+
+(defun pilish//remote-directory-picker-live-p ()
+  "Return non-nil while the pilish remote directory picker is active."
+  (and (bound-and-true-p helm-alive-p)
+       (equal helm-buffer "*helm pilish remote directory*")))
+
+(defun pilish//remote-directory-picker-refresh-async ()
+  "Refresh the remote directory picker after an asynchronous listing."
+  (when (pilish//remote-directory-picker-live-p)
+    (condition-case nil
+        (helm-force-update)
+      (error nil))))
+
+(defun pilish//remote-directory-parse-find-output (output)
+  "Parse find OUTPUT into (CHILDREN . CHILD-ALIST).
+OUTPUT is the output of `find . -mindepth 1 -maxdepth 2 -type d
+-print' run in a directory.  CHILDREN lists its immediate child
+directory names; CHILD-ALIST maps each of those names to its own child
+directory names.  Both levels are sorted."
+  (let (children grandchildren)
+    (dolist (line (split-string (or output "") "\n" t))
+      (when (string-prefix-p "./" line)
+        (let* ((relative (substring line 2))
+               (parts (split-string relative "/" t)))
+          (pcase parts
+            (`(,name)
+             (push name children)
+             (unless (assoc name grandchildren)
+               (push (cons name nil) grandchildren)))
+            (`(,name ,child)
+             (unless (assoc name grandchildren)
+               (push name children)
+               (push (cons name nil) grandchildren))
+             (let ((cell (assoc name grandchildren)))
+               (setcdr cell (cons child (cdr cell)))))))))
+    (cons (sort (delete-dups children) #'string-lessp)
+          (mapcar (lambda (cell)
+                    (cons (car cell)
+                          (sort (delete-dups (cdr cell)) #'string-lessp)))
+                  (sort grandchildren
+                        (lambda (a b) (string-lessp (car a) (car b))))))))
+
+(defun pilish//remote-directory-prefetch-apply (directory output)
+  "Merge an asynchronous find listing of DIRECTORY into the cache.
+DIRECTORY itself is only stored when it has no fresh entry, so this
+never replaces a synchronous listing with the find-based one.  Each
+immediate child gets a cache entry with its own children, ready for a
+typed \"child/\" prefix."
+  (let* ((directory (file-name-as-directory
+                     (pilish//plain-string directory)))
+         (parsed (pilish//remote-directory-parse-find-output output)))
+    (pilish//remote-directory-cache-store directory (car parsed))
+    (dolist (cell (cdr parsed))
+      (pilish//remote-directory-cache-store
+       (concat directory (car cell) "/")
+       (cdr cell)))
+    (puthash (pilish//remote-directory-cache-key directory)
+             (float-time)
+             pilish//remote-directory-prefetch-done)))
+
+(defun pilish//remote-directory-prefetch-sentinel (proc _event)
+  "Finish asynchronous remote directory listing process PROC."
+  (when (and (memq (process-status proc) '(exit signal))
+             (eq proc pilish//remote-directory-prefetch-process))
+    (let* ((buffer (process-buffer proc))
+           (directory (process-get proc 'pilish-directory))
+           (key (and directory (pilish//remote-directory-cache-key directory)))
+           (success (and (eq (process-status proc) 'exit)
+                         (zerop (process-exit-status proc))))
+           (output (and success directory (buffer-live-p buffer)
+                        (with-current-buffer buffer (buffer-string)))))
+      (unwind-protect
+          (progn
+            (when success
+              (condition-case err
+                  (pilish//remote-directory-prefetch-apply directory output)
+                (error
+                 (message "pi: cannot parse the directory listing of %s: %s"
+                          directory (error-message-string err)))))
+            (when (and (not success)
+                       (process-get proc 'pilish-notify))
+              (message "pi: cannot list remote directory %s%s"
+                       directory
+                       (if (buffer-live-p buffer)
+                           (let ((detail (string-trim
+                                          (with-current-buffer buffer
+                                            (buffer-string)))))
+                             (if (string-empty-p detail)
+                                 ""
+                               (concat ": " (car (split-string detail "\n")))))
+                         "")))
+            (when key
+              (puthash key (float-time)
+                       pilish//remote-directory-prefetch-done)))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))
+        (when key
+          (remhash key pilish//remote-directory-prefetch-pending))
+        (setq pilish//remote-directory-prefetch-process nil)
+        ;; Sentinels can run inside TRAMP's connection handling.  Defer
+        ;; the UI update and the next remote process out of that context.
+        (when (pilish//remote-directory-picker-live-p)
+          (run-at-time 0 nil
+                       #'pilish//remote-directory-picker-refresh-async))
+        (run-at-time 0 nil
+                     'pilish//remote-directory-prefetch-start-next)))))
+
+(defun pilish//remote-directory-prefetch-start-next ()
+  "Start the next queued asynchronous remote directory listing."
+  (while (and (null pilish//remote-directory-prefetch-process)
+              pilish//remote-directory-prefetch-queue)
+    (let* ((entry (pop pilish//remote-directory-prefetch-queue))
+           (directory (car entry))
+           (notify (cdr entry))
+           (key (pilish//remote-directory-cache-key directory))
+           (buffer (generate-new-buffer " *pilish remote directory*")))
+      (if (not (and (> (max 0 pilish/remote-directory-cache-ttl) 0)
+                    (pilish//tramp-connection-alive-p directory)))
+          (kill-buffer buffer)
+        (condition-case err
+            (let ((default-directory (file-name-as-directory directory)))
+              (setq pilish//remote-directory-prefetch-process
+                    (make-process
+                     :name (buffer-name buffer)
+                     :buffer buffer
+                     :command '("find" "." "-mindepth" "1" "-maxdepth" "2"
+                                "-type" "d" "-print")
+                     :connection-type 'pipe
+                     :noquery t
+                     :file-handler t
+                     :sentinel #'pilish//remote-directory-prefetch-sentinel)))
+          (error
+           (kill-buffer buffer)
+           (puthash key (float-time)
+                    pilish//remote-directory-prefetch-done)
+           (when notify
+             (message "pi: cannot list remote directory %s: %s"
+                      directory (error-message-string err)))))
+        (when pilish//remote-directory-prefetch-process
+          (process-put pilish//remote-directory-prefetch-process
+                       'pilish-directory directory)
+          (process-put pilish//remote-directory-prefetch-process
+                       'pilish-notify notify)
+          (puthash key t pilish//remote-directory-prefetch-pending))))))
+
+(defun pilish//remote-directory-prefetch (directory &optional force notify)
+  "Arrange an asynchronous listing of DIRECTORY and its child directories.
+The listing fills DIRECTORY's cache entry (when it has no fresh one) and
+the cache entries of every immediate child, so typing a child name
+followed by a slash can be served from memory.  DIRECTORY must belong to
+the picker's selected host and its TRAMP connection must already be
+established; otherwise this is a no-op.  FORCE ignores the recent-
+prefetch throttle.  NOTIFY reports a failed listing in the echo area."
+  (let* ((directory (and directory
+                         (file-name-as-directory
+                          (pilish//plain-string directory))))
+         (prefix (and directory
+                      (pilish--remote-prefix-for-path directory)))
+         (key (and directory
+                   (pilish//remote-directory-cache-key directory)))
+         (ttl (max 0 pilish/remote-directory-cache-ttl))
+         (done (and key
+                    (gethash key pilish//remote-directory-prefetch-done)))
+         (queued (and directory
+                      (assoc directory
+                             pilish//remote-directory-prefetch-queue))))
+    (when (and directory
+               (> ttl 0)
+               prefix
+               (equal prefix pilish//remote-directory-picker-prefix)
+               (pilish//tramp-connection-alive-p directory)
+               (or force
+                   (not (and (numberp done)
+                             (< (- (float-time) done) ttl)))))
+      (cond
+       (queued
+        (setcdr queued (or (cdr queued) notify)))
+       ((gethash key pilish//remote-directory-prefetch-pending)
+        ;; This directory's own listing is already being fetched.  A
+        ;; parent's in-flight prefetch also fills it from its second
+        ;; level, so waiting is enough.
+        (when (and notify
+                   pilish//remote-directory-prefetch-process
+                   (equal (process-get pilish//remote-directory-prefetch-process
+                                       'pilish-directory)
+                          directory))
+          (process-put pilish//remote-directory-prefetch-process
+                       'pilish-notify t)))
+       (t
+        (push (cons directory notify) pilish//remote-directory-prefetch-queue)
+        (when (> (length pilish//remote-directory-prefetch-queue)
+                 pilish//remote-directory-prefetch-queue-limit)
+          (setq pilish//remote-directory-prefetch-queue
+                (cl-subseq pilish//remote-directory-prefetch-queue
+                           0 pilish//remote-directory-prefetch-queue-limit)))
+        ;; Defer the remote process: candidate functions run inside
+        ;; Helm's `while-no-input', and a TRAMP process started there
+        ;; can be cut short by incoming input.
+        (run-at-time 0 nil
+                     #'pilish//remote-directory-prefetch-start-next))))))
 
 (defun pilish//remote-directory-cached-children (directory)
   "Return the immediate child directory names of remote DIRECTORY.
 The cache is keyed by the full TRAMP directory and only lists after
-checking that the selected host connection is already alive."
+checking that the selected host connection is already alive.  A cache
+miss lists synchronously, then warms the children's own listings in the
+background; a hit warms the next layer the same way."
   (let* ((directory (file-name-as-directory
                      (pilish//plain-string directory)))
          (prefix (pilish--remote-prefix-for-path directory))
@@ -4502,14 +4767,13 @@ checking that the selected host connection is already alive."
     (unless (pilish//tramp-connection-alive-p directory)
       (user-error "Connection to %s is no longer established; cancel and retry"
                   (or (file-remote-p directory 'host) directory)))
-    (pilish//remote-directory-cache-prune)
-    (let* ((entry (and (> ttl 0)
-                       (gethash key pilish//remote-directory-list-cache)))
-           (cached (and (consp entry)
-                        (numberp (car entry))
-                        (< (- (float-time) (car entry)) ttl))))
-      (if cached
-          (pilish//remote-directory-cache-copy (cdr entry))
+    (let ((entry (pilish//remote-directory-cache-entry directory)))
+      (if entry
+          (progn
+            ;; The snapshot is local, but the directory's children are
+            ;; the next thing the user is likely to type; warm them.
+            (pilish//remote-directory-prefetch directory)
+            (pilish//remote-directory-cache-copy (cdr entry)))
         (condition-case err
             (let* ((helm-ff-initial-sort-method nil)
                    (entries (helm-list-directory directory))
@@ -4544,6 +4808,9 @@ checking that the selected host connection is already alive."
                 (puthash key (cons (float-time) children)
                          pilish//remote-directory-list-cache)
                 (pilish//remote-directory-cache-prune))
+              ;; This snapshot may be new even when an earlier prefetch
+              ;; is still recent, so force the next-layer walk.
+              (pilish//remote-directory-prefetch directory t)
               children)
           (file-error
            (user-error "Cannot list %s: %s"
@@ -4590,7 +4857,7 @@ checking that the selected host connection is already alive."
         (concat prefix (file-name-as-directory (expand-file-name local)))))))
 
 (defun pilish//remote-directory-picker-candidates ()
-  "Return current, parent, and snapshotted child directory candidates."
+  "Return current, parent, snapshotted child, and typed-path candidates."
   (let* ((current pilish//remote-directory-picker-current)
          (children pilish//remote-directory-picker-children)
          (parent (pilish//remote-directory-parent current)))
@@ -4599,7 +4866,56 @@ checking that the selected host connection is already alive."
      (when parent (list (cons "../" parent)))
      (mapcar (lambda (name)
                (cons (concat name "/") (concat current name "/")))
-             children))))
+             children)
+     (pilish//remote-directory-typed-children))))
+
+(defun pilish//remote-directory-typed-children ()
+  "Return candidates for children of a directory typed in the minibuffer.
+The directory part of the input (through its last slash) is resolved
+syntactically on the selected host; cached child names are rendered with
+that typed prefix, so Helm's pattern matches them without any extra
+completion machinery.  A trailing slash whose directory is not cached
+starts an asynchronous listing (or lists synchronously when the cache is
+disabled), instead of showing only the typed path and no entries."
+  (let* ((input (and (stringp helm-pattern)
+                     (substring-no-properties helm-pattern)))
+         (slash (and input (string-match "/[^/]*\\'" input))))
+    (when slash
+      (let* ((display-prefix (substring input 0 (1+ slash)))
+             (directory (pilish//remote-directory-resolve-typed-path
+                         display-prefix))
+             (entry (and directory
+                         (pilish//remote-directory-cache-entry directory))))
+        (cond
+         (entry
+          ;; The child names are known, but their own children are the
+          ;; next layer the user may type; warm them in the background.
+          (pilish//remote-directory-prefetch directory)
+          (mapcar (lambda (name)
+                    (cons (concat display-prefix name "/")
+                          (concat (file-name-as-directory directory)
+                                  name "/")))
+                  (cdr entry)))
+         ((and directory (string-suffix-p "/" input))
+          (if (> (max 0 pilish/remote-directory-cache-ttl) 0)
+              (progn
+                (pilish//remote-directory-prefetch directory t t)
+                nil)
+            ;; With caching disabled there is no asynchronous result to
+            ;; display later; a slash is the user's explicit request, so
+            ;; list this one directory synchronously.  Bound
+            ;; `throw-on-input' because Helm runs candidates inside
+            ;; `while-no-input' and an aborted TRAMP call would be worse
+            ;; than one visible pause.
+            (let ((throw-on-input nil))
+              (condition-case nil
+                  (mapcar (lambda (name)
+                            (cons (concat display-prefix name "/")
+                                  (concat (file-name-as-directory directory)
+                                          name "/")))
+                          (pilish//remote-directory-cached-children directory))
+                (error nil)))))
+         (t nil))))))
 
 (defun pilish//remote-directory-typed-candidates (_candidates _source)
   "Offer a syntactically resolved path only when INPUT contains a slash.
@@ -4632,17 +4948,27 @@ on explicit RET, by `pilish//remote-directory-select-action'."
   "Accept selected DIRECTORY after validating it once."
   (pilish//remote-directory-validate directory))
 
+(defun pilish//remote-directory-picker-show (directory children)
+  "Show DIRECTORY and CHILDREN and reset the picker's typed input.
+Clearing the input is essential: after entering a child, a leftover
+pattern (for example \"foo/\") matches only the typed-path candidate and
+hides every new child, which looked like an empty directory."
+  (setq pilish//remote-directory-picker-current directory
+        pilish//remote-directory-picker-children children)
+  ;; NOUPDATE t also sets `helm-pattern'; otherwise the forced update
+  ;; below can still filter with the old input.
+  (helm-set-pattern "" t)
+  (helm-force-update nil))
+
 (defun pilish//remote-directory-picker-enter ()
-  "Enter the selected directory and load its cached child snapshot."
+  "Enter the selected directory and show its cached child snapshot."
   (interactive)
   (let ((directory (helm-get-selection)))
     (unless (stringp directory)
       (user-error "Select a directory to enter"))
     (let* ((directory (pilish//remote-directory-validate directory))
            (children (pilish//remote-directory-cached-children directory)))
-      (setq pilish//remote-directory-picker-current directory
-            pilish//remote-directory-picker-children children)
-      (helm-force-update))))
+      (pilish//remote-directory-picker-show directory children))))
 
 (defun pilish//remote-directory-picker-up ()
   "Move the remote directory browser to its parent directory."
@@ -4651,9 +4977,7 @@ on explicit RET, by `pilish//remote-directory-select-action'."
                  pilish//remote-directory-picker-current)))
     (if parent
         (let ((children (pilish//remote-directory-cached-children parent)))
-          (setq pilish//remote-directory-picker-current parent
-                pilish//remote-directory-picker-children children)
-          (helm-force-update))
+          (pilish//remote-directory-picker-show parent children))
       (message "Already at the remote host root"))))
 
 (defun pilish//remote-directory-cache-refresh ()

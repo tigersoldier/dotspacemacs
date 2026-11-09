@@ -942,7 +942,9 @@ other hosts without probing them.  Set the TTL to zero to disable the
 cache.  Rejected: using Helm's generic file reader or global Helm
 advice, which would either perform TRAMP checks while typing or affect
 unrelated pickers; persisting listings would retain stale remote state
-across Emacs restarts.
+across Emacs restarts.  (2026 update: D28 adds asynchronous next-layer
+prefetch and makes a typed trailing slash a cache-miss trigger; the
+no-synchronous-I/O-during-input rule remains.)
 
 * D22. Gate worktree repo checks to the active remote host
 
@@ -1070,3 +1072,46 @@ only after a truncated parse, which cannot distinguish truncation from
 an empty list; and setting =PILISH_PI_RESULT_FILE= in the shared script,
 which would require the scan's own =trap= to keep the temporary
 directory alive and would fork the two modes' cleanup rules.
+
+* D28. Prefetch remote directory layers asynchronously
+
+The remote directory picker originally warmed only the directory currently
+shown.  Typing =child/= produced a single typed-path candidate and no
+children, and entering a child left the pattern (=child/=) in the
+minibuffer, which filtered out the new listing: the picker looked empty.
+Every first visit to a child also paid a synchronous remote listing.
+
+- After any listing — a synchronous cache miss or a fresh cache hit —
+  schedule one background walk of the shown directory:
+  =find . -mindepth 1 -maxdepth 2 -type d -print= over the established
+  TRAMP connection.  =make-process= with =:file-handler t= runs the whole
+  walk as one asynchronous remote command, not one =ls= per child.  Its
+  second level fills every immediate child's cache entry, so typing
+  =child/= is served from memory.  The walk is exactly one layer ahead;
+  when a child becomes current, its own walk warms the next layer.
+- Serialize and coalesce the walks in one queue.  A directory whose next
+  layer was walked within =pilish/remote-directory-cache-ttl= seconds is
+  skipped; =C-c C-r= clears both the listing and the throttle marker and
+  forces a fresh walk.  The same TTL prunes the cache and the throttle
+  table.
+- A cache miss on typed input ending in =/= queues the same walk instead
+  of performing synchronous remote I/O; the picker refreshes when the
+  process finishes.  An asynchronous result fills an entry only when no
+  fresh entry landed while it ran, so a synchronous listing always wins.
+  With caching disabled (TTL zero) the slash path lists synchronously
+  because there is no cache to update later; =throw-on-input= is bound
+  around that call so Helm's =while-no-input= cannot abort a TRAMP
+  operation halfway through.
+- Entering a child or going to the parent clears the Helm input before
+  the forced update: =helm-set-pattern "" t= updates =helm-pattern=
+  immediately and =helm-force-update nil= recomputes with the empty
+  pattern.  Without this, a leftover =child/= pattern matched only the
+  typed-path candidate and hid every new child.
+- As D15 requires, a walk starts only over an already-established
+  connection; typing or a Helm update never probes or reconnects a host.
+  Failures fail open: a failed walk is throttled and leaves the existing
+  cache alone, and a typed-path failure is reported in the echo area.
+Rejected: walking the tree synchronously on each cache miss (blocks the
+minibuffer on a slow link), one =ls= process per child (many round trips
+for a wide directory), and relying on Helm's watcher-backed file cache
+(not supported over TRAMP).
